@@ -12,7 +12,11 @@ package remote
 
 import scala.collection.mutable.{HashMap, HashSet}
 
-case class NamedSend(senderLoc: Locator, receiverLoc: Locator, clazzName: String, data: Array[Byte], session: Symbol)
+case class NamedSend(senderLoc: Locator, 
+                     receiverLoc: Locator, 
+                     metaData: Array[Byte], 
+                     data: Array[Byte], 
+                     session: Symbol)
 
 case class RemoteApply0(senderLoc: Locator, receiverLoc: Locator, rfun: Function2[AbstractActor, Proxy, Unit])
 case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractActor)
@@ -29,15 +33,30 @@ case class Locator(node: Node, name: Symbol)
 private[remote] class NetKernel(val service: Service) {
 
   def sendToNode(node: Node, msg: AnyRef) = {
-    service.send(node, service.serializer.serializeClassName(msg))
+    Debug.info("--NetKernel.sendToNode--")
+    Debug.info("node: " + node)
+    Debug.info("msg: " + msg)
+    service.serializer.serializeMetaData(msg) match {
+      case Some(data) => service.send(node, data)
+      case None       => service.send(node, Array[Byte]())
+    }
     val bytes = service.serializer.serialize(msg)
     service.send(node, bytes)
   }
 
   def namedSend(senderLoc: Locator, receiverLoc: Locator,
                 msg: AnyRef, session: Symbol) {
+    Debug.info("--NetKernel.namedSend--")
+    Debug.info("senderLoc: " + senderLoc + ", receiverLoc: " + receiverLoc)
+    Debug.info("msg: " + msg)
+    Debug.info("session: " + session)
+
+    val metadata = service.serializer.serializeMetaData(msg) match {
+      case Some(data) => data
+      case None       => null
+    }
     val bytes = service.serializer.serialize(msg)
-    sendToNode(receiverLoc.node, NamedSend(senderLoc, receiverLoc, msg.getClass.getName, bytes, session))
+    sendToNode(receiverLoc.node, NamedSend(senderLoc, receiverLoc, metadata, bytes, session))
   }
 
   private val actors = new HashMap[Symbol, OutputChannel[Any]]
@@ -118,12 +137,12 @@ private[remote] class NetKernel(val service: Service) {
             Debug.info(this+": lost message")
         }
 
-      case cmd@NamedSend(senderLoc, receiverLoc, clazzName, data, session) =>
+      case cmd@NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
         Debug.info(this+": processing "+cmd)
         actors.get(receiverLoc.name) match {
           case Some(a) =>
             try {
-              val msg = service.serializer.deserialize(clazzName, data)
+              val msg = service.serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
               val senderProxy = getOrCreateProxy(senderLoc.node, senderLoc.name)
               senderProxy.send(SendTo(a, msg, session), null)
             } catch {

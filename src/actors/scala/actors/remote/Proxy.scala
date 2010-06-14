@@ -23,6 +23,8 @@ private[remote] class Proxy(node: Node, name: Symbol, @transient var kernel: Net
   private[remote] var del: Actor = null
   startDelegate()
 
+  // TODO: i think we can remove both writeObject and readObject here- they aren't referenced by anything
+
   @throws(classOf[IOException])
   private def writeObject(out: ObjectOutputStream) {
     out.defaultWriteObject()
@@ -130,6 +132,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
         // Request from remote proxy.
         // `this` is local proxy.
         case cmd@SendTo(out, msg, session) =>
+          Debug.info("cmd@SendTo: " + cmd)
           if (session.name == "nosession") {
             // local send
             out.send(msg, this)
@@ -157,6 +160,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
         // local proxy receives response to
         // reply channel
         case ch ! resp =>
+          Debug.info("ch ! resp")
           // lookup session ID
           sessionMap.get(ch) match {
             case Some(sid) =>
@@ -171,6 +175,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
 
         // remote proxy receives request
         case msg: AnyRef =>
+          Debug.info("msg: AnyRef = " + msg)
           // find out whether it's a synchronous send
           if (sender.getClass.toString.contains("Channel")) {
             // create fresh session ID...
