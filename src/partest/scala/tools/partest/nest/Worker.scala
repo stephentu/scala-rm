@@ -43,6 +43,9 @@ class LogFile(parent: File, child: String) extends File(parent, child) {
   var toDelete = false
 }
 
+case class FileSync(waitFile: Option[File] /** File to wait for before running */, 
+                    flagFile: Option[File] /** File to create when running */)
+
 class Worker(val fileManager: FileManager) extends Actor {
   import fileManager._
 
@@ -194,12 +197,36 @@ class Worker(val fileManager: FileManager) extends Actor {
     success
   }
 
+  val waitTime = 10000 // 10 seconds
+
   /** Runs <code>command</code> redirecting standard out and
    *  error out to <code>output</code> file.
    */
-  def runCommand(command: String, output: File): Int = {
+  def runCommand(command: String, output: File, fileSync: Option[FileSync] = None): Int = {
+    fileSync match { 
+      case Some(FileSync(Some(waitFile),_)) => 
+        NestUI.verbose("Waiting for file: " + waitFile)
+        val stopTime = System.currentTimeMillis + waitTime
+        while (System.currentTimeMillis < stopTime && !waitFile.exists) {
+          Thread.sleep(500)
+        }
+        if (!waitFile.exists)
+          NestUI.verbose("TIMEOUT waiting for waitFile: " + waitFile)
+      case _ =>
+        NestUI.verbose("No wait file to wait for")
+    }
     NestUI.verbose("running command:\n"+command)
     val proc = Runtime.getRuntime.exec(command)
+    fileSync match {
+      case Some(FileSync(_,Some(flagFile))) => 
+        // it doesn't matter what we put in the flagFile, just as long as it
+        // exists
+        NestUI.verbose("Writing flag file: " + flagFile)
+        flagFile.createNewFile
+      case _ =>
+        /** Do nothing */
+        NestUI.verbose("no flag file to write")
+    }
     val in = proc.getInputStream
     val err = proc.getErrorStream
     val writer = new PrintWriter(new FileWriter(output), true)
@@ -215,7 +242,7 @@ class Worker(val fileManager: FileManager) extends Actor {
     catch { case _: IllegalThreadStateException => 0 }
   }
 
-  def execTest(outDir: File, logFile: File, fileBase: String) {
+  def execTest(outDir: File, logFile: File, fileBase: String, fileSync: Option[FileSync] = None) {
     // check whether there is a ".javaopts" file
     val argsFile = new File(logFile.getParentFile, fileBase+".javaopts")
     val argString = if (argsFile.exists) {
@@ -263,7 +290,7 @@ class Worker(val fileManager: FileManager) extends Actor {
       )
     ) mkString " "
     
-    runCommand(cmd, logFile)
+    runCommand(cmd, logFile, fileSync)
 
     if (fileManager.showLog) {
       // produce log as string in `log`
@@ -427,7 +454,7 @@ class Worker(val fileManager: FileManager) extends Actor {
           onSuccess(logFile, outDir)
       })
 
-    def runJvmTest(file: File, kind: String): LogContext =
+    def runJvmTest(file: File, kind: String, fileSync: Option[FileSync] = None): LogContext =
       runTestCommon(file, kind, expectFailure = false)((logFile, outDir) => {
         val fileBase = basename(file.getName)
         val dir      = file.getParentFile
@@ -440,12 +467,12 @@ class Worker(val fileManager: FileManager) extends Actor {
         // else
         //   execTestObjectRunner(file, outDir, logFile)
         // // NestUI.verbose(this+" finished running "+fileBase)
-        execTest(outDir, logFile, fileBase)
+        execTest(outDir, logFile, fileBase, fileSync)
 
         diffCheck(compareOutput(dir, fileBase, kind, logFile))
       })
 
-    def processSingleFile(file: File): LogContext = kind match {
+    def processSingleFile(file: File, fileSync: Option[FileSync] = None): LogContext = kind match {
       case "scalacheck" =>
         runTestCommon(file, kind, expectFailure = false)((logFile, outDir) => {
           val consFM = new ConsoleFileManager
@@ -489,7 +516,7 @@ class Worker(val fileManager: FileManager) extends Actor {
         })
 
       case "run" | "jvm" =>
-        runJvmTest(file, kind)
+        runJvmTest(file, kind, fileSync)
 
       case "buildmanager" =>
         val logFile = createLogFile(file, kind)
@@ -971,6 +998,13 @@ class Worker(val fileManager: FileManager) extends Actor {
     // maps canonical file names to the test result (0: OK, 1: FAILED, 2: TIMOUT)
     var status = new HashMap[String, Int]
 
+    def flagFileFor(file: File): File = {
+      new File(file.getParent, file.getName.replaceAll("\\.scala", ".flag"))
+    }
+
+    // purge all flag files if necessary
+    files.flatten.map(flagFileFor).foreach(_.delete)
+
     NestUI.verbose(files.toString)
     var fileGroupCnt = 1
     var filesSoFar = 0
@@ -984,7 +1018,10 @@ class Worker(val fileManager: FileManager) extends Actor {
         NestUI.verbose("initing file group: " + fileGroupCnt)
         for (fileCnt <- List.range(1, thisFileGroup.size + 1)) {
           actor {
-            val testFile = thisFileGroup(fileCnt-1)
+            val fileIdx = fileCnt - 1
+            val testFile = thisFileGroup(fileIdx)
+            val waitFile = if (fileIdx == 0) None else Some(flagFileFor(thisFileGroup(fileIdx - 1)))
+            val flagFile = if (fileCnt == thisFileGroup.size) None else Some(flagFileFor(thisFileGroup(fileIdx)))
             NestUI.verbose("actor is on file group " + fileGroupCnt + " and testFile " + fileCnt)
             val ontimeout = new TimerTask {
               def run() = parent ! Timeout(testFile)
@@ -992,7 +1029,8 @@ class Worker(val fileManager: FileManager) extends Actor {
             timer.schedule(ontimeout, fileManager.timeout.toLong)
 
             val context = try {
-              processSingleFile(testFile)
+              processSingleFile(testFile, 
+                  if (waitFile.isDefined || flagFile.isDefined) Some(FileSync(waitFile, flagFile)) else None)
             } catch {
               case t: Throwable =>
                 NestUI.verbose("while invoking compiler ("+files+"):")
