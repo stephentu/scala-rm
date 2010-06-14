@@ -3,6 +3,8 @@ import Actor._
 import remote._
 import RemoteActor._
 
+import scala.tools.partest.FileSync
+
 case class AMessage(msg: String)
 
 object A extends Actor {
@@ -22,5 +24,6 @@ object Test {
   def main(args: Array[String]) {
     println("Starting actor A...")
     A.start
+    FileSync.writeFlag()
   }
 }
