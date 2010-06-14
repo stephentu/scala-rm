@@ -39,7 +39,10 @@ extends ObjectInputStream(in) {
 /**
  *  @author Philipp Haller
  */
-class JavaSerializer(serv: Service, cl: ClassLoader) extends Serializer(serv) {
+class JavaSerializer(cl: ClassLoader) extends Serializer {
+
+  def uniqueId = 1679081588L
+
   def serialize(o: AnyRef): Array[Byte] = {
     val bos = new ByteArrayOutputStream()
     val out = new ObjectOutputStream(bos)
@@ -48,7 +51,7 @@ class JavaSerializer(serv: Service, cl: ClassLoader) extends Serializer(serv) {
     bos.toByteArray()
   }
 
-  def deserialize(bytes: Array[Byte]): AnyRef = {
+  def deserialize(c: String, bytes: Array[Byte]): AnyRef = {
     val bis = new ByteArrayInputStream(bytes)
 
     // use custom stream only if cl != null

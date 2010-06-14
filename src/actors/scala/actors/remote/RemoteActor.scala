@@ -55,12 +55,17 @@ object RemoteActor {
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>.
    */
-  def alive(port: Int): Unit = synchronized {
-    createNetKernelOnPort(port)
+  def alive(port: Int): Unit = alive(port, new JavaSerializer(cl))
+
+  def alive(port: Int, serializer: Serializer): Unit = synchronized {
+    createNetKernelOnPort(port, serializer)
   }
 
-  private def createNetKernelOnPort(port: Int): NetKernel = {
-    val serv = TcpService(port, cl)
+  private def createNetKernelOnPort(port: Int): NetKernel = 
+    createNetKernelOnPort(port, new JavaSerializer(cl))
+
+  private def createNetKernelOnPort(port: Int, serializer: Serializer): NetKernel = {
+    val serv = TcpService(port, cl, serializer)
     val kern = serv.kernel
     val s = Actor.self
     kernels += Pair(s, kern)
@@ -101,12 +106,14 @@ object RemoteActor {
     kernel.register(name, a)
   }
 
-  private def selfKernel = kernels.get(Actor.self) match {
+  private def selfKernel(serializer: Serializer) = kernels.get(Actor.self) match {
     case None =>
       // establish remotely accessible
       // return path (sender)
-      createNetKernelOnPort(TcpService.generatePort)
+      createNetKernelOnPort(TcpService.generatePort, serializer)
     case Some(k) =>
+      if (k.service.serializer != serializer)
+          throw new IllegalArgumentException("Cannot selfKernel with different serializer")
       k
   }
 
@@ -114,8 +121,11 @@ object RemoteActor {
    * Returns (a proxy for) the actor registered under
    * <code>name</code> on <code>node</code>.
    */
-  def select(node: Node, sym: Symbol): AbstractActor = synchronized {
-    selfKernel.getOrCreateProxy(node, sym)
+  def select(node: Node, sym: Symbol): AbstractActor = 
+    select(node, sym, new JavaSerializer(cl))
+
+  def select(node: Node, sym: Symbol, serializer: Serializer): AbstractActor = synchronized {
+    selfKernel(serializer).getOrCreateProxy(node, sym)
   }
 
   private[remote] def someNetKernel: NetKernel =

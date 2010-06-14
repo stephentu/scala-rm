@@ -28,12 +28,17 @@ object TcpService {
   private val random = new Random
   private val ports = new HashMap[Int, TcpService]
 
-  def apply(port: Int, cl: ClassLoader): TcpService =
+  def apply(port: Int, cl: ClassLoader): TcpService = apply(port, cl, new JavaSerializer(cl))
+
+  def apply(port: Int, cl: ClassLoader, serializer: Serializer): TcpService =
     ports.get(port) match {
       case Some(service) =>
+        if (service.serializer != serializer)
+          throw new IllegalArgumentException("Cannot apply with different serializer")
         service
       case None =>
-        val service = new TcpService(port, cl)
+        val service = new TcpService(port, cl, serializer)
+        serializer.service = service
         ports += Pair(port, service)
         service.start()
         Debug.info("created service at "+service.node)
@@ -62,13 +67,14 @@ object TcpService {
   var BufSize: Int = 65536
 }
 
+class InconsistentSerializerException extends RuntimeException
+
 /* Class TcpService.
  *
  * @version 0.9.10
  * @author Philipp Haller
  */
-class TcpService(port: Int, cl: ClassLoader) extends Thread with Service {
-  val serializer: JavaSerializer = new JavaSerializer(this, cl)
+class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends Thread with Service {
 
   private val internalNode = new Node(InetAddress.getLocalHost().getHostAddress(), port)
   def node: Node = internalNode
@@ -143,6 +149,7 @@ class TcpService(port: Int, cl: ClassLoader) extends Thread with Service {
         if (!shouldTerminate) {
           val worker = new TcpServiceWorker(this, nextClient)
           Debug.info("Started new "+worker)
+          worker.readSerializerId
           worker.readNode
           worker.start()
         } else
@@ -177,6 +184,7 @@ class TcpService(port: Int, cl: ClassLoader) extends Thread with Service {
   def connect(n: Node): TcpServiceWorker = synchronized {
     val socket = new Socket(n.address, n.port)
     val worker = new TcpServiceWorker(this, socket)
+    worker.sendSerializerId
     worker.sendNode(n)
     worker.start()
     addConnection(n, worker)
@@ -215,6 +223,19 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
   val dataout = new DataOutputStream(so.getOutputStream)
 
   var connectedNode: Node = _
+
+  def sendSerializerId {
+    dataout.writeLong(parent.serializer.uniqueId)
+  }
+
+  def readSerializerId {
+    val remoteId = datain.readLong
+    if (remoteId != parent.serializer.uniqueId) {
+      Debug.error(this + ": Inconsistent serializers found, terminating connection")
+      Debug.error(this + ": Expecting ID " + parent.serializer.uniqueId + ", but got ID " + remoteId)
+      throw new InconsistentSerializerException
+    }
+  }
 
   def sendNode(n: Node) {
     connectedNode = n

@@ -12,7 +12,7 @@ package remote
 
 import scala.collection.mutable.{HashMap, HashSet}
 
-case class NamedSend(senderLoc: Locator, receiverLoc: Locator, data: Array[Byte], session: Symbol)
+case class NamedSend(senderLoc: Locator, receiverLoc: Locator, clazzName: String, data: Array[Byte], session: Symbol)
 
 case class RemoteApply0(senderLoc: Locator, receiverLoc: Locator, rfun: Function2[AbstractActor, Proxy, Unit])
 case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractActor)
@@ -26,9 +26,10 @@ case class Locator(node: Node, name: Symbol)
  * @version 0.9.17
  * @author Philipp Haller
  */
-private[remote] class NetKernel(service: Service) {
+private[remote] class NetKernel(val service: Service) {
 
   def sendToNode(node: Node, msg: AnyRef) = {
+    service.send(node, service.serializer.serializeClassName(msg))
     val bytes = service.serializer.serialize(msg)
     service.send(node, bytes)
   }
@@ -36,7 +37,7 @@ private[remote] class NetKernel(service: Service) {
   def namedSend(senderLoc: Locator, receiverLoc: Locator,
                 msg: AnyRef, session: Symbol) {
     val bytes = service.serializer.serialize(msg)
-    sendToNode(receiverLoc.node, NamedSend(senderLoc, receiverLoc, bytes, session))
+    sendToNode(receiverLoc.node, NamedSend(senderLoc, receiverLoc, msg.getClass.getName, bytes, session))
   }
 
   private val actors = new HashMap[Symbol, OutputChannel[Any]]
@@ -117,17 +118,18 @@ private[remote] class NetKernel(service: Service) {
             Debug.info(this+": lost message")
         }
 
-      case cmd@NamedSend(senderLoc, receiverLoc, data, session) =>
+      case cmd@NamedSend(senderLoc, receiverLoc, clazzName, data, session) =>
         Debug.info(this+": processing "+cmd)
         actors.get(receiverLoc.name) match {
           case Some(a) =>
             try {
-              val msg = service.serializer.deserialize(data)
+              val msg = service.serializer.deserialize(clazzName, data)
               val senderProxy = getOrCreateProxy(senderLoc.node, senderLoc.name)
               senderProxy.send(SendTo(a, msg, session), null)
             } catch {
               case e: Exception =>
                 Debug.error(this+": caught "+e)
+                e.printStackTrace
             }
 
           case None =>
