@@ -149,7 +149,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
         if (!shouldTerminate) {
           val worker = new TcpServiceWorker(this, nextClient)
           Debug.info("Started new "+worker)
-          worker.readSerializerId
+          worker.sendSerializerId
           worker.readNode
           worker.start()
         } else
@@ -181,10 +181,11 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
     !connections.get(n).isEmpty
   }
 
+  @throws(classOf[InconsistentSerializerException])
   def connect(n: Node): TcpServiceWorker = synchronized {
     val socket = new Socket(n.address, n.port)
     val worker = new TcpServiceWorker(this, socket)
-    worker.sendSerializerId
+    worker.readSerializerId
     worker.sendNode(n)
     worker.start()
     addConnection(n, worker)
