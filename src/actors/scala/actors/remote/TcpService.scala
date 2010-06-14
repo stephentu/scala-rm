@@ -45,23 +45,23 @@ object TcpService {
         service
     }
 
+  private val tries = 10 /** Try up to 10 times to generate random port */
+
   def generatePort: Int = {
-    var portnum = 0
-    try {
-      portnum = 8000 + random.nextInt(500)
-      val socket = new ServerSocket(portnum)
-      socket.close()
+    var triesLeft = tries
+    while (triesLeft > 0) {
+      try {
+        val socket = new ServerSocket(0) // try any random port 
+        val portNum = socket.getLocalPort
+        socket.close()
+        return portNum
+      } catch {
+        case ioe: IOException =>
+          // taken?
+      }
+      triesLeft -= 1
     }
-    catch {
-      case ioe: IOException =>
-        // this happens when trying to open a socket twice
-        // at the same port
-        // try again
-        generatePort
-      case se: SecurityException =>
-        // do nothing
-    }
-    portnum
+    throw new IOException("Could not find port")
   }
 
   var BufSize: Int = 65536
