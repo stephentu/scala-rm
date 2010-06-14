@@ -13,7 +13,7 @@ package nest
 import java.io.File
 import scala.tools.nsc.io.{ Directory }
 
-class AntRunner extends DirectRunner {
+class AntRunner extends DirectRunner with FileGrouper {
   
   val fileManager = new FileManager {
     var JAVACMD: String = "java"
@@ -25,5 +25,5 @@ class AntRunner extends DirectRunner {
   }
   
   def reflectiveRunTestsForFiles(kindFiles: Array[File], kind: String) = 
-    runTestsForFiles(kindFiles.toList, kind)
+    runTestsForFiles(groupFiles(kindFiles.toList, kind), kind)
 }

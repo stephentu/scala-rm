@@ -17,7 +17,7 @@ import scala.tools.nsc.util.CommandLineParser
 import scala.tools.nsc.io
 import io.{ Path, Process }
 
-class ConsoleRunner extends DirectRunner {
+class ConsoleRunner extends DirectRunner with FileGrouper {
   import PathSettings.{ srcDir, testRoot }
   
   case class TestSet(kind: String, filter: Path => Boolean, msg: String)
@@ -181,7 +181,7 @@ class ConsoleRunner extends DirectRunner {
       case files  =>
         NestUI.verbose("test files: "+files)
         NestUI.outline("\n"+msg+"\n")
-        resultsToStatistics(runTestsForFiles(files, kind))
+        resultsToStatistics(runTestsForFiles(groupFiles(files, kind), kind))
     }
   }
 
@@ -197,7 +197,7 @@ class ConsoleRunner extends DirectRunner {
     val runTestsFileLists =
       for ((kind, files) <- valid groupBy kindOf toList) yield {
         NestUI.outline("\nTesting individual files\n")
-        resultsToStatistics(runTestsForFiles(files, kind))
+        resultsToStatistics(runTestsForFiles(groupFiles(files, kind), kind))
       }
 
     NestUI.verbose("Run sets: "+enabledSets)
