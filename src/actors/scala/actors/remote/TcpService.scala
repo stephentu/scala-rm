@@ -151,6 +151,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
           Debug.info("Started new "+worker)
           worker.sendSerializerId
           worker.readNode
+          worker.doServerHandshake
           worker.start()
         } else
           nextClient.close()
@@ -158,6 +159,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
     } catch {
       case e: Exception =>
         Debug.info(this+": caught "+e)
+        e.printStackTrace
     } finally {
       Debug.info(this+": shutting down...")
       connections foreach { case (_, worker) => worker.halt }
@@ -187,6 +189,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
     val worker = new TcpServiceWorker(this, socket)
     worker.readSerializerId
     worker.sendNode(n)
+    worker.doClientHandshake
     worker.start()
     addConnection(n, worker)
     worker
@@ -250,6 +253,14 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
         connectedNode = n
         parent.addConnection(n, this)
     }
+  }
+
+  def doClientHandshake {
+    parent.serializer.doClientHandshake(datain, dataout, parent.node)
+  }
+
+  def doServerHandshake {
+    parent.serializer.doServerHandshake(datain, dataout, parent.node)
   }
 
   def transmit(data: Array[Byte]): Unit = synchronized {

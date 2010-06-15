@@ -43,7 +43,7 @@ class JavaSerializer(cl: ClassLoader) extends Serializer {
 
   def uniqueId = 1679081588L
 
-  def serializeMetaData(message: AnyRef) = None
+  def serializeMetaData(message: AnyRef): Option[Array[Byte]] = None
 
   def serialize(o: AnyRef): Array[Byte] = {
     val bos = new ByteArrayOutputStream()

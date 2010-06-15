@@ -21,6 +21,20 @@ abstract class Serializer {
   var service: Service = _   
 
   /**
+   * Hook for the client-side of a handshake protocol
+   */
+  def doClientHandshake(inputStream: DataInputStream, outputStream: DataOutputStream, node: Node) {
+    // Do nothing
+  }
+
+  /**
+   * Hook for the server-side of a handshake protocol
+   */
+  def doServerHandshake(inputStream: DataInputStream, outputStream: DataOutputStream, node: Node) {
+    // Do nothing
+  }
+
+  /**
    * Given a message, optionally return any metadata about the message
    * serialized into a byte array
    */
