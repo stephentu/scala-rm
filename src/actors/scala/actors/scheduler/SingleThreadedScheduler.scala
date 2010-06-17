@@ -57,7 +57,9 @@ class SingleThreadedScheduler extends IScheduler {
   def terminated(actor: TrackedReactor) {}
 
   // TODO: run termination handlers at end of shutdown.
-  def onTerminate(actor: TrackedReactor)(f: => Unit) {}
+  def onTerminate(actor: TrackedReactor)(f: => Unit) {
+    Debug.warning("SingleThreadedScheduler does not properly implement onTerminate") 
+  }
 
   def isActive =
     !isShutdown

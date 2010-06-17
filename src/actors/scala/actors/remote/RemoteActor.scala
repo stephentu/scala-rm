@@ -52,28 +52,29 @@ object RemoteActor {
   def classLoader_=(x: ClassLoader) { cl = x }
 
   /**
+   * Default serializer instance, using Java serialization to implement
+   * serialization of objects.
+   */
+  def defaultSerializer: Serializer = new JavaSerializer(cl)
+
+  /**
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>.
    */
-  def alive(port: Int): Unit = alive(port, new JavaSerializer(cl))
-
-  def alive(port: Int, serializer: Serializer): Unit = synchronized {
-    createNetKernelOnPort(port, serializer)
+  def alive(port: Int, serializer: Serializer = defaultSerializer): Unit = synchronized {
+    createNetKernelOnPort(Actor.self, port, serializer)
   }
 
-  private def createNetKernelOnPort(port: Int): NetKernel = 
-    createNetKernelOnPort(port, new JavaSerializer(cl))
-
-  private def createNetKernelOnPort(port: Int, serializer: Serializer): NetKernel = {
+  private[remote] def createNetKernelOnPort(actor: Actor, port: Int, serializer: Serializer): NetKernel = {
+    Debug.info("createNetKernelOnPort: creating net kernel for actor " + actor + " on port " + port)
     val serv = TcpService(port, cl, serializer)
     val kern = serv.kernel
-    val s = Actor.self
-    kernels += Pair(s, kern)
+    kernels += Pair(actor, kern)
 
-    s.onTerminate {
-      Debug.info("alive actor "+s+" terminated")
-      // remove mapping for `s`
-      kernels -= s
+    actor.onTerminate {
+      Debug.info("alive actor "+actor+" terminated")
+      // remove mapping for `actor`
+      kernels -= actor
       // terminate `kern` when it does
       // not appear as value any more
       if (!kernels.valuesIterator.contains(kern)) {
@@ -88,43 +89,70 @@ object RemoteActor {
 
   @deprecated("this member is going to be removed in a future release")
   def createKernelOnPort(port: Int): NetKernel =
-    createNetKernelOnPort(port)
+    createNetKernelOnPort(Actor.self, port, defaultSerializer)
 
   /**
    * Registers <code>a</code> under <code>name</code> on this
    * node.
    */
-  def register(name: Symbol, a: Actor): Unit = synchronized {
-    val kernel = kernels.get(Actor.self) match {
-      case None =>
-        val serv = TcpService(TcpService.generatePort, cl)
-        kernels += Pair(Actor.self, serv.kernel)
-        serv.kernel
-      case Some(k) =>
-        k
-    }
+  def register(name: Symbol, a: Actor, serializer: Serializer = defaultSerializer): Unit = synchronized {
+    val kernel = kernelFor(a, serializer)
     kernel.register(name, a)
   }
 
-  private def selfKernel(serializer: Serializer) = kernels.get(Actor.self) match {
+  private def selfKernel(serializer: Serializer) = kernelFor(Actor.self, serializer)
+
+  private def kernelFor(a: Actor, serializer: Serializer) = kernels.get(a) match {
     case None =>
       // establish remotely accessible
       // return path (sender)
-      createNetKernelOnPort(TcpService.generatePort, serializer)
+      createNetKernelOnPort(a, TcpService.generatePort, serializer)
     case Some(k) =>
-      if (k.service.serializer != serializer)
-          throw new IllegalArgumentException("Cannot selfKernel with different serializer")
+      // serializer argument is ignored here in the case where we already have
+      // a NetKernel instance
       k
+  }
+
+  def remoteStart[A <: Actor, S <: Serializer](node: Node, 
+                                               serializer: Serializer,
+                                               actorClass: Class[A], 
+                                               port: Int, 
+                                               name: Symbol,
+                                               serializerClass: Option[Class[S]]) {
+    remoteStart(node, serializer, actorClass.getName, port, name, serializerClass.map(_.getName))
+  } 
+
+  def remoteStart(node: Node,
+                  serializer: Serializer,
+                  actorClass: String, 
+                  port: Int, 
+                  name: Symbol,
+                  serializerClass: Option[String]) {
+    val remoteActor = select(node, 'remoteStartActor, serializer)
+    remoteActor ! RemoteStart(actorClass, port, name, serializerClass)
+  }
+
+  private var remoteListenerStarted = false
+
+  def startListeners(): Unit = synchronized {
+    if (!remoteListenerStarted) {
+      RemoteStartActor.start
+      remoteListenerStarted = true
+    }
+  }
+
+  def stopListeners(): Unit = synchronized {
+    if (remoteListenerStarted) {
+      RemoteStartActor ! Terminate
+      remoteListenerStarted = false
+    }
   }
 
   /**
    * Returns (a proxy for) the actor registered under
    * <code>name</code> on <code>node</code>.
    */
-  def select(node: Node, sym: Symbol): AbstractActor = 
-    select(node, sym, new JavaSerializer(cl))
-
-  def select(node: Node, sym: Symbol, serializer: Serializer): AbstractActor = synchronized {
+  def select(node: Node, sym: Symbol, serializer: Serializer = defaultSerializer): AbstractActor = synchronized {
     selfKernel(serializer).getOrCreateProxy(node, sym)
   }
 

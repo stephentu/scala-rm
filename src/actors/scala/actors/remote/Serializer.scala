@@ -60,6 +60,14 @@ abstract class Serializer {
   /** Unique identifier used for this serializer */
   def uniqueId: Long
 
+  /** 
+   * Default equality method for serializers. Looks simply at the uniqueId field 
+   */
+  override def equals(o: Any): Boolean = o match {
+    case s: Serializer => uniqueId == s.uniqueId
+    case _             => false
+  }
+
   /** Expects data to be in format [ int, bytes ]. Returns null if the length
    * read is 0. */
   @throws(classOf[IOException])
