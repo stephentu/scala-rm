@@ -191,33 +191,41 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   private sealed abstract class RegisterInterestOp(val socket: SelectableChannel) {
     val op: Int /** SelectionKey.OP_XXX */
     def finish(): Unit
+    def finishWithError(ex: Throwable): Unit
   }
 
   private case class AcceptOp(override val socket: SelectableChannel) 
   extends RegisterInterestOp(socket) {
     override val op = SelectionKey.OP_ACCEPT
     override def finish() { } 
+    override def finishWithError(ex: Throwable) { }
   }
 
   private case class ConnectOp(override val socket: SelectableChannel, future: ConnectFuture)
   extends RegisterInterestOp(socket) {
     override val op = SelectionKey.OP_CONNECT
-    override def finish() { future.finished }
+    override def finish() { future.finish }
+    override def finishWithError(ex: Throwable) { future.finishWithError(ex) }
   }
 
   private class ConnectFuture(clientSocket: SocketChannel) {
-    var alreadyDone = false
+    var alreadyDone          = false
+    var exception: Throwable = _
     def await = {
       synchronized {
         if (!alreadyDone) wait
+        if (exception ne null) throw exception 
       }
     }
-    def finished = {
+    private def finish0(ex: Throwable) = {
       synchronized {
         alreadyDone = true
+        exception   = ex
         notifyAll
       }
     }
+    def finish = finish0(null)
+    def finishWithError(ex: Throwable) = finish0(ex)
   }
 
   /** Spawn the server */
@@ -253,10 +261,15 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   private val readBuffer = ByteBuffer.allocateDirect(8192) 
 
   private def selectLoop {
-    def finishKey(key: SelectionKey) {
+    def finishKey(key: SelectionKey) = finishKey0(key, None)
+    def finishKeyWithError(key: SelectionKey, ex: Throwable) = finishKey0(key, Some(ex))
+    def finishKey0(key: SelectionKey, ex: Option[Throwable]) {
       key.attachment match {
         case null                  => /* do nothing */
-        case r: RegisterInterestOp => r.finish()
+        case r: RegisterInterestOp => ex match {
+          case None    => r.finish()
+          case Some(e) => r.finishWithError(e)
+        }
       }
     }
 
@@ -287,8 +300,9 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
         case e: IOException =>
           // Cancel the channel's registration with our selector
           Debug.error(this + ": caught IO exception on finishing connect: " + e.getMessage)
+          finishKeyWithError(key, e)
           key.cancel
-        return
+          return
       }
 
       /** Key is already registered, so only need to change interest ops to read */
@@ -384,7 +398,8 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
         channelWriteQueue.synchronized {
           while (channelWriteQueue.isEmpty) {
             Debug.info(this + ": writeLoop waiting for data...")
-            channelWriteQueue.wait
+            channelWriteQueue.notifyAll // announce that the queue is now empty
+            channelWriteQueue.wait      // wait for an announcment that the queue is no longer empty
           }
           Debug.info(this + ": writeLoop awaken, writing data...")
           channelWriteQueue.retain { (chan, queue) => 
@@ -410,8 +425,8 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
                     queue.dequeue
                   } 
                 } catch {
-                  case e =>
-                    Debug.error(this + " caught exception when writing: " + e.getMessage)
+                  case ioe: IOException =>
+                    Debug.error(this + " caught IOException when writing to " + chan + ": " + ioe.getMessage)
                     keepTrying = false
                 } 
               }
@@ -452,37 +467,46 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
   /** Assumes that connectionMap lock is currently held, and
    *  assumes no valid connection to addr exists in connectionMap */
+  @throws(classOf[IOException])
   private def connect0(addr: InetSocketAddress) = {
     Debug.info(this + ": connect0 to " + addr)
     val clientSocket = SocketChannel.open
     clientSocket.configureBlocking(false)
     val connected = clientSocket.connect(addr)
-    connectionMap += addr -> clientSocket
-    if (connected) {
-      // TODO: do we need to change interest ops here?
-      Debug.info(this + ": connect0: connected immediately to " + addr)
-      clientSocket      
-    } else {
-      Debug.info(this + ": connect0: need to wait on future for " + addr)
-      val future = new ConnectFuture(clientSocket)
-      registerOpChange(ConnectOp(clientSocket, future))
-      /** Wakeup the blocking selector */
-      selector.wakeup
-      Debug.info(this + ": connect0: waiting on future")
-      future.await
-      Debug.info(this + ": connect0: connected!")
-      clientSocket
-    }
+    val sock = 
+      if (connected) {
+        // TODO: do we need to change interest ops here?
+        Debug.info(this + ": connect0: connected immediately to " + addr)
+        clientSocket
+      } else {
+        Debug.info(this + ": connect0: need to wait on future for " + addr)
+        val future = new ConnectFuture(clientSocket)
+        registerOpChange(ConnectOp(clientSocket, future))
+        /** Wakeup the blocking selector */
+        selector.wakeup
+        Debug.info(this + ": connect0: waiting on future")
+        future.await /** await() will throw exception if not properly connected */
+        Debug.info(this + ": connect0: connected!")
+        clientSocket
+      }
+    // only add to connection map if the socket is connected
+    connectionMap += addr -> sock
+    sock
   }
 
   def terminate() {
-    Debug.info(this + ": terminating: closing all remaining connections...")
-    // Terminate all remaining connections
-    connectionMap.synchronized {
-      connectionMap.valuesIterator.foreach(_.socket.close)
+    Debug.info(this + ": terminate: beginning termination sequence...")
+    connectionMap.synchronized { // no connections can be made now
+      channelWriteQueue.synchronized { // no new data can be placed on the queue now
+        while (!channelWriteQueue.isEmpty) { // wait until all writes have gone out
+          channelWriteQueue.wait             // writeLoop will announce when the queue is empty
+        }
+        Debug.info(this + ": terminate: closing all remaining connections...")
+        connectionMap.valuesIterator.foreach(_.socket.close) // now we can safely terminate all connections
+        Debug.info(this + ": terminate: stopping server socket...")
+        serverSocketChannel.close // Stop listening
+      }
     }
-    // Stop listening
-    serverSocketChannel.close
   }
 
   override def toString = "<NioService: " + node + ">"

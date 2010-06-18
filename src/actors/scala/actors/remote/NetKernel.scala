@@ -32,24 +32,31 @@ case class Locator(node: Node, name: Symbol)
  */
 private[remote] class NetKernel(val service: Service) {
 
+  import java.io.IOException
+
   def sendToNode(node: Node, msg: AnyRef) = {
     Debug.info("--NetKernel.sendToNode--")
     Debug.info("node: " + node)
     Debug.info("msg: " + msg)
-    service.serializer.serializeMetaData(msg) match {
-      case Some(data) => service.send(node, data)
-      case None       => service.send(node, Array[Byte]())
+    try {
+      service.serializer.serializeMetaData(msg) match {
+        case Some(data) => service.send(node, data)
+        case None       => service.send(node, Array[Byte]())
+      }
+      val bytes = service.serializer.serialize(msg)
+      service.send(node, bytes)
+    } catch {
+      case ioe: IOException =>
+        Debug.error("sendToNode: message " + msg + " dropped because: " + ioe.getMessage)
     }
-    val bytes = service.serializer.serialize(msg)
-    service.send(node, bytes)
   }
 
   def namedSend(senderLoc: Locator, receiverLoc: Locator,
                 msg: AnyRef, session: Symbol) {
-    Debug.info("--NetKernel.namedSend--")
-    Debug.info("senderLoc: " + senderLoc + ", receiverLoc: " + receiverLoc)
-    Debug.info("msg: " + msg)
-    Debug.info("session: " + session)
+    //Debug.info("--NetKernel.namedSend--")
+    //Debug.info("senderLoc: " + senderLoc + ", receiverLoc: " + receiverLoc)
+    //Debug.info("msg: " + msg)
+    //Debug.info("session: " + session)
 
     val metadata = service.serializer.serializeMetaData(msg) match {
       case Some(data) => data
