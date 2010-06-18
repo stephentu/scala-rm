@@ -100,8 +100,8 @@ object NestUI {
     exit(1)
   }
 
-  var _verbose = false
-  var _debug = false
+  var _verbose = true
+  var _debug = true
 
   def verbose(msg: String) {
     if (_verbose) {

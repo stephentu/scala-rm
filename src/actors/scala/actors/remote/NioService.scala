@@ -476,6 +476,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   }
 
   def terminate() {
+    Debug.info(this + ": terminating: closing all remaining connections...")
     // Terminate all remaining connections
     connectionMap.synchronized {
       connectionMap.valuesIterator.foreach(_.socket.close)
