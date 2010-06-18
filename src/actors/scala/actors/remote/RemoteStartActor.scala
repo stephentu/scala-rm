@@ -19,6 +19,7 @@ import RemoteActor._
 case class RemoteStart(actorClass: String,
                        port: Int,
                        name: Symbol,
+                       serviceFactory: Option[ServiceFactory],
                        serializerClass: Option[String])
 
 private[scala] object RemoteStartActor extends Actor {
@@ -63,7 +64,7 @@ private[scala] object RemoteStartActor extends Actor {
     Debug.info(this + ": started")
     loop {
       react {
-        case r @ RemoteStart(actorClass, port, name, serializerClass) =>
+        case r @ RemoteStart(actorClass, port, name, serviceFactory, serializerClass) =>
           Debug.info(this + ": remote start message: " + r)
           try {
             val actor = newActor(actorClass) 
@@ -71,7 +72,8 @@ private[scala] object RemoteStartActor extends Actor {
               case Some(clz) => newSerializer(clz)
               case None      => RemoteActor.defaultSerializer
             }
-            val kernel = RemoteActor.createNetKernelOnPort(actor, port, serializer)
+            val factory = serviceFactory.getOrElse(TcpServiceFactory) 
+            val kernel = RemoteActor.createNetKernelOnPort(actor, port, serializer, factory)
             kernel.register(name, actor)
             Debug.info(this + ": Starting new actor: " + actor)
             actor.start()

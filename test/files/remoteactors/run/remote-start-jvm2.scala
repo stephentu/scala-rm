@@ -17,6 +17,7 @@ object B extends Actor {
       "TestActor",
       8000,
       'testActor,
+      None,
       None)
   }
 

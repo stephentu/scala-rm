@@ -138,8 +138,9 @@ object RemoteActor {
                                                actorClass: Class[A], 
                                                port: Int, 
                                                name: Symbol,
+                                               serviceFactory: Option[ServiceFactory],
                                                serializerClass: Option[Class[S]]) {
-    remoteStart(node, serializer, actorClass.getName, port, name, serializerClass.map(_.getName))
+    remoteStart(node, serializer, actorClass.getName, port, name, serviceFactory, serializerClass.map(_.getName))
   } 
 
   def remoteStart(node: Node,
@@ -147,9 +148,10 @@ object RemoteActor {
                   actorClass: String, 
                   port: Int, 
                   name: Symbol,
+                  serviceFactory: Option[ServiceFactory],
                   serializerClass: Option[String]) {
     val remoteActor = select(node, 'remoteStartActor, serializer)
-    remoteActor ! RemoteStart(actorClass, port, name, serializerClass)
+    remoteActor ! RemoteStart(actorClass, port, name, serviceFactory, serializerClass)
   }
 
   private var remoteListenerStarted = false
