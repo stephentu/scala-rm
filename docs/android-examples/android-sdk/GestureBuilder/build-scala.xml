@@ -35,6 +35,9 @@
     <target name="scala-compile" depends="compile"
         description="Compiles project's .scala files into .class files"
         if="myapp.containsScala" unless="myapp.isUpToDate">
+        <condition property="logging" value="verbose" else="none">
+            <istrue value="${verbose}" />
+        </condition>
         <property prefix="scala"
             resource="compiler.properties"
             classpathref="scala.path" />
@@ -44,19 +47,33 @@
         <scalac
             srcdir="${source.dir}" includes="**/*.scala"
             destdir="${out.classes.dir}"
-            addparams="${scalac.addparams}">
+            logging="${logging}" addparams="${scalac.addparams}">
             <classpath>
+                <path refid="android.target.classpath" />
                 <pathelement location="${scala-library.jar}" />
-                <pathelement location="${android.jar}" />
                 <pathelement location="${out.classes.dir}" />
             </classpath>
         </scalac>
         <touch file="${out.dir}/classes.complete" verbose="no"/>
     </target>
 
-    <target name="scala-shrink" depends="scala-compile"
+    <target name="-adb-test" unless="myapp.isuptodate">
+        <echo
+            message="Checking if Scala libraries are installed on emulator or device..."
+            taskname="-adb-test" />
+        <exec executable="${adb}" failonerror="false" outputproperty="adb.out">
+            <arg line="${adb.device.arg}" />
+            <arg line="shell /bin/ls -s /data/framework/scala-*.jar" />
+        </exec>
+        <condition property="scala-shrink.notRequired"><or>
+            <contains string="${adb.out}" substring="/data/framework/scala-" />
+        </or></condition>
+        <echo message="${adb.out}" taskname="-adb-test" />
+    </target>
+
+    <target name="scala-shrink" depends="scala-compile, -adb-test"
         description="Shrink code size of Scala library"
-        if="myapp.containsScala">
+        if="myapp.containsScala" unless="scala-shrink.notRequired">
         <property
             name="scala-library-shrinked.jar"
             value="${out.dir}/scala-library-shrinked.jar" />

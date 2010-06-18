@@ -6,7 +6,7 @@ Builds the Scala applications targeted to the Android platform.
     </description>
 
     <property file="build.properties" />
-    <property name="configs.dir" value="${basedir}/configs" />
+    <property name="configs.ant.dir" value="${basedir}/configs/ant" />
 
     <!-- Setting-up Ant contrib tasks -->
     <taskdef
@@ -17,7 +17,9 @@ Builds the Scala applications targeted to the Android platform.
     <!-- Building list of project directories -->
     <pathconvert property="dirs" pathsep=",">
         <path>
-            <dirset dir="${basedir}" includes="*" excludes="bin,configs" />
+            <!-- TODO re-enable Mapsdemo example -->
+            <dirset dir="${basedir}" includes="*"
+                    excludes="bin,configs,MapsDemo" />
         </path>
     </pathconvert>
 
@@ -74,16 +76,16 @@ Builds the Scala applications targeted to the Android platform.
     </target>
 
     <target name="setenv">
-        <condition property="prop.file" value="${configs.dir}/ant-windows.properties">
+        <condition property="prop.file" value="${configs.ant.dir}/ant-windows.properties">
             <and>
                 <os family="windows" />
-                <available file="${configs.dir}/ant-windows.properties" />
+                <available file="${configs.ant.dir}/ant-windows.properties" />
             </and>
         </condition>
-        <condition property="prop.file" value="${configs.dir}/ant-unix.properties">
+        <condition property="prop.file" value="${configs.ant.dir}/ant-unix.properties">
             <and>
                 <os family="unix" />
-                <available file="${configs.dir}/ant-unix.properties" />
+                <available file="${configs.ant.dir}/ant-unix.properties" />
             </and>
         </condition>
         <echo message="Reading configuration settings from ${prop.file}" level="verbose" />
@@ -100,18 +102,26 @@ Builds the Scala applications targeted to the Android platform.
         <if><isset property="prop.file" />
         <then>
             <for list="${dirs}" param="dir"><sequential>
-                <replaceproperty
-                    name="sdk.dir"
-                    value="${os.sdk.dir}"
-                    dir="@{dir}"/>
-                <replaceproperty
-                    name="scala.dir"
-                    value="${os.scala.dir}"
-                    dir="@{dir}"/>
-                <replaceproperty
-                    name="yguard.dir"
-                    value="${os.yguard.dir}"
-                    dir="@{dir}"/>
+                <if>
+                    <not><available file="@{dir}/local.properties"/></not>
+                <then>
+                    <echo message="sdk.dir=${os.sdk.dir}${line.separator}scala.dir=${os.scala.dir}${line.separator}yguard.dir=${os.yguard.dir}${line.separator}"
+                          file="@{dir}/local.properties" />
+                </then>
+                <else>
+                    <replaceproperty
+                        name="sdk.dir"
+                        value="${os.sdk.dir}"
+                        file="@{dir}/local.properties"/>
+                    <replaceproperty
+                        name="scala.dir"
+                        value="${os.scala.dir}"
+                        file="@{dir}/local.properties"/>
+                    <replaceproperty
+                        name="yguard.dir"
+                        value="${os.yguard.dir}"
+                        file="@{dir}/local.properties"/>
+                </else></if>
                 <update.scala dir="@{dir}" />
             </sequential></for>
         </then>
@@ -196,12 +206,12 @@ Builds the Scala applications targeted to the Android platform.
     <macrodef name="replaceproperty">
         <attribute name="name" />
         <attribute name="value" />
-        <attribute name="dir" />
+        <attribute name="file" />
         <sequential>
             <replaceregexp byline="true">
                 <regexp pattern="^@{name}=(.*)"/>
                 <substitution expression="@{name}=@{value}"/>
-                <fileset dir="@{dir}" includes="build.properties"/>
+                <fileset file="@{file}"/>
             </replaceregexp>
         </sequential>
     </macrodef>
@@ -209,12 +219,12 @@ Builds the Scala applications targeted to the Android platform.
     <macrodef name="update.scala">
         <attribute name="dir" />
         <sequential>
-            <condition property="files.differ" value="${configs.dir}/build-scala.xml">
+            <condition property="files.differ" value="${configs.ant.dir}/build-scala.xml">
                 <and>
-                    <available file="${configs.dir}/build-scala.xml" />
+                    <available file="${configs.ant.dir}/build-scala.xml" />
                     <available file="@{dir}/build-scala.xml" />
                     <not>
-                        <filesmatch file1="${configs.dir}/build-scala.xml"
+                        <filesmatch file1="${configs.ant.dir}/build-scala.xml"
                                     file2="@{dir}/build-scala.xml"
                                     textfile="true" />
                     </not>
@@ -224,7 +234,7 @@ Builds the Scala applications targeted to the Android platform.
                 <isset property="files.differ" />
                 <then>
                      <echo message="Updating file @{dir}/build-scala.xml." />
-                     <copy file="${configs.dir}/build-scala.xml"
+                     <copy file="${configs.ant.dir}/build-scala.xml"
                            tofile="@{dir}/build-scala.xml" />
                 </then>
             </if>
