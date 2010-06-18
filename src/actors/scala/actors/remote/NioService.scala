@@ -58,7 +58,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   import NioService._
 
   private val internalNode = Node(InetAddress.getLocalHost.getHostAddress, port)
-  private val inetAddress  = internalNode.toInetSocketAddress
+  private val inetAddress  = new InetSocketAddress(port) 
   private val selector = SelectorProvider.provider.openSelector
   private val serverSocketChannel = ServerSocketChannel.open
 
@@ -99,10 +99,12 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   }
 
   private def enqueueOnChannel(chan: SocketChannel, bytes: ByteBuffer) {
+    Debug.info(this + ": enqueueOnChannel(chan = " + chan + ")")
     channelWriteQueue.synchronized {
       val queue = getQueueForChannel(chan)
       queue += bytes
       /** Signal to writeLoop that new data is available */
+      Debug.info(this + ": signaling to writeLoop of new data")
       channelWriteQueue.notifyAll
     }
   }
@@ -228,6 +230,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   private def serve() {
     serverSocketChannel.configureBlocking(false)
     serverSocketChannel.socket.bind(inetAddress)
+    /** Selector isn't running yet so we don't have to register in queue */
     serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT)
     Debug.info(this + ": Now serving on channel " + node)
     startSelectLoop
@@ -261,6 +264,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       /** For a channel to receive an accept even, it must be a server channel */
       val serverSocketChannel = key.channel.asInstanceOf[ServerSocketChannel]
       val clientSocketChannel = serverSocketChannel.accept
+      Debug.info(this + ": processAccept on channel " + serverSocketChannel + " from " + clientSocketChannel)
       clientSocketChannel.configureBlocking(false)
 
       /** This is OK to do because we're running in the same thread as the select loop */
@@ -276,6 +280,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
     def processConnect(key: SelectionKey) {
       val socketChannel = key.channel.asInstanceOf[SocketChannel]
+      Debug.info(this + ": processConnect on channel " + socketChannel)
       try {
         socketChannel.finishConnect
       } catch {
@@ -291,11 +296,13 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
       /** Don't need to register channel, since connect() already does that */
 
+      Debug.info(this + ": finishing connection to channel: " + socketChannel)
       finishKey(key)
     }
 
     def processRead(key: SelectionKey) {
       val socketChannel = key.channel.asInstanceOf[SocketChannel]
+      Debug.info(this + ": processRead on channel " + socketChannel)
       readBuffer.clear
       var bytesRead = 0
       try {
@@ -304,6 +311,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
         case e: IOException =>
         // The remote forcibly closed the connection! Cancel
         // the selection key and close the channel.
+        Debug.error(this + ": processRead caught IOException when reading from " + socketChannel + ": " + e.getMessage)
         key.cancel
         socketChannel.close
         return
@@ -311,10 +319,13 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       if (bytesRead == -1) {
         // Remote entity shut the socket down cleanly. Do the
         // same from our end and cancel the channel.
+        Debug.error(this + ": processRead - remote shutdown (read -1 bytes)")
         key.cancel
         socketChannel.close
         return
       }
+
+      Debug.info(this + ": read " + bytesRead + " bytes from channel: " + socketChannel)
       val chunk = new Array[Byte](bytesRead)
       readBuffer.rewind
       readBuffer.get(chunk) /** copy what we just read into chunk */
@@ -330,6 +341,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
     }
 
+    Debug.info(this + ": selectLoop started...")
     while (true) {
       try {
         registerQueue.synchronized {
@@ -338,7 +350,9 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
           }
           registerQueue.clear /** Flush queue because we've finished registering these ops */
         }
+        Debug.info(this + ": selectLoop calling select()")
         selector.select() /** This is a blocking operation */
+        Debug.info(this + ": selectLoop awaken from select()")
         val selectedKeys = selector.selectedKeys.iterator
         while (selectedKeys.hasNext) {
           val key = selectedKeys.next
@@ -364,24 +378,34 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   private def startWriteLoop = startAction(writeLoop) 
 
   private def writeLoop = {
+    Debug.info(this + ": writeLoop started...")
     while (true) {
       try {
         channelWriteQueue.synchronized {
-          if (channelWriteQueue.isEmpty)
+          while (channelWriteQueue.isEmpty) {
+            Debug.info(this + ": writeLoop waiting for data...")
             channelWriteQueue.wait
+          }
+          Debug.info(this + ": writeLoop awaken, writing data...")
           channelWriteQueue.retain { (chan, queue) => 
-            if (!chan.isConnected)
+            if (!chan.isConnected) {
+              Debug.info(this + ": writeLoop found unconnected channel in queue: " + chan)
               false
-            else {
-              var keepTrying = !queue.isEmpty
-              while (keepTrying) {
+            } else {
+              Debug.info(this + ": writeLoop writing data for queue in channel: " + chan)
+              var keepTrying = true
+              while (!queue.isEmpty && keepTrying) {
                 val buf = queue.head
+                Debug.info(this + ": writeLoop attempting to write buf " + buf)
                 try {
-                  chan.write(buf)
+                  val bytesWritten = chan.write(buf)
+                  Debug.info(this + ": writeLoop wrote " + bytesWritten + " bytes to " + chan)
                   if (buf.remaining > 0) {
                     /** This channel is not ready to write anymore, so move on */
+                    Debug.info(this + ": writeLoop found saturated channel: " + chan)
                     keepTrying = false 
                   } else {
+                    Debug.info(this + ": buf is empty " + buf)
                     /** Dequeue this buffer and move on */
                     queue.dequeue
                   } 
@@ -407,14 +431,19 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     val buf = ByteBuffer.allocate(4 + data.length)
     buf.putInt(data.length)
     buf.put(data)
+    buf.rewind /** Must rewind so that the buf can be read from */
     buf
   }
 
   def send(node: Node, data: Array[Byte]) {
-    enqueueOnChannel(getChannel(node), encodeMessage(data))
+    Debug.info(this + ": send to node: " + node)
+    val chan = getChannel(node)
+    val buf  = encodeMessage(data)
+    enqueueOnChannel(chan, buf)
   }
 
   def connect(addr: InetSocketAddress) = connectionMap.synchronized {
+    Debug.info(this + ": connect to " + addr)
     connectionMap.get(addr) match {
       case Some(chan) => chan
       case None       => connect0(addr)
@@ -424,17 +453,24 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   /** Assumes that connectionMap lock is currently held, and
    *  assumes no valid connection to addr exists in connectionMap */
   private def connect0(addr: InetSocketAddress) = {
+    Debug.info(this + ": connect0 to " + addr)
     val clientSocket = SocketChannel.open
     clientSocket.configureBlocking(false)
     val connected = clientSocket.connect(addr)
     connectionMap += addr -> clientSocket
     if (connected) {
       // TODO: do we need to change interest ops here?
+      Debug.info(this + ": connect0: connected immediately to " + addr)
       clientSocket      
     } else {
+      Debug.info(this + ": connect0: need to wait on future for " + addr)
       val future = new ConnectFuture(clientSocket)
       registerOpChange(ConnectOp(clientSocket, future))
+      /** Wakeup the blocking selector */
+      selector.wakeup
+      Debug.info(this + ": connect0: waiting on future")
       future.await
+      Debug.info(this + ": connect0: connected!")
       clientSocket
     }
   }
