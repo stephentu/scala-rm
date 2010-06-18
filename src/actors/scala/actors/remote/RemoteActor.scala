@@ -53,21 +53,37 @@ object RemoteActor {
 
   /**
    * Default serializer instance, using Java serialization to implement
-   * serialization of objects.
+   * serialization of objects. Not a val, so we can capture changes made
+   * to the classloader instance
    */
   def defaultSerializer: Serializer = new JavaSerializer(cl)
+
+  sealed abstract class ServiceFactory extends Function2[Int, Serializer, Service]
+
+  final object TcpServiceFactory extends ServiceFactory {
+    def apply(port: Int, serializer: Serializer): Service = TcpService(port, cl, serializer)
+  }
+
+  final object NioServiceFactory extends ServiceFactory {
+    def apply(port: Int, serializer: Serializer): Service = NioService(port, serializer)
+  }
 
   /**
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>.
    */
-  def alive(port: Int, serializer: Serializer = defaultSerializer): Unit = synchronized {
-    createNetKernelOnPort(Actor.self, port, serializer)
+  def alive(port: Int, 
+            serializer: Serializer = defaultSerializer, 
+            serviceFactory: ServiceFactory = TcpServiceFactory): Unit = synchronized {
+    createNetKernelOnPort(Actor.self, port, serializer, serviceFactory)
   }
 
-  private[remote] def createNetKernelOnPort(actor: Actor, port: Int, serializer: Serializer): NetKernel = {
+  private[remote] def createNetKernelOnPort(actor: Actor, 
+                                            port: Int, 
+                                            serializer: Serializer, 
+                                            serviceFactory: ServiceFactory): NetKernel = {
     Debug.info("createNetKernelOnPort: creating net kernel for actor " + actor + " on port " + port)
-    val serv = TcpService(port, cl, serializer)
+    val serv = serviceFactory(port, serializer)
     val kern = serv.kernel
     kernels += Pair(actor, kern)
 
@@ -89,26 +105,30 @@ object RemoteActor {
 
   @deprecated("this member is going to be removed in a future release")
   def createKernelOnPort(port: Int): NetKernel =
-    createNetKernelOnPort(Actor.self, port, defaultSerializer)
+    createNetKernelOnPort(Actor.self, port, defaultSerializer, TcpServiceFactory)
 
   /**
    * Registers <code>a</code> under <code>name</code> on this
    * node.
    */
-  def register(name: Symbol, a: Actor, serializer: Serializer = defaultSerializer): Unit = synchronized {
-    val kernel = kernelFor(a, serializer)
+  def register(name: Symbol, 
+               a: Actor, 
+               serializer: Serializer = defaultSerializer,
+               serviceFactory: ServiceFactory = TcpServiceFactory): Unit = synchronized {
+    val kernel = kernelFor(a, serializer, serviceFactory)
     kernel.register(name, a)
   }
 
-  private def selfKernel(serializer: Serializer) = kernelFor(Actor.self, serializer)
+  private def selfKernel(serializer: Serializer, serviceFactory: ServiceFactory) = 
+    kernelFor(Actor.self, serializer, serviceFactory)
 
-  private def kernelFor(a: Actor, serializer: Serializer) = kernels.get(a) match {
+  private def kernelFor(a: Actor, serializer: Serializer, serviceFactory: ServiceFactory) = kernels.get(a) match {
     case None =>
       // establish remotely accessible
       // return path (sender)
-      createNetKernelOnPort(a, TcpService.generatePort, serializer)
+      createNetKernelOnPort(a, TcpService.generatePort, serializer, serviceFactory)
     case Some(k) =>
-      // serializer argument is ignored here in the case where we already have
+      // serializer + factory arguments are ignored here in the case where we already have
       // a NetKernel instance
       k
   }
@@ -152,8 +172,11 @@ object RemoteActor {
    * Returns (a proxy for) the actor registered under
    * <code>name</code> on <code>node</code>.
    */
-  def select(node: Node, sym: Symbol, serializer: Serializer = defaultSerializer): AbstractActor = synchronized {
-    selfKernel(serializer).getOrCreateProxy(node, sym)
+  def select(node: Node, 
+             sym: Symbol, 
+             serializer: Serializer = defaultSerializer,
+             serviceFactory: ServiceFactory = TcpServiceFactory): AbstractActor = synchronized {
+    selfKernel(serializer, serviceFactory).getOrCreateProxy(node, sym)
   }
 
   private[remote] def someNetKernel: NetKernel =
@@ -173,4 +196,7 @@ object RemoteActor {
  *
  * @author Philipp Haller
  */
-case class Node(address: String, port: Int)
+case class Node(address: String, port: Int) {
+  import java.net.InetSocketAddress 
+  def toInetSocketAddress = new InetSocketAddress(address, port)
+}
