@@ -41,27 +41,36 @@ extends ObjectInputStream(in) {
  */
 class JavaSerializer(cl: ClassLoader) extends Serializer {
 
+  case object SendID
+  case object ExpectID
+  case object Resolved
+
+  val initialState = Some(SendID)
+
+  def nextHandshakeMessage = {
+    case SendID   => (ExpectID, Some(uniqueId))
+    case Resolved => (Resolved, None)
+  }
+
+  def handleHandshakeMessage = {
+    case (ExpectID, MyUniqueId) => Resolved
+  }
+
+  val MyUniqueId = uniqueId
+
   def uniqueId = 1679081588L
 
   def serializeMetaData(message: AnyRef): Option[Array[Byte]] = None
 
-  def serialize(o: AnyRef): Array[Byte] = {
-    val bos = new ByteArrayOutputStream()
-    val out = new ObjectOutputStream(bos)
-    out.writeObject(o)
-    out.flush()
-    bos.toByteArray()
-  }
+  def serialize(o: AnyRef): Array[Byte] = javaSerialize(o)
 
-  def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
-    val bis = new ByteArrayInputStream(bytes)
+  def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef =
+    if (cl eq null) javaDeserialize(metaData, bytes)
+    else {
+      // use custom class loader in this case
+      val bis = new ByteArrayInputStream(bytes)
+      val in  = new CustomObjectInputStream(bis, cl)
+      in.readObject()
+    }
 
-    // use custom stream only if cl != null
-    val in = if (cl != null)
-      new CustomObjectInputStream(bis, cl)
-    else
-      new ObjectInputStream(bis)
-
-    in.readObject()
-  }
 }

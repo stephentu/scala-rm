@@ -14,25 +14,45 @@ package remote
 
 import java.lang.ClassNotFoundException
 
-import java.io.{ByteArrayOutputStream, DataInputStream, DataOutputStream, EOFException, IOException}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, 
+                DataOutputStream, EOFException, IOException, ObjectInputStream,
+                ObjectOutputStream}
+
+class IllegalHandshakeStateException extends Exception
 
 abstract class Serializer {
 
   var service: Service = _   
 
-  /**
-   * Hook for the client-side of a handshake protocol
+  // Handshake management 
+
+  /** 
+   * Starting state of the handshake. 
+   * Return None if no handshake is desired, in which case the next two
+   * methods will never be called (and can thus return null)
    */
-  def doClientHandshake(inputStream: DataInputStream, outputStream: DataOutputStream, node: Node) {
-    // Do nothing
-  }
+  val initialState: Option[Any]
 
   /**
-   * Hook for the server-side of a handshake protocol
+   * Returns the next message to send to the other side in the handshake.
+   * The input is the current state, output is a tuple of 
+   * (next state, next message). Next message is None to signal completion
+   * of handshake.
    */
-  def doServerHandshake(inputStream: DataInputStream, outputStream: DataOutputStream, node: Node) {
-    // Do nothing
-  }
+  def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])]
+
+  /**
+   * Callback to receive the next message of the handshake from the other side.
+   * Input is a tuple of (current state, message to handle). Output is the
+   * next state transition.
+   */
+  def handleHandshakeMessage: PartialFunction[(Any, Any), Any]
+
+  def isHandshakeError(m: Any) = !(nextHandshakeMessage isDefinedAt m)
+
+  def isHandshakeError(m: (Any, Any)) = !(handleHandshakeMessage isDefinedAt m)
+
+  // Message serialization
 
   /**
    * Given a message, optionally return any metadata about the message
@@ -87,13 +107,18 @@ abstract class Serializer {
     }
   }
 
-  @throws(classOf[IOException]) @throws(classOf[ClassNotFoundException])
-  def readObject(inputStream: DataInputStream): AnyRef = {
+  private def readObjectBytes(inputStream: DataInputStream)(f: (Array[Byte], Array[Byte]) => AnyRef) = {
     val metaData = readBytes(inputStream)
     val data = readBytes(inputStream)
     if (data eq null)
       Debug.error("Empty length message received")
-    deserialize(if (metaData eq null) None else Some(metaData), data)
+    f(metaData, data)
+  }
+
+  @throws(classOf[IOException]) 
+  @throws(classOf[ClassNotFoundException])
+  def readObject(inputStream: DataInputStream): AnyRef = readObjectBytes(inputStream) {
+    (metaData, data) => deserialize(if (metaData eq null) None else Some(metaData), data)
   }
 
   /** Writes bytes in the format [ int, bytes ]. Requires bytes != null */
@@ -105,13 +130,48 @@ abstract class Serializer {
     outputStream.flush()
   }
 
+  private def writeObjectBytes(out: DataOutputStream)(f: => (Array[Byte], Array[Byte])) {
+    val (meta, data) = f
+    writeBytes(out, meta)
+    writeBytes(out, data)
+  }
+
   @throws(classOf[IOException])
   def writeObject(outputStream: DataOutputStream, obj: AnyRef) {
-    serializeMetaData(obj) match {
-      case Some(data) => writeBytes(outputStream, data)
-      case None       => writeBytes(outputStream, Array[Byte]())
+    writeObjectBytes(outputStream) {
+      val meta = serializeMetaData(obj) match {
+        case Some(data) => data
+        case None       => Array[Byte]()
+      }
+      val data = serialize(obj)
+      (meta, data)
     }
-    val bytes = serialize(obj)
-    writeBytes(outputStream, bytes)
   }
+
+  // Default java serialization methods to use during handshake process
+
+  def readJavaObject(inp: DataInputStream) = readObjectBytes(inp) {
+    (meta, data) => javaDeserialize(None, data)
+  }
+
+  def writeJavaObject(out: DataOutputStream, obj: AnyRef) {
+    writeObjectBytes(out) {
+      (Array[Byte](), javaSerialize(obj))
+    }
+  }
+
+  def javaSerialize(o: AnyRef): Array[Byte] = {
+    val bos = new ByteArrayOutputStream()
+    val out = new ObjectOutputStream(bos)
+    out.writeObject(o)
+    out.flush()
+    bos.toByteArray()
+  }
+
+  def javaDeserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
+    val bis = new ByteArrayInputStream(bytes)
+    val in  = new ObjectInputStream(bis)
+    in.readObject()
+  }
+
 }

@@ -15,7 +15,7 @@ import java.io.{ ByteArrayOutputStream,IOException }
 import java.net.{ InetAddress, InetSocketAddress, Socket }
 import java.nio.ByteBuffer
 import java.nio.channels.{ SelectionKey, Selector, 
-                           SelectableChannel, ServerSocketChannel, SocketChannel }
+                           ServerSocketChannel, SocketChannel }
 import java.nio.channels.spi.SelectorProvider
 
 import scala.collection.mutable.{ HashMap, ListBuffer, Queue }
@@ -109,15 +109,24 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     }
   }
 
-  sealed trait ChannelStateEnum
-  /** In the middle of reading the message size header (4 bytes) */
-  case object ReadingSize extends ChannelStateEnum
-  /** In the middle of reading the variable size message */
-  case object ReadingMessage extends ChannelStateEnum
+  private class ChannelState(chan: SocketChannel) {
+    val messageState   = new MessageState
+    val handshakeState = serializer.initialState.map(new HandshakeState(chan, _)) 
+    def reset {
+      messageState.reset
+      handshakeState.foreach(_.reset)
+    }
+  }
 
-  private class ChannelState {
+  sealed trait MessageStateEnum
+  /** In the middle of reading the message size header (4 bytes) */
+  case object ReadingSize extends MessageStateEnum
+  /** In the middle of reading the variable size message */
+  case object ReadingMessage extends MessageStateEnum
+
+  private class MessageState {
     var buffer = ByteBuffer.allocate(4)
-    var state: ChannelStateEnum = ReadingSize
+    var state: MessageStateEnum = ReadingSize
     var messageSize  = 4
     val messageQueue = new Queue[Array[Byte]]
 
@@ -180,52 +189,142 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
   }
 
-  private def getChannelState(chan: SocketChannel) = channelMap.get(chan) match {
-    case Some(state) => state
-    case None        =>
-      val state = new ChannelState
-      channelMap += chan -> state
-      state
+  /** Use a trait instead of boolean because its more readible */
+  sealed trait  SendOrReceive
+  case   object Send          extends SendOrReceive
+  case   object Receive       extends SendOrReceive
+
+  private class HandshakeState(chan: SocketChannel, initialState: Any) {
+    var done     = false
+    var curState = initialState
+    var sendOrReceive: SendOrReceive = Send
+    var future   = new Future(chan)
+
+    def isSending   = sendOrReceive == Send
+    def isReceiving = sendOrReceive == Receive
+
+    def nextHandshakeMessage = {
+      assert(!done && isSending) 
+      if (serializer.nextHandshakeMessage.isDefinedAt(curState)) {
+        val (nextState, nextMsg) = serializer.nextHandshakeMessage.apply(curState)
+        curState = nextState
+        flip
+        nextMsg match {
+          case Some(_) => nextMsg
+          case None    =>
+            done = true
+            None
+        }
+      } else 
+        future.finishWithError(new IllegalHandshakeStateException)
+    }
+
+    def handleNextMessage(m: Any) {
+      assert(!done && isReceiving)
+      if (serializer.handleHandshakeMessage.isDefinedAt((curState, m))) {
+        val nextState = serializer.handleHandshakeMessage((curState, m))
+        curState = nextState
+        flip
+      } else 
+        future.finishWithError(new IllegalHandshakeStateException)
+    }
+
+    def sendOnce {
+      nextHandshakeMessage match {
+        case Some(message) =>
+          /** Send message away */
+          enqueueOnChannel(chan, encodeMessage(Array[Byte]())) /** No metadata for java serialization */
+          enqueueOnChannel(chan, encodeMessage(serializer.javaSerialize(message.asInstanceOf[AnyRef])))
+        case None          => 
+          /** Finished with handshake */
+          assert(done)
+          future.finish
+      }
+    }
+
+    def processMessage(m: Any) {
+      handleNextMessage(m)
+      sendOnce
+    }
+
+    def flip {
+      assert (!done)
+      sendOrReceive match {
+        case Send    => sendOrReceive = Receive
+        case Receive => sendOrReceive = Send
+      }
+    }
+
+    def reset {
+      done          = false
+      curState      = initialState
+      sendOrReceive = Send
+      future        = new Future(chan)
+    }
+
   }
-  
-  private sealed abstract class RegisterInterestOp(val socket: SelectableChannel) {
-    val op: Int /** SelectionKey.OP_XXX */
+
+  private def getChannelState(chan: SocketChannel) = channelMap.synchronized {
+    channelMap.get(chan) match {
+      case Some(state) => state
+      case None        =>
+        val state   = new ChannelState(chan)
+        channelMap += chan -> state
+        state
+    }
+  }
+
+  private def allChannelStates = channelMap.synchronized {
+    channelMap.valuesIterator.toList /** We want the copy */
+  }
+
+  private trait Finishable {
     def finish(): Unit
     def finishWithError(ex: Throwable): Unit
   }
+  
+  private sealed abstract class RegisterInterestOp(val socket: SocketChannel) 
+  extends Finishable {
+    val op: Int /** SelectionKey.OP_XXX */
+  }
 
-  private case class AcceptOp(override val socket: SelectableChannel) 
+  private case class AcceptOp(override val socket: SocketChannel) 
   extends RegisterInterestOp(socket) {
     override val op = SelectionKey.OP_ACCEPT
     override def finish() { } 
     override def finishWithError(ex: Throwable) { }
   }
 
-  private case class ConnectOp(override val socket: SelectableChannel, future: ConnectFuture)
+  private case class ConnectOp(override val socket: SocketChannel, future: Future)
   extends RegisterInterestOp(socket) {
     override val op = SelectionKey.OP_CONNECT
-    override def finish() { future.finish }
+    override def finish() { 
+      assert(socket.isConnected)
+      /** Bootstrap the handshake, before awaking connect0() */
+      getChannelState(socket).handshakeState.foreach(_.sendOnce)
+      future.finish 
+    }
     override def finishWithError(ex: Throwable) { future.finishWithError(ex) }
   }
 
-  private class ConnectFuture(clientSocket: SocketChannel) {
+  private class Future(clientSocket: SocketChannel) extends Finishable {
     var alreadyDone          = false
     var exception: Throwable = _
-    def await = {
+    def await() {
       synchronized {
-        if (!alreadyDone) wait
+        if (!alreadyDone)      wait
         if (exception ne null) throw exception 
       }
     }
-    private def finish0(ex: Throwable) = {
+    private def finish0(ex: Throwable) {
       synchronized {
         alreadyDone = true
         exception   = ex
         notifyAll
       }
     }
-    def finish = finish0(null)
-    def finishWithError(ex: Throwable) = finish0(ex)
+    def finish()                       { finish0(null) }
+    def finishWithError(ex: Throwable) { finish0(ex)   }
   }
 
   /** Spawn the server */
@@ -249,7 +348,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     val t = new Thread(new Runnable {
       override def run = action
     })
-    t.setDaemon(true)
+    t.setDaemon(true) /** Set daemon so we don't have to worry about explicit termination */
     t.start
   }
 
@@ -261,16 +360,19 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   private val readBuffer = ByteBuffer.allocateDirect(8192) 
 
   private def selectLoop {
+
     def finishKey(key: SelectionKey) = finishKey0(key, None)
     def finishKeyWithError(key: SelectionKey, ex: Throwable) = finishKey0(key, Some(ex))
     def finishKey0(key: SelectionKey, ex: Option[Throwable]) {
       key.attachment match {
-        case null                  => /* do nothing */
-        case r: RegisterInterestOp => ex match {
+        case null          => /* do nothing */
+        case r: Finishable => ex match {
           case None    => r.finish()
           case Some(e) => r.finishWithError(e)
         }
+        case u             => Debug.error(this + ": found unfinishable key as attachment: " + u)
       }
+      key.attach(null) /** Discard attachment after usage */
     }
 
     def processAccept(key: SelectionKey) {
@@ -283,11 +385,19 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       /** This is OK to do because we're running in the same thread as the select loop */
       clientSocketChannel.register(selector, SelectionKey.OP_READ)
 
-      registerChannel(
-        new InetSocketAddress(clientSocketChannel.socket.getInetAddress, 
-                              clientSocketChannel.socket.getPort),
-        clientSocketChannel)
+      registerChannel(clientSocketChannel.socket, clientSocketChannel)
 
+      key.attach(new Finishable {
+        def finish() {
+          val state = getChannelState(clientSocketChannel) 
+          /** Bootstrap the handshake */
+          state.handshakeState.foreach(_.sendOnce)
+        }
+        /** shouldn't be called */
+        def finishWithError(ex: Throwable) { throw ex }
+      })
+
+      /** finish key w/ handshake bootstrap */
       finishKey(key)
     }
 
@@ -310,32 +420,45 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
       /** Don't need to register channel, since connect() already does that */
 
+      /** Don't need to boostrap handshake, since connect0() does that */
+
       Debug.info(this + ": finishing connection to channel: " + socketChannel)
       finishKey(key)
     }
 
     def processRead(key: SelectionKey) {
+
       val socketChannel = key.channel.asInstanceOf[SocketChannel]
+      val state = getChannelState(socketChannel)
+
+      def tearDownChannel(ex: Throwable) {
+        key.cancel
+        socketChannel.close
+        state.handshakeState.foreach(_.future.finishWithError(ex))
+      }
+
       Debug.info(this + ": processRead on channel " + socketChannel)
+
       readBuffer.clear
       var bytesRead = 0
+
       try {
         bytesRead = socketChannel.read(readBuffer)
       } catch {
         case e: IOException =>
         // The remote forcibly closed the connection! Cancel
         // the selection key and close the channel.
-        Debug.error(this + ": processRead caught IOException when reading from " + socketChannel + ": " + e.getMessage)
-        key.cancel
-        socketChannel.close
+        Debug.error(this + ": processRead caught IOException when reading from " + 
+            socketChannel + ": " + e.getMessage)
+        tearDownChannel(e)
         return
       }
+
       if (bytesRead == -1) {
         // Remote entity shut the socket down cleanly. Do the
         // same from our end and cancel the channel.
         Debug.error(this + ": processRead - remote shutdown (read -1 bytes)")
-        key.cancel
-        socketChannel.close
+        tearDownChannel(new IllegalHandshakeStateException)
         return
       }
 
@@ -344,13 +467,36 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       readBuffer.rewind
       readBuffer.get(chunk) /** copy what we just read into chunk */
 
-      val state = getChannelState(socketChannel)
-      state.consume(chunk)
+      /** Comsume the chunk into the message state handler */
+      state.messageState.consume(chunk)
 
-      while (state.hasSerializerMessage) {
-        val (meta, data) = state.nextSerializerMessage
+      def forwardKernel(meta: Array[Byte], data: Array[Byte]) {
         val msg = serializer.deserialize(Some(meta), data)
         kernel.processMsg(socketChannel.socket, msg)
+      }
+
+      def forwardHandshake(meta: Array[Byte], data: Array[Byte]) {
+        val handshakeState = state.handshakeState.get
+        assert(!handshakeState.done && handshakeState.isReceiving)
+        val msg = serializer.javaDeserialize(Some(meta), data)
+        handshakeState.processMessage(msg)
+      }
+
+      while (state.messageState.hasSerializerMessage) {
+        val (meta, data) = state.messageState.nextSerializerMessage
+        state.handshakeState match {
+          case Some(handshakeState) =>
+            if (handshakeState.done)
+              forwardKernel(meta, data)
+            else if (handshakeState.isReceiving)
+              forwardHandshake(meta, data)
+            else {
+              Debug.error(this + ": processRead - handshake should never be sending here")
+              tearDownChannel(new IllegalHandshakeStateException)
+            }
+          case None                 => 
+            forwardKernel(meta, data)
+        }
       }
 
     }
@@ -480,33 +626,49 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
         clientSocket
       } else {
         Debug.info(this + ": connect0: need to wait on future for " + addr)
-        val future = new ConnectFuture(clientSocket)
+        val future = new Future(clientSocket)
         registerOpChange(ConnectOp(clientSocket, future))
         /** Wakeup the blocking selector */
         selector.wakeup
         Debug.info(this + ": connect0: waiting on future")
-        future.await /** await() will throw exception if not properly connected */
-        Debug.info(this + ": connect0: connected!")
+        future.await /** await() will throw exception if not 
+                       * properly connected. Bootstrap of the handshake
+                       * is done in the future */
+        getChannelState(clientSocket).handshakeState match {
+          case Some(state) => 
+            Debug.info(this + ": connect0: waiting for handshake to complete...")
+            state.future.await
+          case None        =>
+            Debug.info(this + ": connect0: no handshake state; done")
+        }
         clientSocket
       }
     // only add to connection map if the socket is connected
     connectionMap += addr -> sock
+    Debug.info(this + ": connect0: finished connection to " + addr)
     sock
   }
 
   def terminate() {
-    Debug.info(this + ": terminate: beginning termination sequence...")
-    connectionMap.synchronized { // no connections can be made now
-      channelWriteQueue.synchronized { // no new data can be placed on the queue now
-        while (!channelWriteQueue.isEmpty) { // wait until all writes have gone out
-          channelWriteQueue.wait             // writeLoop will announce when the queue is empty
-        }
-        Debug.info(this + ": terminate: closing all remaining connections...")
-        connectionMap.valuesIterator.foreach(_.socket.close) // now we can safely terminate all connections
-        Debug.info(this + ": terminate: stopping server socket...")
-        serverSocketChannel.close // Stop listening
-      }
-    }
+    //Debug.info(this + ": terminate: beginning termination sequence...")
+    //connectionMap.synchronized { // no connections can be made now
+    //  
+    //  // Finish all in progress handshakes first by waiting on their futures 
+    //  // This is necessary so that all remaining messages can be sent
+    //  allChannelStates foreach (_.handshakeState.foreach(_.future.await))
+    //  Debug.info(this + ": terminate: all handshakes completed...")
+
+    //  channelWriteQueue.synchronized { // no new data can be placed on the queue now
+    //    while (!channelWriteQueue.isEmpty) { // wait until all writes have gone out
+    //      channelWriteQueue.wait             // writeLoop will announce when the queue is empty
+    //    }
+    //    Debug.info(this + ": terminate: closing all remaining connections...")
+    //    connectionMap.valuesIterator.foreach(_.socket.close) // now we can safely terminate all connections
+    //    Debug.info(this + ": terminate: stopping server socket...")
+    //    serverSocketChannel.close // Stop listening
+    //  }
+
+    //}
   }
 
   override def toString = "<NioService: " + node + ">"

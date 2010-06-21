@@ -93,6 +93,7 @@ private[remote] class NetKernel(val service: Service) {
   }
 
   def forward(from: OutputChannel[Any], node: Node, name: Symbol, msg: AnyRef, session: Symbol) {
+    // TODO: don't use service.node, but instead use from addr not server addr
     val senderLoc = Locator(service.node, getOrCreateName(from))
     val receiverLoc = Locator(node, name)
     namedSend(senderLoc, receiverLoc, msg, session)

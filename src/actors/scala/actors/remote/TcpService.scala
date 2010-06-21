@@ -149,9 +149,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
         if (!shouldTerminate) {
           val worker = new TcpServiceWorker(this, nextClient)
           Debug.info("Started new "+worker)
-          worker.sendSerializerId
-          worker.readNode
-          worker.doServerHandshake
+          worker.doHandshake
           worker.start()
         } else
           nextClient.close()
@@ -187,9 +185,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
   def connect(n: Node): TcpServiceWorker = synchronized {
     val socket = new Socket(n.address, n.port)
     val worker = new TcpServiceWorker(this, socket)
-    worker.readSerializerId
-    worker.sendNode(n)
-    worker.doClientHandshake
+    worker.doHandshake
     worker.start()
     addConnection(n, worker)
     worker
@@ -226,41 +222,52 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
   val datain = new DataInputStream(so.getInputStream)
   val dataout = new DataOutputStream(so.getOutputStream)
 
-  var connectedNode: Node = _
+  val connectedNode = Node(so.getInetAddress.getHostName, so.getPort) 
 
-  def sendSerializerId {
-    dataout.writeLong(parent.serializer.uniqueId)
-  }
+  def doHandshake {
+    val s = parent.serializer
+    s.initialState match {
+      case Some(initialState) =>
 
-  def readSerializerId {
-    val remoteId = datain.readLong
-    if (remoteId != parent.serializer.uniqueId) {
-      Debug.error(this + ": Inconsistent serializers found, terminating connection")
-      Debug.error(this + ": Expecting ID " + parent.serializer.uniqueId + ", but got ID " + remoteId)
-      throw new InconsistentSerializerException
+        var curState = initialState
+
+        def getNextMessage =
+          if (s.nextHandshakeMessage.isDefinedAt(curState)) {
+            val (nextState, nextMsg) = s.nextHandshakeMessage.apply(curState)
+            curState = nextState
+            nextMsg
+          } else
+            throw new IllegalHandshakeStateException
+
+        def handleNextMessage(msg: Any) {
+          if (s.handleHandshakeMessage.isDefinedAt((curState, msg))) {
+            val nextState = s.handleHandshakeMessage.apply((curState, msg))
+            curState = nextState
+          } else
+            throw new IllegalHandshakeStateException
+        }
+
+        def sendMessage(msg: Any) {
+          s.writeJavaObject(dataout, msg.asInstanceOf[AnyRef])
+        }
+
+        def readMessage: AnyRef = {
+          s.readJavaObject(datain).asInstanceOf[AnyRef]
+        }
+            
+        var continue = true
+
+        while (continue) {
+          getNextMessage match {
+            case Some(msg) => sendMessage(msg)
+            case None      => continue = false
+          }
+          if (continue) handleNextMessage(readMessage)
+        }
+
+      case None =>
+        /** Do nothing; skip handshake */
     }
-  }
-
-  def sendNode(n: Node) {
-    connectedNode = n
-    parent.serializer.writeObject(dataout, parent.node)
-  }
-
-  def readNode {
-    val node = parent.serializer.readObject(datain)
-    node match {
-      case n: Node =>
-        connectedNode = n
-        parent.addConnection(n, this)
-    }
-  }
-
-  def doClientHandshake {
-    parent.serializer.doClientHandshake(datain, dataout, parent.node)
-  }
-
-  def doServerHandshake {
-    parent.serializer.doServerHandshake(datain, dataout, parent.node)
   }
 
   def transmit(data: Array[Byte]): Unit = synchronized {
