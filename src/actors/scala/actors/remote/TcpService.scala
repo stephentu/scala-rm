@@ -17,66 +17,26 @@ import java.lang.{Thread, SecurityException}
 import java.net.{InetAddress, ServerSocket, Socket, UnknownHostException}
 
 import scala.collection.mutable.HashMap
-import scala.util.Random
 
 /* Object TcpService.
  *
  * @version 0.9.9
  * @author Philipp Haller
  */
-object TcpService {
-  private val random = new Random
-  private val ports = new HashMap[Int, TcpService]
-
-  def apply(port: Int, cl: ClassLoader): TcpService = apply(port, cl, new JavaSerializer(cl))
-
-  def apply(port: Int, cl: ClassLoader, serializer: Serializer): TcpService =
-    ports.get(port) match {
-      case Some(service) =>
-        if (service.serializer != serializer)
-          throw new IllegalArgumentException("Cannot apply with different serializer")
-        service
-      case None =>
-        val service = new TcpService(port, cl, serializer)
-        serializer.service = service
-        ports += Pair(port, service)
-        service.start()
-        Debug.info("created service at "+service.node)
-        service
-    }
-
-  private val tries = 10 /** Try up to 10 times to generate random port */
-
-  def generatePort: Int = {
-    var triesLeft = tries
-    while (triesLeft > 0) {
-      try {
-        val socket = new ServerSocket(0) // try any random port 
-        val portNum = socket.getLocalPort
-        socket.close()
-        return portNum
-      } catch {
-        case ioe: IOException =>
-          // taken?
-      }
-      triesLeft -= 1
-    }
-    throw new IOException("Could not find port")
-  }
-
+object TcpService extends ServiceCreator {
+  type MyService = TcpService
+  def newService(port: Int, serializer: Serializer) = new TcpService(port, serializer)
   var BufSize: Int = 65536
 }
-
-class InconsistentSerializerException extends RuntimeException
 
 /* Class TcpService.
  *
  * @version 0.9.10
  * @author Philipp Haller
  */
-class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends Thread with Service {
+class TcpService(port: Int, val serializer: Serializer) extends Thread with Service {
 
-  private val internalNode = new Node(InetAddress.getLocalHost().getHostAddress(), port)
+  private val internalNode = new Node(InetAddress.getLocalHost.getHostAddress, port)
   def node: Node = internalNode
 
   private val pendingSends = new HashMap[Node, List[Array[Byte]]]
@@ -106,6 +66,10 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
         try {
           val newWorker = connect(node)
           newWorker transmit data
+
+          // TODO: i don't think this is right- you should try to send your
+          // pending sends first, before sending the current message to 
+          // preserve order
 
           // any pending sends?
           pendingSends.get(node) match {
@@ -167,8 +131,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
 
   // connection management
 
-  private val connections =
-    new scala.collection.mutable.HashMap[Node, TcpServiceWorker]
+  private val connections = new HashMap[Node, TcpServiceWorker]
 
   private[actors] def addConnection(node: Node, worker: TcpServiceWorker) = synchronized {
     connections += Pair(node, worker)
@@ -182,7 +145,6 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
     !connections.get(n).isEmpty
   }
 
-  @throws(classOf[InconsistentSerializerException])
   def connect(n: Node): TcpServiceWorker = synchronized {
     Debug.info(this + ": connect(n = " + n + ")")
     val socket = new Socket(n.address, n.port)

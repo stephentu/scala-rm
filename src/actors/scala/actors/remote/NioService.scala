@@ -20,37 +20,11 @@ import java.nio.channels.spi.SelectorProvider
 
 import scala.collection.mutable.{ HashMap, ListBuffer, Queue }
 
-object NioService {
+object NioService extends ServiceCreator with NodeImplicits {
 
-  private val ports = new HashMap[Int, NioService]
-
-  implicit def nodeToInetAddress(node: Node): InetSocketAddress = 
-    node.toInetSocketAddress
-
-  implicit def inetAddressToNode(addr: InetSocketAddress): Node =
-    Node(addr.getHostName, addr.getPort)
-
-  implicit def socketToInetSocketAddress(socket: Socket): InetSocketAddress = 
-    new InetSocketAddress(socket.getInetAddress, socket.getPort)
-
-  implicit def socketToNode(socket: Socket): Node =
-    inetAddressToNode(socketToInetSocketAddress(socket))
-
-  def apply(port: Int, serializer: Serializer) = ports.synchronized {
-    ports.get(port) match {
-      case Some(service) =>
-        if (service.serializer != serializer)
-          throw new IllegalArgumentException("Cannot apply with different serializer")
-        service
-      case None =>
-        val service = new NioService(port, serializer)
-        serializer.service = service
-        ports += Pair(port, service)
-        service.start()
-        Debug.info("created NIO service at "+service.node)
-        service
-    }
-  }
+  type MyService = NioService
+    
+  def newService(port: Int, serializer: Serializer) = new NioService(port, serializer)
 
 }
 

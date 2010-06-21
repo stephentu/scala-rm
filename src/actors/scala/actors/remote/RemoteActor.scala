@@ -44,7 +44,8 @@ object RemoteActor {
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
-   * objects sent as messages.
+   * java objects sent as messages. Custom serializers are free to ignore this
+   * field (especially since it probably doesn't apply).
    */
   private var cl: ClassLoader = null
 
@@ -61,7 +62,7 @@ object RemoteActor {
   sealed abstract class ServiceFactory extends Function2[Int, Serializer, Service]
 
   final object TcpServiceFactory extends ServiceFactory {
-    def apply(port: Int, serializer: Serializer): Service = TcpService(port, cl, serializer)
+    def apply(port: Int, serializer: Serializer): Service = TcpService(port, serializer)
   }
 
   final object NioServiceFactory extends ServiceFactory {

@@ -31,5 +31,7 @@ trait Service {
   def localNodeFor(n: Node): Node
 
   def send(node: Node, data: Array[Byte]): Unit
+
+  def start(): Unit
   def terminate(): Unit
 }
