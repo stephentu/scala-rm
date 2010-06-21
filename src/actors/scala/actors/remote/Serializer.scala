@@ -31,7 +31,7 @@ abstract class Serializer {
    * Return None if no handshake is desired, in which case the next two
    * methods will never be called (and can thus return null)
    */
-  val initialState: Option[Any]
+  def initialState: Option[Any]
 
   /**
    * Returns the next message to send to the other side in the handshake.

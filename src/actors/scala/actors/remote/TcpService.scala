@@ -183,6 +183,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
 
   @throws(classOf[InconsistentSerializerException])
   def connect(n: Node): TcpServiceWorker = synchronized {
+    Debug.info(this + ": connect(n = " + n + ")")
     val socket = new Socket(n.address, n.port)
     val worker = new TcpServiceWorker(this, socket)
     worker.doHandshake
@@ -230,10 +231,12 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
       case Some(initialState) =>
 
         var curState = initialState
+        Debug.info(this + ": initialState = " + curState)
 
         def getNextMessage =
           if (s.nextHandshakeMessage.isDefinedAt(curState)) {
             val (nextState, nextMsg) = s.nextHandshakeMessage.apply(curState)
+            Debug.info(this + ": " + curState + " -> " + Pair(nextState, nextMsg))
             curState = nextState
             nextMsg
           } else
@@ -242,17 +245,22 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
         def handleNextMessage(msg: Any) {
           if (s.handleHandshakeMessage.isDefinedAt((curState, msg))) {
             val nextState = s.handleHandshakeMessage.apply((curState, msg))
+            Debug.info(this + ": " + Pair(curState, msg) + " -> " + nextState)
             curState = nextState
           } else
             throw new IllegalHandshakeStateException
         }
 
         def sendMessage(msg: Any) {
+          Debug.info(this + ": sendMessage(msg = " + msg + ")")
           s.writeJavaObject(dataout, msg.asInstanceOf[AnyRef])
         }
 
         def readMessage: AnyRef = {
-          s.readJavaObject(datain).asInstanceOf[AnyRef]
+          Debug.info(this + ": readMessage waiting for message")
+          val msg = s.readJavaObject(datain).asInstanceOf[AnyRef]
+          Debug.info(this + ": readMessage read " + msg)
+          msg
         }
             
         var continue = true
@@ -265,8 +273,11 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
           if (continue) handleNextMessage(readMessage)
         }
 
+        Debug.info(this + ": handshake finished for " + connectedNode)
+
       case None =>
         /** Do nothing; skip handshake */
+        Debug.info(this + ": no handshake to perform")
     }
   }
 
@@ -301,4 +312,6 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
     }
     Debug.info(this+": service terminated at "+parent.node)
   }
+
+  override def toString = "<TcpServiceWorker: " + connectedNode + ">"
 }

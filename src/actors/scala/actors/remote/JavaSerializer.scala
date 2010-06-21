@@ -45,18 +45,18 @@ class JavaSerializer(cl: ClassLoader) extends Serializer {
   case object ExpectID
   case object Resolved
 
-  val initialState = Some(SendID)
+  override def initialState: Option[Any] = Some(SendID)
 
-  def nextHandshakeMessage = {
+  override def nextHandshakeMessage = {
     case SendID   => (ExpectID, Some(uniqueId))
     case Resolved => (Resolved, None)
   }
 
-  def handleHandshakeMessage = {
+  override def handleHandshakeMessage = {
     case (ExpectID, MyUniqueId) => Resolved
   }
 
-  val MyUniqueId = uniqueId
+  private val MyUniqueId = uniqueId
 
   def uniqueId = 1679081588L
 
