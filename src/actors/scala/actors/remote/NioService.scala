@@ -611,6 +611,12 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     }
   }
 
+  def localNodeFor(n: Node): Node = {
+    val socket = connect(n).socket
+    // be explicit because implicit conversions assume remote node
+    new InetSocketAddress(socket.getLocalAddress, socket.getLocalPort) 
+  }
+
   /** Assumes that connectionMap lock is currently held, and
    *  assumes no valid connection to addr exists in connectionMap */
   @throws(classOf[IOException])

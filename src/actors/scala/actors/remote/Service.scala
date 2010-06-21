@@ -17,7 +17,19 @@ package remote
 trait Service {
   val kernel = new NetKernel(this)
   val serializer: Serializer
+
+  /**
+   * Returns the node that this service is listening on
+   */
   def node: Node
+
+  /**
+   * Returns the local endpoint to connect to remote node n
+   * @param   n - remote node
+   * @returns local node
+   */
+  def localNodeFor(n: Node): Node
+
   def send(node: Node, data: Array[Byte]): Unit
   def terminate(): Unit
 }

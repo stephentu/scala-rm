@@ -87,20 +87,19 @@ private[remote] class NetKernel(val service: Service) {
     send(node, name, msg, 'nosession)
 
   def send(node: Node, name: Symbol, msg: AnyRef, session: Symbol) {
-    val senderLoc = Locator(service.node, getOrCreateName(Actor.self))
+    val senderLoc   = Locator(service localNodeFor node, getOrCreateName(Actor.self))
     val receiverLoc = Locator(node, name)
     namedSend(senderLoc, receiverLoc, msg, session)
   }
 
   def forward(from: OutputChannel[Any], node: Node, name: Symbol, msg: AnyRef, session: Symbol) {
-    // TODO: don't use service.node, but instead use from addr not server addr
-    val senderLoc = Locator(service.node, getOrCreateName(from))
+    val senderLoc   = Locator(service localNodeFor node, getOrCreateName(from))
     val receiverLoc = Locator(node, name)
     namedSend(senderLoc, receiverLoc, msg, session)
   }
 
   def remoteApply(node: Node, name: Symbol, from: OutputChannel[Any], rfun: Function2[AbstractActor, Proxy, Unit]) {
-    val senderLoc = Locator(service.node, getOrCreateName(from))
+    val senderLoc   = Locator(service localNodeFor node, getOrCreateName(from))
     val receiverLoc = Locator(node, name)
     sendToNode(receiverLoc.node, RemoteApply0(senderLoc, receiverLoc, rfun))
   }
@@ -132,6 +131,8 @@ private[remote] class NetKernel(val service: Service) {
     }
 
   def processMsg(senderNode: Node, msg: AnyRef): Unit = synchronized {
+    // Note: senderNode as an argument is ignored here. instead,
+    // senderLoc.node is used
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)

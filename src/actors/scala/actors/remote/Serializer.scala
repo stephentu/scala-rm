@@ -109,7 +109,7 @@ abstract class Serializer {
 
   private def readObjectBytes(inputStream: DataInputStream)(f: (Array[Byte], Array[Byte]) => AnyRef) = {
     val metaData = readBytes(inputStream)
-    val data = readBytes(inputStream)
+    val data     = readBytes(inputStream)
     if (data eq null)
       Debug.error("Empty length message received")
     f(metaData, data)

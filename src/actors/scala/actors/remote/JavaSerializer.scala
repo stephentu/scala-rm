@@ -64,7 +64,11 @@ class JavaSerializer(cl: ClassLoader) extends Serializer {
 
   def serialize(o: AnyRef): Array[Byte] = javaSerialize(o)
 
-  def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef =
+  def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
+    val metaValue = 
+      if (metaData.isDefined) "metaData.length = " + metaData.get.length 
+      else "no metadata" 
+    Debug.info("deserialize(): " + metaValue + ", bytes.length = " + bytes.length)
     if (cl eq null) javaDeserialize(metaData, bytes)
     else {
       // use custom class loader in this case
@@ -72,5 +76,6 @@ class JavaSerializer(cl: ClassLoader) extends Serializer {
       val in  = new CustomObjectInputStream(bis, cl)
       in.readObject()
     }
+  }
 
 }

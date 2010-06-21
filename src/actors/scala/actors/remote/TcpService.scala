@@ -149,6 +149,7 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
         if (!shouldTerminate) {
           val worker = new TcpServiceWorker(this, nextClient)
           Debug.info("Started new "+worker)
+          addConnection(worker.remoteNode, worker) // add mapping for reply channel
           worker.doHandshake
           worker.start()
         } else
@@ -188,8 +189,15 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
     val worker = new TcpServiceWorker(this, socket)
     worker.doHandshake
     worker.start()
-    addConnection(n, worker)
+    addConnection(n, worker) // re-entrant lock so this is OK
     worker
+  }
+
+  def localNodeFor(n: Node): Node = synchronized {
+    connections.get(n) match {
+      case Some(worker) => worker.localNode
+      case None         => connect(n).localNode // re-entrant lock so this is OK
+    }
   }
 
   def disconnectNode(n: Node) = synchronized {
@@ -220,10 +228,11 @@ class TcpService(port: Int, cl: ClassLoader, val serializer: Serializer) extends
 
 
 private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends Thread {
-  val datain = new DataInputStream(so.getInputStream)
+  val datain  = new DataInputStream(so.getInputStream)
   val dataout = new DataOutputStream(so.getOutputStream)
 
-  val connectedNode = Node(so.getInetAddress.getHostName, so.getPort) 
+  val remoteNode = Node(so.getInetAddress.getHostName,  so.getPort) 
+  val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
 
   def doHandshake {
     val s = parent.serializer
@@ -273,7 +282,7 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
           if (continue) handleNextMessage(readMessage)
         }
 
-        Debug.info(this + ": handshake finished for " + connectedNode)
+        Debug.info(this + ": handshake finished")
 
       case None =>
         /** Do nothing; skip handshake */
@@ -282,7 +291,7 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
   }
 
   def transmit(data: Array[Byte]): Unit = synchronized {
-    Debug.info(this+": transmitting data...")
+    Debug.info(this+": transmitting " + data.length + " (+ 4) bytes...")
     dataout.writeInt(data.length)
     dataout.write(data)
     dataout.flush()
@@ -299,19 +308,19 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
     try {
       while (running) {
         val msg = parent.serializer.readObject(datain);
-        parent.kernel.processMsg(connectedNode, msg)
+        parent.kernel.processMsg(remoteNode, msg)
       }
     }
     catch {
       case ioe: IOException =>
         Debug.info(this+": caught "+ioe)
-        parent nodeDown connectedNode
+        parent nodeDown remoteNode
       case e: Exception =>
         Debug.info(this+": caught "+e)
-        parent nodeDown connectedNode
+        parent nodeDown remoteNode
     }
     Debug.info(this+": service terminated at "+parent.node)
   }
 
-  override def toString = "<TcpServiceWorker: " + connectedNode + ">"
+  override def toString = "<TcpServiceWorker: local = " + localNode + " -> remote = " + remoteNode + ">"
 }
