@@ -39,12 +39,12 @@ private[remote] class NetKernel(val service: Service) {
     Debug.info("node: " + node)
     Debug.info("msg: " + msg)
     try {
-      service.serializer.serializeMetaData(msg) match {
-        case Some(data) => service.send(node, data)
-        case None       => service.send(node, Array[Byte]())
+      val meta = service.serializer.serializeMetaData(msg) match {
+        case Some(data) => data 
+        case None       => Array[Byte]()
       }
       val bytes = service.serializer.serialize(msg)
-      service.send(node, bytes)
+      service.send(node, meta, bytes)
     } catch {
       case ioe: IOException =>
         Debug.error("sendToNode: message " + msg + " dropped because: " + ioe.getMessage)

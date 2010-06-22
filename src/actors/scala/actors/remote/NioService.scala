@@ -207,8 +207,8 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       nextHandshakeMessage match {
         case Some(message) =>
           /** Send message away */
-          enqueueOnChannel(chan, encodeMessage(Array[Byte]())) /** No metadata for java serialization */
-          enqueueOnChannel(chan, encodeMessage(serializer.javaSerialize(message.asInstanceOf[AnyRef])))
+          val rawMsg = Array(Array[Byte](), serializer.javaSerialize(message.asInstanceOf[AnyRef]))
+          enqueueOnChannel(chan, toByteBuffer(encodeAndConcat(rawMsg))) 
         case None          => 
           /** Finished with handshake */
           assert(done)
@@ -562,18 +562,13 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     }
   }
 
-  private def encodeMessage(data: Array[Byte]): ByteBuffer = {
-    val buf = ByteBuffer.allocate(4 + data.length)
-    buf.putInt(data.length)
-    buf.put(data)
-    buf.rewind /** Must rewind so that the buf can be read from */
-    buf
-  }
+  private def toByteBuffer(data: Array[Byte]): ByteBuffer = ByteBuffer.wrap(data)
 
-  def send(node: Node, data: Array[Byte]) {
-    Debug.info(this + ": send to node: " + node)
+  def rawSend(node: Node, data: Array[Byte]) {
+    assert(data.length > 0)
+    Debug.info(this + ": send " + data.length + " bytes to node: " + node)
     val chan = getChannel(node)
-    val buf  = encodeMessage(data)
+    val buf  = toByteBuffer(data)
     enqueueOnChannel(chan, buf)
   }
 

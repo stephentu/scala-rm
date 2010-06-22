@@ -46,7 +46,7 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
    * If the node is not yet up, up to <code>TcpService.BufSize</code>
    * messages are buffered.
    */
-  def send(node: Node, data: Array[Byte]): Unit = synchronized {
+  def rawSend(node: Node, data: Array[Byte]): Unit = synchronized {
 
     def bufferMsg(t: Throwable) {
       // buffer message, so that it can be re-sent
@@ -253,8 +253,10 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
   }
 
   def transmit(data: Array[Byte]): Unit = synchronized {
-    Debug.info(this+": transmitting " + data.length + " (+ 4) bytes...")
-    dataout.writeInt(data.length)
+    Debug.info(this+": transmitting " + data.length + " encoded bytes...")
+    assert(data.length > 0) // should never send unencoded data at this point
+    //data is already encoded
+    //dataout.writeInt(data.length)
     dataout.write(data)
     dataout.flush()
   }
