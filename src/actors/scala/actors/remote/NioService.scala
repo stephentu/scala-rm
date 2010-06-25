@@ -172,7 +172,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     var done     = false
     var curState = initialState
     var sendOrReceive: SendOrReceive = Send
-    var future   = new Future(chan)
+    var future   = new Future
 
     def isSending   = sendOrReceive == Send
     def isReceiving = sendOrReceive == Receive
@@ -233,7 +233,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       done          = false
       curState      = initialState
       sendOrReceive = Send
-      future        = new Future(chan)
+      future        = new Future
     }
 
   }
@@ -252,11 +252,6 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     channelMap.valuesIterator.toList /** We want the copy */
   }
 
-  private trait Finishable {
-    def finish(): Unit
-    def finishWithError(ex: Throwable): Unit
-  }
-  
   private sealed abstract class RegisterInterestOp(val socket: SocketChannel) 
   extends Finishable {
     val op: Int /** SelectionKey.OP_XXX */
@@ -279,26 +274,6 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       future.finish 
     }
     override def finishWithError(ex: Throwable) { future.finishWithError(ex) }
-  }
-
-  private class Future(clientSocket: SocketChannel) extends Finishable {
-    var alreadyDone          = false
-    var exception: Throwable = _
-    def await() {
-      synchronized {
-        if (!alreadyDone)      wait
-        if (exception ne null) throw exception 
-      }
-    }
-    private def finish0(ex: Throwable) {
-      synchronized {
-        alreadyDone = true
-        exception   = ex
-        notifyAll
-      }
-    }
-    def finish()                       { finish0(null) }
-    def finishWithError(ex: Throwable) { finish0(ex)   }
   }
 
   /** Spawn the server */
@@ -601,7 +576,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
         clientSocket
       } else {
         Debug.info(this + ": connect0: need to wait on future for " + addr)
-        val future = new Future(clientSocket)
+        val future = new Future
         registerOpChange(ConnectOp(clientSocket, future))
         /** Wakeup the blocking selector */
         selector.wakeup

@@ -124,9 +124,11 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
     Actor.loop {
       react {
         case cmd@Apply0(rfun) =>
+          Debug.info("cmd@Apply0: " + cmd)
           kernel.remoteApply(node, name, sender, rfun)
 
         case cmd@LocalApply0(rfun, target) =>
+          Debug.info("cmd@LocalApply0: " + cmd)
           rfun(target, creator)
 
         // Request from remote proxy.
@@ -155,6 +157,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
           }
 
         case cmd@Terminate =>
+          Debug.info("cmd@Terminate")
           exit()
 
         // local proxy receives response to

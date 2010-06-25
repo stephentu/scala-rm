@@ -146,13 +146,16 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
   }
 
   def connect(n: Node): TcpServiceWorker = synchronized {
-    Debug.info(this + ": connect(n = " + n + ")")
-    val socket = new Socket(n.address, n.port)
-    val worker = new TcpServiceWorker(this, socket)
-    worker.doHandshake
-    worker.start()
-    addConnection(n, worker) // re-entrant lock so this is OK
-    worker
+    if (!shouldTerminate) {
+      Debug.info(this + ": connect(n = " + n + ")")
+      val socket = new Socket(n.address, n.port)
+      val worker = new TcpServiceWorker(this, socket)
+      worker.doHandshake
+      worker.start()
+      addConnection(n, worker) // re-entrant lock so this is OK
+      worker
+    } else 
+      throw new IllegalStateException("Cannot connect to " + n + " when should be terminated")
   }
 
   def localNodeFor(n: Node): Node = synchronized {

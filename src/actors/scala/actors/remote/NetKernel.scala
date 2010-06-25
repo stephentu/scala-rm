@@ -168,8 +168,24 @@ private[remote] class NetKernel(val service: Service) {
   }
 
   def terminate() {
+    // TODO: can a new proxy be created while terminate is running?
+
+    // future to wait on
+    val countFuture = new CountFuture(proxies.values.size)
+
+    // register proxy on termination handlers so we know when
+    // all the proxies are actually finished terminating
+    proxies.values.map(_.del).foreach(_.onTerminate {
+      countFuture addOne 
+    })
+
     // tell all proxies to terminate
     proxies.values foreach { _.send(Terminate, null) }
+
+    // wait on the future until all proxies are terminated
+    countFuture.await
+
+    Debug.info("woke up from countFuture")
 
     // tell service to terminate
     service.terminate()
