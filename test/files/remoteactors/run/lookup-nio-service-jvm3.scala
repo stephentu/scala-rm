@@ -19,6 +19,7 @@ object SecondClient extends Actor {
 
 object Test3 {
   def main(args: Array[String]) {
+    Debug.level = 0
     println("Starting second client...")
     waitFor(0)
     SecondClient.start

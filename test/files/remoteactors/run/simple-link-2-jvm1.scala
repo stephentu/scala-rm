@@ -28,6 +28,7 @@ object Master extends Actor {
 
 object Test1 {
   def main(args: Array[String]) {
+    Debug.level = 0
     Master.start
   }
 }

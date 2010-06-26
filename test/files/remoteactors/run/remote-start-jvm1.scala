@@ -14,6 +14,7 @@ class TestActor extends Actor {
 
 object Test1 {
   def main(args: Array[String]) {
+    Debug.level = 0
     startListeners
     writeFlag()
   }

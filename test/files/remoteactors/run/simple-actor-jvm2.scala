@@ -19,6 +19,7 @@ object B extends Actor {
 
 object Test2 {
   def main(args: Array[String]) {
+    Debug.level = 0
     FileSync.waitFor(0)
     println("Starting actor B...")
     B.start

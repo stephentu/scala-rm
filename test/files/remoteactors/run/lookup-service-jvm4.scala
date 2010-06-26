@@ -14,6 +14,7 @@ object StopClient extends Actor {
 
 object Test4 {
   def main(args: Array[String]) {
+    Debug.level = 0
     println("Starting stop client...")
     waitForFiles(Array(0,1,2))
     StopClient.start

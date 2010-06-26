@@ -30,6 +30,7 @@ object LookupService extends Actor {
 
 object Test1 {
   def main(args: Array[String]) {
+    Debug.level = 0
     println("Starting lookup service...")
     LookupService.start
     writeFlag()

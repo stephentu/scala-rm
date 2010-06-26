@@ -22,6 +22,7 @@ object A extends Actor {
 
 object Test1 {
   def main(args: Array[String]) {
+    Debug.level = 0
     println("Starting actor A...")
     A.start
     FileSync.writeFlag()

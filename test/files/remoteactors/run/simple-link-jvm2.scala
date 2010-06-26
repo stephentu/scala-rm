@@ -8,7 +8,7 @@ import scala.tools.partest.FileSync._
 object Test2 {
   def main(args: Array[String]) {
     waitFor(0)
-    //Debug.level = 3
+    Debug.level = 0
     actor {
       self.trapExit = true
       val master = select(Node("localhost", 9100), 'first)

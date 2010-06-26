@@ -24,6 +24,7 @@ object Slave extends Actor {
 
 object Test2 {
   def main(args: Array[String]) {
+    Debug.level = 0
     waitFor(0)
     Slave.start
   }
