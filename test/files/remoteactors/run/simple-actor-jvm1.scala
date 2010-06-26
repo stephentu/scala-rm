@@ -20,7 +20,7 @@ object A extends Actor {
   }
 }
 
-object Test {
+object Test1 {
   def main(args: Array[String]) {
     println("Starting actor A...")
     A.start

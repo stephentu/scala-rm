@@ -5,10 +5,6 @@ import RemoteActor._
 
 import scala.tools.partest.FileSync._
 
-case class StopService()
-case class GetRequest(request: String)
-case class GetResponse(request: GetRequest, response: Option[String])
-
 object FirstClient extends Actor {
   def act() {
     val service = select(Node("127.0.0.1", 9100), 'lookupService, serviceFactory = NioServiceFactory)
@@ -27,7 +23,7 @@ object FirstClient extends Actor {
   }
 }
 
-object Test {
+object Test2 {
   def main(args: Array[String]) {
     println("Starting first client...")
     waitFor(0)

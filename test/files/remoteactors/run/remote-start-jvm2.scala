@@ -23,7 +23,7 @@ object B extends Actor {
 
 }
 
-object Test {
+object Test2 {
   def main(args: Array[String]) {
     waitFor(0)
     B.start

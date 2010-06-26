@@ -20,9 +20,9 @@ object A extends Actor {
   }
 }
 
-object Test {
+object Test1 {
   def main(args: Array[String]) {
-    Debug.level = 3
+    //Debug.level = 3
     println("Starting actor A...")
     A.start
     FileSync.writeFlag()

@@ -5,8 +5,6 @@ import RemoteActor._
 
 import scala.tools.partest.FileSync
 
-case class AMessage(msg: String)
-
 object B extends Actor {
   def act() {
     println("Actor B started...")
@@ -19,7 +17,7 @@ object B extends Actor {
   }
 }
 
-object Test {
+object Test2 {
   def main(args: Array[String]) {
     FileSync.waitFor(0)
     println("Starting actor B...")

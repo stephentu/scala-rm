@@ -28,7 +28,7 @@ object LookupService extends Actor {
   }
 }
 
-object Test {
+object Test1 {
   def main(args: Array[String]) {
     println("Starting lookup service...")
     LookupService.start
