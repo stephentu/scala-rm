@@ -28,7 +28,7 @@ import scala.collection.Map
 
 import scala.tools.nsc.interactive.{BuildManager, RefinedBuildManager}
 
-case class RunTests(kind: String, files: List[List[File]])
+case class RunTests(kind: String, fileGroups: List[FileGroup])
 case class Results(results: ImmMap[String, Int], logs: List[LogFile], outdirs: List[File])
 
 case class LogContext(file: LogFile, writers: Option[(StringWriter, PrintWriter)])
@@ -62,10 +62,10 @@ class Worker(val fileManager: FileManager) extends Actor {
 
   def act() {
     react {
-      case RunTests(kind, files) =>
+      case RunTests(kind, fileGroups) =>
         // NestUI.verbose("received "+files.length+" to test")
         val master = sender
-        runTests(kind, files) { results => 
+        runTests(kind, fileGroups) { results => 
           master ! Results(results, createdLogFiles, createdOutputDirs)
         }
     }
@@ -245,7 +245,7 @@ class Worker(val fileManager: FileManager) extends Actor {
     catch { case _: IllegalThreadStateException => 0 }
   }
 
-  def execTest(outDir: File, logFile: File, fileBase: String, fileSync: Option[FileSync] = None) {
+  def execTest(outDir: File, logFile: File, fileBase: String, fileSync: Option[FileSync] = None, mainName: String = "Test") {
     // check whether there is a ".javaopts" file
     val argsFile = new File(logFile.getParentFile, fileBase+".javaopts")
     val argString = if (argsFile.exists) {
@@ -295,7 +295,7 @@ class Worker(val fileManager: FileManager) extends Actor {
       ) ::: propertyOptions ::: List(
         "scala.tools.nsc.MainGenericRunner",
         "-usejavacp",
-        "Test",
+        mainName,
         "jvm"
       )
     ) mkString " "
@@ -340,7 +340,7 @@ class Worker(val fileManager: FileManager) extends Actor {
    * @param kind  The test kind (pos, neg, run, etc.)
    * @param files The list of test files
    */
-  def runTests(kind: String, files: List[List[File]])(topcont: ImmMap[String, Int] => Unit) {
+  def runTests(kind: String, fileGroups: List[FileGroup])(topcont: ImmMap[String, Int] => Unit) {
     val compileMgr = new CompileManager(fileManager)
     var errors = 0
     var succeeded = true
@@ -355,6 +355,9 @@ class Worker(val fileManager: FileManager) extends Actor {
       diff = latestDiff
       if (latestDiff != "") {
         NestUI.verbose("output differs from log file\n")
+        NestUI.verbose("-------------------------------")
+        NestUI.verbose("\n" + latestDiff)
+        NestUI.verbose("-------------------------------")
         succeeded = false
       }
     }
@@ -363,7 +366,7 @@ class Worker(val fileManager: FileManager) extends Actor {
      *  2. Runs <code>script</code> function, providing log file and
      *     output directory as arguments.
      */
-    def runInContext(file: File, kind: String, script: (File, File) => Unit): LogContext = {
+    def runInContext(file: File, kind: String, script: (File, File) => Unit, outDirOpt: Option[File] = None): LogContext = {
       // when option "--failed" is provided
       // execute test only if log file is present
       // (which means it failed before)
@@ -379,7 +382,7 @@ class Worker(val fileManager: FileManager) extends Actor {
         val fileBase: String = basename(file.getName)
         NestUI.verbose(this+" running test "+fileBase)
         val dir = file.getParentFile
-        val outDir = createOutputDir(dir, fileBase, kind)
+        val outDir = outDirOpt.getOrElse(createOutputDir(dir, fileBase, kind))
         NestUI.verbose("output directory: "+outDir)
 
         // run test-specific code
@@ -444,28 +447,37 @@ class Worker(val fileManager: FileManager) extends Actor {
       }
     }
     
-    def runTestCommon(file: File, kind: String, expectFailure: Boolean)(onSuccess: (File, File) => Unit): LogContext =
+    def runTestCommon(file: File, kind: String, expectFailure: Boolean, skipCompilation: Boolean = false, outDirOpt: Option[File] = None)(onSuccess: (File, File) => Unit): LogContext =
       runInContext(file, kind, (logFile: File, outDir: File) => {
  
-        if (file.isDirectory) {
-          val f = if (expectFailure) failCompileFilesIn _ else compileFilesIn _
-          f(file, kind, logFile, outDir)
-        }
-        else {
-          val f: (List[File], String, File) => Boolean =
-            if (expectFailure) compileMgr.shouldFailCompile _
-            else compileMgr.shouldCompile _
-            
-          if (!f(List(file), kind, logFile))
-            fail(file)
+        if (!skipCompilation) {
+          if (file.isDirectory) {
+            val f = if (expectFailure) failCompileFilesIn _ else compileFilesIn _
+            f(file, kind, logFile, outDir)
+          }
+          else {
+            val f: (List[File], String, File) => Boolean =
+              if (expectFailure) compileMgr.shouldFailCompile _
+              else compileMgr.shouldCompile _
+              
+            if (!f(List(file), kind, logFile))
+              fail(file)
+          }
         }
         
         if (succeeded)  // run test
           onSuccess(logFile, outDir)
-      })
+      }, outDirOpt)
 
-    def runJvmTest(file: File, kind: String, fileSync: Option[FileSync] = None): LogContext =
-      runTestCommon(file, kind, expectFailure = false)((logFile, outDir) => {
+    def compileFileGroup(fileGroup: FileGroup, kind: String) {
+      val outDir = fileGroup.outDir
+      outDir.mkdirs
+      if (!compileMgr.shouldCompile(outDir, fileGroup.files, kind, fileGroup.logFile))
+        fail(fileGroup.files.head) // fail the first
+    }
+
+    def runJvmTest(file: File, kind: String, fileSync: Option[FileSync] = None, skipCompilation: Boolean = false, outDirOpt: Option[File] = None, mainName: String = "Test"): LogContext =
+      runTestCommon(file, kind, expectFailure = false, skipCompilation, outDirOpt)((logFile, outDir) => {
         val fileBase = basename(file.getName)
         val dir      = file.getParentFile
 
@@ -477,12 +489,12 @@ class Worker(val fileManager: FileManager) extends Actor {
         // else
         //   execTestObjectRunner(file, outDir, logFile)
         // // NestUI.verbose(this+" finished running "+fileBase)
-        execTest(outDir, logFile, fileBase, fileSync)
+        execTest(outDir, logFile, fileBase, fileSync, mainName)
 
         diffCheck(compareOutput(dir, fileBase, kind, logFile))
       })
 
-    def processSingleFile(file: File, fileSync: Option[FileSync] = None): LogContext = kind match {
+    def processSingleFile(file: File, fileSync: Option[FileSync] = None, skipCompilation: Boolean = false, outDirOpt: Option[File] = None, mainName: String = "Test"): LogContext = kind match {
       case "scalacheck" =>
         runTestCommon(file, kind, expectFailure = false)((logFile, outDir) => {
           val consFM = new ConsoleFileManager
@@ -526,7 +538,7 @@ class Worker(val fileManager: FileManager) extends Actor {
         })
 
       case "run" | "jvm" =>
-        runJvmTest(file, kind, fileSync)
+        runJvmTest(file, kind, fileSync, skipCompilation, outDirOpt, mainName)
 
       case "buildmanager" =>
         val logFile = createLogFile(file, kind)
@@ -1001,7 +1013,7 @@ class Worker(val fileManager: FileManager) extends Actor {
       }
     }
 
-    val numFileGroups = files.size
+    val numFileGroups = fileGroups.size
     if (numFileGroups == 0)
       reportAll(ImmMap(), topcont)
 
@@ -1013,38 +1025,58 @@ class Worker(val fileManager: FileManager) extends Actor {
     }
 
     // purge all flag files if necessary
-    files.flatten.map(flagFileFor).foreach(_.delete)
+    fileGroups.flatMap(_.files).map(flagFileFor).foreach(_.delete)
 
-    NestUI.verbose(files.toString)
+    NestUI.verbose("FileGroups: " + fileGroups)
     var fileGroupCnt = 1
     var filesSoFar = 0
     var needsInit = true
     Actor.loopWhile(fileGroupCnt <= numFileGroups) {
       val parent = self
-      val thisFileGroup = files(fileGroupCnt-1)
+      val thisFileGroup = fileGroups(fileGroupCnt-1)
       NestUI.verbose("On file group: " + fileGroupCnt)
-      NestUI.verbose("this file group has " + thisFileGroup.size + " files")
+      NestUI.verbose("this file group has " + thisFileGroup.files.size + " files")
       if (needsInit) {
         NestUI.verbose("initing file group: " + fileGroupCnt)
-        for (fileCnt <- List.range(1, thisFileGroup.size + 1)) {
+        
+        val skipCompilation = thisFileGroup.files.size > 1 && thisFileGroup.tpe == JvmGroupExtractor
+        val outDirOpt: Option[File] = 
+          if (skipCompilation) Some(thisFileGroup.outDir)
+          else                 None
+
+        if (skipCompilation) {
+          // we're skipping compilation on a per file basis, so we have to do
+          // it right here
+          compileFileGroup(thisFileGroup, kind)
+        }
+
+        for (fileCnt <- List.range(1, thisFileGroup.files.size + 1)) {
           actor {
             val fileIdx = fileCnt - 1
-            val testFile = thisFileGroup(fileIdx)
+            val testFile = thisFileGroup.files(fileIdx)
             val waitFiles = 
               if (fileIdx == 0) Seq[File]() 
-              else for (i <- 0 until fileIdx) yield { flagFileFor(thisFileGroup(i)) }
-            val flagFile = flagFileFor(thisFileGroup(fileIdx))
+              else for (i <- 0 until fileIdx) yield { flagFileFor(thisFileGroup.files(i)) }
+            val flagFile = flagFileFor(thisFileGroup.files(fileIdx))
             NestUI.verbose("actor is on file group " + fileGroupCnt + " and testFile " + fileCnt)
             val ontimeout = new TimerTask {
               def run() = parent ! Timeout(testFile)
             }
             timer.schedule(ontimeout, fileManager.timeout.toLong)
+              
+            val mainName = 
+              if (thisFileGroup.tpe == JvmGroupExtractor) {
+                val f = testFile.getName
+                // extract the N from *-jvmN.scala
+                "Test" + f.substring(f.lastIndexOf("jvm") + 3, f.length - 6)
+              } else "Test"
 
             val context = try {
-              processSingleFile(testFile, Some(FileSync(waitFiles.toList, flagFile)))
+              processSingleFile(testFile, Some(FileSync(waitFiles.toList, flagFile)), 
+                  skipCompilation, outDirOpt, mainName)
             } catch {
               case t: Throwable =>
-                NestUI.verbose("while invoking compiler ("+files+"):")
+                //NestUI.verbose("while invoking compiler ("+files+"):")
                 NestUI.verbose("caught "+t)
                 t.printStackTrace
                 if (t.getCause != null)
@@ -1083,10 +1115,10 @@ class Worker(val fileManager: FileManager) extends Actor {
                   NestUI.verbose("parent actor received Result")
                   NestUI.verbose("filesSoFar is now " + filesSoFar)
               }
-              if (fileGroupCnt == numFileGroups && filesSoFar == thisFileGroup.size) {
+              if (fileGroupCnt == numFileGroups && filesSoFar == thisFileGroup.files.size) {
                 reportAll(status, topcont)
               }
-              if (filesSoFar == thisFileGroup.size) {
+              if (filesSoFar == thisFileGroup.files.size) {
                 fileGroupCnt += 1
                 needsInit = true
                 filesSoFar = 0
