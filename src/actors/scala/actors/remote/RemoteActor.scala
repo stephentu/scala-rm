@@ -92,6 +92,8 @@ object RemoteActor {
       Debug.info("alive actor "+actor+" terminated")
       // remove mapping for `actor`
       kernels -= actor
+      // Unregister actor from kernel
+      kern.unregister(actor)
       // terminate `kern` when it does
       // not appear as value any more
       if (!kernels.valuesIterator.contains(kern)) {

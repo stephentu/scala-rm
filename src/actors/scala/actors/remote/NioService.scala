@@ -397,7 +397,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
         case e: IOException =>
         // The remote forcibly closed the connection! Cancel
         // the selection key and close the channel.
-        Debug.error(this + ": processRead caught IOException when reading from " + 
+        Debug.info(this + ": processRead caught IOException when reading from " + 
             socketChannel + ": " + e.getMessage)
         tearDownChannel(e)
         return
@@ -406,7 +406,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       if (bytesRead == -1) {
         // Remote entity shut the socket down cleanly. Do the
         // same from our end and cancel the channel.
-        Debug.error(this + ": processRead - remote shutdown (read -1 bytes)")
+        Debug.info(this + ": processRead - remote shutdown (read -1 bytes)")
         tearDownChannel(new IllegalHandshakeStateException)
         return
       }

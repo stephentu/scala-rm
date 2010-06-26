@@ -71,7 +71,12 @@ private[remote] class NetKernel(val service: Service) {
 
   def register(name: Symbol, a: OutputChannel[Any]): Unit = synchronized {
     actors += Pair(name, a)
-    names += Pair(a, name)
+    names  += Pair(a, name)
+  }
+
+  def unregister(a: OutputChannel[Any]): Unit = synchronized {
+    names -= a
+    actors.retain((_,v) => v != a)
   }
 
   def getOrCreateName(from: OutputChannel[Any]) = names.get(from) match {
@@ -148,18 +153,30 @@ private[remote] class NetKernel(val service: Service) {
 
       case cmd@NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
         Debug.info(this+": processing "+cmd)
+
+        def sendToProxy(a: OutputChannel[Any]) {
+          try {
+            val msg = service.serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
+            val senderProxy = getOrCreateProxy(senderLoc.node, senderLoc.name)
+            senderProxy.send(SendTo(a, msg, session), null)
+          } catch {
+            case e: Exception =>
+              Debug.error(this+": caught "+e)
+              e.printStackTrace
+          }
+        }
+
+        def removeOrphan(a: OutputChannel[Any]) {
+          // orphaned actor sitting in hash maps
+          Debug.info(this + ": found orphaned (terminated) actor: " + a)
+          unregister(a)
+        }
+
         actors.get(receiverLoc.name) match {
           case Some(a) =>
-            try {
-              val msg = service.serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
-              val senderProxy = getOrCreateProxy(senderLoc.node, senderLoc.name)
-              senderProxy.send(SendTo(a, msg, session), null)
-            } catch {
-              case e: Exception =>
-                Debug.error(this+": caught "+e)
-                e.printStackTrace
-            }
-
+            if (a.isInstanceOf[Actor] && 
+                a.asInstanceOf[Actor].getState == Actor.State.Terminated) removeOrphan(a)
+            else                                                          sendToProxy(a)
           case None =>
             // message is lost
             Debug.info(this+": lost message")
@@ -170,8 +187,13 @@ private[remote] class NetKernel(val service: Service) {
   def terminate() {
     // TODO: can a new proxy be created while terminate is running?
 
+    // find all running proxies delegates
+    val runningProxies = proxies.values.filter(_.del.getState != Actor.State.Terminated)
+
     // future to wait on
-    val countFuture = new CountFuture(proxies.values.size)
+    Debug.info(this + ": terminate(): waiting for (" + runningProxies.size + "/" + proxies.values.size + 
+        ") to terminate")
+    val countFuture = new CountFuture(runningProxies.size)
 
     // register proxy on termination handlers so we know when
     // all the proxies are actually finished terminating
