@@ -106,9 +106,23 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
     } catch {
       case t: Throwable =>
         Debug.error(this + ": caught " + t.getMessage + " in react loop")
-        t.printStackTrace
+        Debug.doError {
+          t.printStackTrace
+        }
     }
   }
+
+  /** 
+   * Override linkTo and unlinkFrom so that linking to a delegate actor links
+   * to the remote side. note: a delegate actor is exposed to the user via 
+   * sender.receiver 
+   */
+  
+  override def linkTo(to: AbstractActor): Unit =
+    this ! Apply0(new LinkToFun)
+
+  override def unlinkFrom(from: AbstractActor): Unit =
+    this ! Apply0(new UnlinkFromFun)
 
   def act() {
     Actor.loop {
@@ -119,6 +133,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
 
           case cmd@LocalApply0(rfun, target) =>
             Debug.info("cmd@LocalApply0: " + cmd)
+            Debug.info("target: " + target + ", creator: " + creator)
             safely { rfun(target, creator) }
 
           // Request from remote proxy.
@@ -132,8 +147,10 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
               // is this an active session?
               channelMap.get(session) match {
                 case None =>
+                  Debug.info(this + ": creating new reply channel for session: " + session)
+
                   // create a new reply channel...
-                  val replyCh = new Channel[Any](this) // TODO: change this to wrap the proxy
+                  val replyCh = new Channel[Any](this)
                   // ...that maps to session
                   sessionMap += Pair(replyCh, session)
                   // local send
@@ -141,6 +158,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
 
                 // finishes request-reply cycle
                 case Some(replyCh) =>
+                  Debug.info(this + ": finishing request-reply cycle for session: " + session + " on replyCh " + replyCh)
                   channelMap -= session
                   replyCh ! msg
               }
@@ -157,6 +175,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
             // lookup session ID
             sessionMap.get(ch) match {
               case Some(sid) =>
+                Debug.info(this + ": found session " + sid + " for channel " + ch)
                 sessionMap -= ch
                 val msg = resp.asInstanceOf[AnyRef]
                 // send back response
@@ -172,14 +191,18 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
 
             // find out whether it's a synchronous send
             val sessionName = 
-              if (sender.getClass.toString.contains("Channel")) { // how bout sender.isInstanceOf[OutputChannel[_]] ?
+              if (sender.getClass.toString.contains("Channel")) { // how bout sender.isInstanceOf[Channel[_]] ?
+                Debug.info(this + ": sync send: sender: " + sender)
                 // create fresh session ID...
                 val fresh = FreshNameCreator.newName(node+"@"+name)
                 // ...that maps to reply channel
                 channelMap += Pair(fresh, sender)
-
+                Debug.info(this + ": mapped " + fresh + " -> " + sender)
                 fresh
-              } else 'nosession 
+              } else {
+                Debug.info(this + ": async send: sender: " + sender)
+                'nosession 
+              }
 
             safely { kernel.forward(sender, node, name, msg, sessionName) }
         }

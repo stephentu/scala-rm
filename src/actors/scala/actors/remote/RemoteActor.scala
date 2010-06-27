@@ -202,6 +202,11 @@ object RemoteActor {
  * @author Philipp Haller
  */
 case class Node(address: String, port: Int) {
-  import java.net.InetSocketAddress 
+  import java.net.{ InetAddress, InetSocketAddress }
   def toInetSocketAddress = new InetSocketAddress(address, port)
+  def canonicalForm: Node = {
+    val a = InetAddress.getByName(address)
+    Node(a.getCanonicalHostName, port)
+  }
+  def isCanonical         = this == canonicalForm
 }

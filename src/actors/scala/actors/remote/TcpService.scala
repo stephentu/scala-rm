@@ -36,8 +36,8 @@ object TcpService extends ServiceCreator {
  */
 class TcpService(port: Int, val serializer: Serializer) extends Thread with Service {
 
-  private val internalNode = new Node(InetAddress.getLocalHost.getHostAddress, port)
-  def node: Node = internalNode
+  private val internalNode = Node(InetAddress.getLocalHost.getHostAddress, port)
+  def node: Node           = internalNode
 
   private val pendingSends = new HashMap[Node, List[Array[Byte]]]
 
@@ -47,7 +47,6 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
    * messages are buffered.
    */
   def rawSend(node: Node, data: Array[Byte]): Unit = synchronized {
-
     def bufferMsg(t: Throwable) {
       // buffer message, so that it can be re-sent
       // when remote net kernel comes up
@@ -60,7 +59,7 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
     }
 
     // retrieve worker thread (if any) that already has connection
-    getConnection(node) match {
+    connections.get(node) match {
       case None =>
         // we are not connected, yet
         try {
@@ -113,6 +112,7 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
         if (!shouldTerminate) {
           val worker = new TcpServiceWorker(this, nextClient)
           Debug.info("Started new "+worker)
+          assert(worker.remoteNode.isCanonical)
           addConnection(worker.remoteNode, worker) // add mapping for reply channel
           worker.doHandshake
           worker.start()
@@ -131,23 +131,23 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
 
   // connection management
 
+  // only stores canonical nodes
   private val connections = new HashMap[Node, TcpServiceWorker]
 
-  private[actors] def addConnection(node: Node, worker: TcpServiceWorker) = synchronized {
+  // assumes node is canonical
+  private[remote] def addConnection(node: Node, worker: TcpServiceWorker) = synchronized {
     connections += Pair(node, worker)
   }
 
-  def getConnection(n: Node) = synchronized {
-    connections.get(n)
+  def connect(node: Node) = synchronized {
+    val n = node.canonicalForm 
+    connections.get(n).getOrElse(connect0(n))
   }
 
-  def isConnected(n: Node): Boolean = synchronized {
-    !connections.get(n).isEmpty
-  }
-
-  def connect(n: Node): TcpServiceWorker = synchronized {
+  // assumes n is in canonical form
+  private def connect0(n: Node): TcpServiceWorker = synchronized {
     if (!shouldTerminate) {
-      Debug.info(this + ": connect(n = " + n + ")")
+      Debug.info(this + ": connect0(n = " + n + ")")
       val socket = new Socket(n.address, n.port)
       val worker = new TcpServiceWorker(this, socket)
       worker.doHandshake
@@ -158,35 +158,10 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
       throw new IllegalStateException("Cannot connect to " + n + " when should be terminated")
   }
 
-  def localNodeFor(n: Node): Node = synchronized {
-    connections.get(n) match {
-      case Some(worker) => worker.localNode
-      case None         => connect(n).localNode // re-entrant lock so this is OK
-    }
-  }
+  def localNodeFor(node: Node): Node = connect(node).localNode 
 
-  def disconnectNode(n: Node) = synchronized {
-    connections.get(n) match {
-      case None =>
-        // do nothing
-      case Some(worker) =>
-        connections -= n
-        worker.halt
-    }
-  }
-
-  def isReachable(node: Node): Boolean =
-    if (isConnected(node)) true
-    else try {
-      connect(node)
-      return true
-    } catch {
-      case uhe: UnknownHostException => false
-      case ioe: IOException => false
-      case se: SecurityException => false
-    }
-
-  def nodeDown(mnode: Node): Unit = synchronized {
+  // assumes mnode is canonical
+  private[remote] def nodeDown(mnode: Node): Unit = synchronized {
     connections -= mnode
   }
 }
