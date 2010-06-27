@@ -15,7 +15,7 @@ object LookupService extends Actor {
       "cat" -> "dog",
       "java" -> "scala")
   def act() {
-    alive(9100)
+    alive(9101)
     register('lookupService, self)
     loop {
       react {

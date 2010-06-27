@@ -11,7 +11,7 @@ object Test1 {
   def main(args: Array[String]) {
     Debug.level = 0
     actor {
-      alive(9100)
+      alive(9108)
       register('test1, self)
       writeFlag()
       receive {

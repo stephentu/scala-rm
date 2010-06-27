@@ -11,7 +11,7 @@ object Test2 {
     Debug.level = 0
     actor {
       self.trapExit = true
-      val master = select(Node("localhost", 9100), 'first)
+      val master = select(Node("localhost", 9103), 'first)
       link(master)
       master ! STOP
       react {

@@ -9,7 +9,7 @@ import scala.tools.partest.FileSync
 object B extends Actor {
   def act() {
     println("Actor B started...")
-    val aActor = select(Node("127.0.0.1", 9100), 'actorA, serviceFactory = NioServiceFactory)
+    val aActor = select(Node("127.0.0.1", 9106), 'actorA, serviceFactory = NioServiceFactory)
     aActor ! AMessage("Hello, world")
     react {
       case AMessage(m) =>

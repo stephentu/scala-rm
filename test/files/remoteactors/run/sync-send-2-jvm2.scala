@@ -10,7 +10,7 @@ object Test2 {
     Debug.level = 0
     waitFor(0)
     actor {
-      val test1 = select(Node("127.0.0.1", 9100), 'test1)
+      val test1 = select(Node("127.0.0.1", 9107), 'test1)
       test1 ! Msg("test2 to test1 [0]")
       react {
         case Msg(m) =>

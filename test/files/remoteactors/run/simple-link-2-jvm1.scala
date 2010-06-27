@@ -9,7 +9,7 @@ object Master extends Actor {
   trapExit = true
   def act() {
     //Debug.level = 3
-    alive(9900)
+    alive(9901)
     register('master, self)
     writeFlag()
     loop {

@@ -7,7 +7,7 @@ import scala.tools.partest.FileSync._
 
 object StopClient extends Actor {
   def act() {
-    val service = select(Node("127.0.0.1", 9100), 'lookupService)
+    val service = select(Node("127.0.0.1", 9101), 'lookupService)
     service ! StopService()
   }
 }

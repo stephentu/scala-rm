@@ -8,7 +8,7 @@ import scala.tools.partest.FileSync._
 object Slave extends Actor {
   //Debug.level = 3
   def act() {
-    val master = select(Node("localhost", 9900), 'master)
+    val master = select(Node("localhost", 9901), 'master)
     master ! "Hello"
 
     loop {

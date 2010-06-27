@@ -9,7 +9,7 @@ case class AMessage(msg: String)
 
 object A extends Actor {
   def act() {
-    alive(9100)
+    alive(9102)
     register('actorA, self)
     println("Actor A started...")
     react {
