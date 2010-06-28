@@ -24,13 +24,13 @@ private[actors] class Logger(tag: String) {
 
   private val tagString = if (tag == "") "" else " ["+tag+"]"
 
-  def info(s: String) =
+  def info(s: => String) =
     if (lev > 2) System.out.println("Info" + tagString + ": " + s)
 
-  def warning(s: String) =
+  def warning(s: => String) =
     if (lev > 1) System.err.println("Warning" + tagString + ": " + s)
 
-  def error(s: String) =
+  def error(s: => String) =
     if (lev > 0) System.err.println("Error" + tagString + ": " + s)
 
   def doInfo(b: => Unit) =
