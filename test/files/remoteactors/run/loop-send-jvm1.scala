@@ -11,7 +11,7 @@ object Test1 {
     actor {
       alive(9112)
       register('test1, self)
-      //writeFlag()
+      writeFlag()
       var i = 1
       loopWhile(i <= 10000) {
         react {
