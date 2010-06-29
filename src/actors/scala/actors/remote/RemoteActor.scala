@@ -181,7 +181,7 @@ object RemoteActor {
              sym: Symbol, 
              serializer: Serializer = defaultSerializer,
              serviceFactory: ServiceFactory = TcpServiceFactory): AbstractActor = synchronized {
-    selfKernel(serializer, serviceFactory).getOrCreateProxy(node, sym)
+    selfKernel(serializer, serviceFactory).getOrCreateProxy(node.canonicalForm, sym)
   }
 
   private[remote] def someNetKernel: NetKernel =

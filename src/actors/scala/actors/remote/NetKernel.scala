@@ -117,6 +117,7 @@ private[remote] class NetKernel(val service: Service) {
 
   val proxies = new HashMap[(Node, Symbol), Proxy]
 
+  // assumes node is canonical
   def getOrCreateProxy(senderNode: Node, senderName: Symbol): Proxy =
     proxies.synchronized {
       proxies.get((senderNode, senderName)) match {
@@ -185,31 +186,41 @@ private[remote] class NetKernel(val service: Service) {
   }
 
   def terminate() {
+
+    import scala.actors.Actor._
+
     // TODO: can a new proxy be created while terminate is running?
 
     // find all running proxies delegates
-    val runningProxies = proxies.values.filter(_.del.getState != Actor.State.Terminated)
+    val (runningProxies, numProxies) = proxies.synchronized {
+      (proxies.values.filter(_.del.getState != Actor.State.Terminated).toList, proxies.values.size)
+    }
+    val runningDelegates = runningProxies map (_.del)
 
-    // future to wait on
-    Debug.info(this + ": terminate(): waiting for (" + runningProxies.size + "/" + proxies.values.size + 
-        ") to terminate")
-    val countFuture = new CountFuture(runningProxies.size)
+    Debug.info(this + ": runningProxies: " + runningProxies)
+    Debug.info(this + ": runningDelegates: " + runningDelegates)
+    Debug.info(this + ": delegate states: " + runningDelegates.map(_.getState))
 
-    // register proxy on termination handlers so we know when
-    // all the proxies are actually finished terminating
-    proxies.values.map(_.del).foreach(_.onTerminate {
-      countFuture addOne 
-    })
+    Debug.info(this + ": terminate(): waiting for (" + 
+        runningProxies.size + "/" + numProxies + ") to terminate")
+
+    var i = 0
+    val finishActor = actor {
+      loopWhile(i < runningProxies.size) {
+        if (i < runningProxies.size)
+          react { case Terminate => i += 1 }
+        else {
+          service.terminate()
+          exit()
+        }
+      }
+    }
+
+    // register termination handlers on all delegates so we know when
+    // all the delegates are actually finished terminating
+    runningDelegates.foreach(_.onTerminate { finishActor.send(Terminate, null) })
 
     // tell all proxies to terminate
-    proxies.values foreach { _.send(Terminate, null) }
-
-    // wait on the future until all proxies are terminated
-    countFuture.await
-
-    Debug.info("woke up from countFuture")
-
-    // tell service to terminate
-    service.terminate()
+    runningProxies foreach { _.send(Terminate, null) }
   }
 }
