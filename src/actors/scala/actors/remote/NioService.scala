@@ -18,7 +18,33 @@ import java.nio.channels.{ SelectionKey, Selector,
                            ServerSocketChannel, SocketChannel }
 import java.nio.channels.spi.SelectorProvider
 
+import java.util.concurrent.LinkedBlockingQueue
+
 import scala.collection.mutable.{ HashMap, ListBuffer, Queue }
+
+private sealed trait WriteResult
+
+private case class ChannelNotConnected(chan: SocketChannel) extends WriteResult
+private case class WriteNotFinished(numWritten: Int)        extends WriteResult
+private case class WriteSuccessful(numWritten: Int)         extends WriteResult
+private case class WriteException(cause: Throwable)         extends Exception(cause) with WriteResult
+
+private class WriteEntry(val chan: SocketChannel, buf: ByteBuffer) {
+  def tryWrite = 
+    if (!chan.isConnected) 
+      ChannelNotConnected(chan)
+    else 
+      try {
+        val bytesWritten = chan.write(buf)
+        if (buf.remaining > 0)
+          WriteNotFinished(bytesWritten)
+        else
+          WriteSuccessful(bytesWritten)
+      } catch {
+        case t: Throwable =>
+          WriteException(t)
+      }
+}
 
 object NioService extends ServiceCreator with NodeImplicits {
 
@@ -38,10 +64,10 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
   def node = internalNode
 
-  private val registerQueue = new ListBuffer[RegisterInterestOp]
-  private val connectionMap = new HashMap[InetSocketAddress, SocketChannel]
-  private val channelMap    = new HashMap[SocketChannel, ChannelState]
-  private val channelWriteQueue = new HashMap[SocketChannel, Queue[ByteBuffer]]
+  private val registerQueue  = new ListBuffer[RegisterInterestOp]
+  private val connectionMap  = new HashMap[InetSocketAddress, SocketChannel]
+  private val channelMap     = new HashMap[SocketChannel, ChannelState]
+  private val writeQueue     = new LinkedBlockingQueue[WriteEntry]
   private val connectionLock = new Object
 
   private def registerOpChange(op: RegisterInterestOp) {
@@ -63,24 +89,9 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     }
   }
 
-  /** Assumes lock for channelWriteQueue is already held */
-  private def getQueueForChannel(chan: SocketChannel) = channelWriteQueue.get(chan) match {
-    case Some(queue) => queue
-    case None        =>
-      val queue = new Queue[ByteBuffer]
-      channelWriteQueue += chan -> queue
-      queue
-  }
-
   private def enqueueOnChannel(chan: SocketChannel, bytes: ByteBuffer) {
     Debug.info(this + ": enqueueOnChannel(chan = " + chan + ")")
-    channelWriteQueue.synchronized {
-      val queue = getQueueForChannel(chan)
-      queue += bytes
-      /** Signal to writeLoop that new data is available */
-      Debug.info(this + ": signaling to writeLoop of new data")
-      channelWriteQueue.notifyAll
-    }
+    writeQueue.put(new WriteEntry(chan, bytes))
   }
 
   private class ChannelState(chan: SocketChannel) {
@@ -488,47 +499,26 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
 
   private def writeLoop = {
     Debug.info(this + ": writeLoop started...")
+    var unfinishedEntry: Option[WriteEntry] = None
     while (true) {
       try {
-        channelWriteQueue.synchronized {
-          while (channelWriteQueue.isEmpty) {
-            Debug.info(this + ": writeLoop waiting for data...")
-            channelWriteQueue.notifyAll // announce that the queue is now empty
-            channelWriteQueue.wait      // wait for an announcment that the queue is no longer empty
-          }
-          Debug.info(this + ": writeLoop awaken, writing data...")
-          channelWriteQueue.retain { (chan, queue) => 
-            if (!chan.isConnected) {
-              Debug.info(this + ": writeLoop found unconnected channel in queue: " + chan)
-              false
-            } else {
-              Debug.info(this + ": writeLoop writing data for queue in channel: " + chan)
-              var keepTrying = true
-              while (!queue.isEmpty && keepTrying) {
-                val buf = queue.head
-                Debug.info(this + ": writeLoop attempting to write buf " + buf)
-                try {
-                  val bytesWritten = chan.write(buf)
-                  Debug.info(this + ": writeLoop wrote " + bytesWritten + " bytes to " + chan)
-                  if (buf.remaining > 0) {
-                    /** This channel is not ready to write anymore, so move on */
-                    Debug.info(this + ": writeLoop found saturated channel: " + chan)
-                    keepTrying = false 
-                  } else {
-                    Debug.info(this + ": buf is empty " + buf)
-                    /** Dequeue this buffer and move on */
-                    queue.dequeue
-                  } 
-                } catch {
-                  case ioe: IOException =>
-                    Debug.error(this + " caught IOException when writing to " + chan + ": " + ioe.getMessage)
-                    keepTrying = false
-                } 
-              }
-              !queue.isEmpty
-            }
-          } 
-        } 
+        val workingEntry = unfinishedEntry.getOrElse(writeQueue.take) 
+        unfinishedEntry  = workingEntry.tryWrite match {
+          case ChannelNotConnected(chan) =>
+            Debug.info(this + ": writeLoop found unconnected channel in queue: " + workingEntry.chan)
+            Debug.info(this + ": writeLoop removing entry")
+            None
+          case WriteNotFinished(written) =>
+            Debug.info(this + ": writeLoop wrote " + written + " bytes to " + workingEntry.chan)
+            Some(workingEntry)
+          case WriteSuccessful(written)    =>
+            Debug.info(this + ": writeLoop wrote " + written + " bytes to " + workingEntry.chan)
+            None
+          case WriteException(ex)        =>
+            Debug.error(this + " caught IOException when writing to " + workingEntry.chan + ": " + ex.getMessage)
+            Debug.error(this + " removing entry")
+            None
+        }
       } catch { 
         case e =>
           Debug.error(this + " caught exception in write loop: " + e.getMessage)
