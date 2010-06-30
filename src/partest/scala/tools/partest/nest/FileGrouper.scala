@@ -12,8 +12,8 @@ case object JvmGroupExtractor extends ExtractorType
 
 case class FileGroup(val files: List[File], val tpe: ExtractorType, 
                      parentDir: Option[File], groupName: Option[String]) {
-  def outDir  = new File(parentDir.get, groupName.get)
-  def logFile = new File(parentDir.get, groupName.get + ".log")
+  def outDir = new File(parentDir.get, groupName.get)
+  def logFile(kind: String) = new File(parentDir.get, groupName.get + "-" + kind + ".log")
 }
 
 /** 

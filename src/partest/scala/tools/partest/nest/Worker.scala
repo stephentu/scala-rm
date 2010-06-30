@@ -472,7 +472,7 @@ class Worker(val fileManager: FileManager) extends Actor {
     def compileFileGroup(fileGroup: FileGroup, kind: String) {
       val outDir = fileGroup.outDir
       outDir.mkdirs
-      if (!compileMgr.shouldCompile(outDir, fileGroup.files, kind, fileGroup.logFile))
+      if (!compileMgr.shouldCompile(outDir, fileGroup.files, kind, fileGroup.logFile(kind)))
         fail(fileGroup.files.head) // fail the first
     }
 
