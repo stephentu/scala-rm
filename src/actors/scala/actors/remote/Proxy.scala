@@ -23,6 +23,7 @@ private[remote] class Proxy(node: Node, name: Symbol, @transient var kernel: Net
   startDelegate()
 
   private def startDelegate() {
+    Debug.info(this + ": New delegate actor created")
     del = new DelegateActor(this, node, name, kernel)
     del.start()
   }

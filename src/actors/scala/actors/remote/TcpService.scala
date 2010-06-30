@@ -15,6 +15,7 @@ package remote
 import java.io.{DataInputStream, DataOutputStream, IOException}
 import java.lang.{Thread, SecurityException}
 import java.net.{InetAddress, ServerSocket, Socket, UnknownHostException}
+import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.HashMap
 
@@ -26,7 +27,14 @@ import scala.collection.mutable.HashMap
 object TcpService extends ServiceCreator {
   type MyService = TcpService
   def newService(port: Int, serializer: Serializer) = new TcpService(port, serializer)
-  var BufSize: Int = 65536
+  private var _bufSize = 65536
+  def BufSize: Int = _bufSize
+  def BufSize_=(bufSize: Int) {
+    if (bufSize < 0)
+      throw new IllegalArgumentException("BufSize must be non-negative")
+    _bufSize = bufSize
+  }
+  private val workerId = new AtomicInteger
 }
 
 /* Class TcpService.
@@ -34,7 +42,9 @@ object TcpService extends ServiceCreator {
  * @version 0.9.10
  * @author Philipp Haller
  */
-class TcpService(port: Int, val serializer: Serializer) extends Thread with Service {
+class TcpService(port: Int, val serializer: Serializer) 
+extends Thread("TcpService-" + port) with Service {
+  import TcpService.workerId
 
   private val internalNode = Node(InetAddress.getLocalHost.getHostAddress, port)
   def node: Node           = internalNode
@@ -92,29 +102,31 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
   }
 
   def terminate() {
+    Debug.info(this + ": terminate()")
     shouldTerminate = true
-    try {
-      new Socket(internalNode.address, internalNode.port)
-    } catch {
-      case ce: java.net.ConnectException =>
-        Debug.info(this+": caught "+ce)
+    synchronized {
+      if (serverSocket ne null) {
+        Debug.info(this + ": terminate() - closing ServerSocket " + serverSocket)
+        serverSocket.close
+      }
     }
   }
 
   private var shouldTerminate = false
+  private var serverSocket: ServerSocket = _
 
   override def run() {
     try {
-      val socket = new ServerSocket(port)
+      synchronized {
+        serverSocket = new ServerSocket(port)
+      }
       while (!shouldTerminate) {
         Debug.info(this+": waiting for new connection on port "+port+"...")
-        val nextClient = socket.accept()
+        val nextClient = serverSocket.accept()
         if (!shouldTerminate) {
-          val worker = new TcpServiceWorker(this, nextClient)
+          val worker = new TcpServiceWorker(workerId.getAndIncrement, this, nextClient)
           Debug.info("Started new "+worker)
-          assert(worker.remoteNode.isCanonical)
           addConnection(worker.remoteNode, worker) // add mapping for reply channel
-          worker.doHandshake
           worker.start()
         } else
           nextClient.close()
@@ -122,7 +134,7 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
     } catch {
       case e: Exception =>
         Debug.info(this+": caught "+e)
-        e.printStackTrace
+        Debug.doInfo { e.printStackTrace }
     } finally {
       Debug.info(this+": shutting down...")
       connections foreach { case (_, worker) => worker.halt }
@@ -149,10 +161,9 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
     if (!shouldTerminate) {
       Debug.info(this + ": connect0(n = " + n + ")")
       val socket = new Socket(n.address, n.port)
-      val worker = new TcpServiceWorker(this, socket)
-      worker.doHandshake
-      worker.start()
+      val worker = new TcpServiceWorker(workerId.getAndIncrement, this, socket)
       addConnection(n, worker) // re-entrant lock so this is OK
+      worker.start()
       worker
     } else 
       throw new IllegalStateException("Cannot connect to " + n + " when should be terminated")
@@ -167,7 +178,11 @@ class TcpService(port: Int, val serializer: Serializer) extends Thread with Serv
 }
 
 
-private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends Thread {
+private[actors] class TcpServiceWorker(id: Int, parent: TcpService, so: Socket) 
+extends Thread("TcpServiceWorker-" + id) {
+
+  import scala.concurrent.SyncVar
+
   val datain  = new DataInputStream(so.getInputStream)
   val dataout = new DataOutputStream(so.getOutputStream)
 
@@ -189,7 +204,7 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
             curState = nextState
             nextMsg
           } else
-            throw new IllegalHandshakeStateException
+            throw new IllegalHandshakeStateException("getNextMessage undefined at " + curState)
 
         def handleNextMessage(msg: Any) {
           if (s.handleHandshakeMessage.isDefinedAt((curState, msg))) {
@@ -197,7 +212,7 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
             Debug.info(this + ": " + Pair(curState, msg) + " -> " + nextState)
             curState = nextState
           } else
-            throw new IllegalHandshakeStateException
+            throw new IllegalHandshakeStateException("handleNextMessage undefined at " + curState)
         }
 
         def sendMessage(msg: Any) {
@@ -231,15 +246,21 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
   }
 
   def transmit(data: Array[Byte]): Unit = synchronized {
-    Debug.info(this+": transmitting " + data.length + " encoded bytes...")
-    assert(data.length > 0) // should never send unencoded data at this point
-    //data is already encoded
-    //dataout.writeInt(data.length)
-    dataout.write(data)
-    dataout.flush()
+    if (running) {
+      Debug.info(this+": checking to see if handshake is finished")
+      if (handshakeStatus.get) {
+        Debug.info(this+": transmitting " + data.length + " encoded bytes...")
+        assert(data.length > 0) // should never send unencoded data at this point
+        dataout.write(data)
+        dataout.flush()
+      } else 
+        throw new IllegalStateException("Cannot transmit when handshake failed")
+    } else
+      throw new IllegalStateException("Cannot transmit when not running")
   }
 
-  var running = true
+  var running         = true
+  val handshakeStatus = new SyncVar[Boolean]
 
   def halt = synchronized {
     so.close()
@@ -248,6 +269,10 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
 
   override def run() {
     try {
+      if (running) {
+        doHandshake
+        handshakeStatus.set(true)
+      }
       while (running) {
         val msg = parent.serializer.readObject(datain);
         parent.kernel.processMsg(remoteNode, msg)
@@ -264,5 +289,6 @@ private[actors] class TcpServiceWorker(parent: TcpService, so: Socket) extends T
     Debug.info(this+": service terminated at "+parent.node)
   }
 
-  override def toString = "<TcpServiceWorker: local = " + localNode + " -> remote = " + remoteNode + ">"
+  override def toString = "<TcpServiceWorker (id " + id + "): local = " + 
+    localNode + " -> remote = " + remoteNode + ">"
 }

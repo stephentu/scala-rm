@@ -211,10 +211,11 @@ private[remote] class NetKernel(val service: Service) {
 
     var i = 0
     val finishActor = actor {
-      loopWhile(i < runningProxies.size) {
+      loopWhile(i <= runningProxies.size) {
         if (i < runningProxies.size)
           react { case Terminate => i += 1 }
         else {
+          Debug.info(this + ": terminating service")
           service.terminate()
           exit()
         }

@@ -149,22 +149,25 @@ object RemoteActor {
   // does NOT invoke kernel.register()
   private def addNetKernel(actor: Actor, kern: NetKernel) {
     kernels += Pair(actor, kern) // assumes no such mapping previously exists
-
+    val kernLock = this
     actor.onTerminate {
       Debug.info("alive actor "+actor+" terminated")
-      // remove mapping for `actor`
-      kernels -= actor
       // Unregister actor from kernel
       kern.unregister(actor)
-      // terminate `kern` when it does
-      // not appear as value any more
-      if (!kernels.valuesIterator.contains(kern)) {
-        Debug.info("terminating "+kern)
-        // terminate NetKernel
-        kern.terminate()
+      val todo = kernLock.synchronized {
+        // remove mapping for `actor`
+        kernels -= actor
+        // terminate `kern` when it does
+        // not appear as value any more
+        if (!kernels.valuesIterator.contains(kern)) {
+          Debug.info("actor " + actor + " causing terminating "+kern)
+          // terminate NetKernel
+          () => kern.terminate()
+        } else 
+          () => ()
       }
+      todo()
     }
-
   }
 
   case class ActorNotAliveException(a: Actor) 

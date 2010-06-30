@@ -18,7 +18,9 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream,
                 DataOutputStream, EOFException, IOException, ObjectInputStream,
                 ObjectOutputStream}
 
-class IllegalHandshakeStateException extends Exception
+class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
+  def this() = this("Unknown cause")
+}
 
 abstract class Serializer {
 

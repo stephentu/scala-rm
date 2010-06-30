@@ -36,14 +36,14 @@ extends ObjectInputStream(in) {
     }
 }
 
+case object SendID
+case object ExpectID
+case object Resolved
+
 /**
  *  @author Philipp Haller
  */
 class JavaSerializer(cl: ClassLoader) extends Serializer {
-
-  case object SendID
-  case object ExpectID
-  case object Resolved
 
   override def initialState: Option[Any] = Some(SendID)
 
