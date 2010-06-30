@@ -11,6 +11,7 @@
 package scala.actors
 package remote
 
+import scala.collection.mutable.HashMap
 
 /**
  *  This object provides methods for creating, registering, and
@@ -40,7 +41,12 @@ package remote
  */
 object RemoteActor {
 
-  private val kernels = new scala.collection.mutable.HashMap[Actor, NetKernel]
+  /**
+   * Maps actors to their backing NetKernels. An actor can be backed by at
+   * most one netkernel (meaning that multiple calls to alive(port) within a
+   * single actor with different ports will throw an exception)
+   */
+  private val kernels = new HashMap[Actor, NetKernel]
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -59,34 +65,90 @@ object RemoteActor {
    */
   def defaultSerializer: Serializer = new JavaSerializer(cl)
 
-  sealed abstract class ServiceFactory extends Function2[Int, Serializer, Service]
+  sealed abstract class ServiceFactory extends Function2[Int, Serializer, Service] {
+    def createsService(service: Service): Boolean = service.getClass == serviceClass
+    def serviceClass: Class[_]
+  }
 
+  /**
+   * Uses default blocking IO
+   */
   final object TcpServiceFactory extends ServiceFactory {
     def apply(port: Int, serializer: Serializer): Service = TcpService(port, serializer)
+    override def serviceClass = classOf[TcpService]
+    override def toString = "<TcpServiceFactory>"
   }
 
+  /**
+   * Uses Java NIO
+   */
   final object NioServiceFactory extends ServiceFactory {
     def apply(port: Int, serializer: Serializer): Service = NioService(port, serializer)
+    override def serviceClass = classOf[NioService]
+    override def toString = "<NioServiceFactory>"
   }
+
+  case class ActorAlreadyAliveException(port: Int) 
+    extends Exception("Actor is already alive on port " + port)
+
+  case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
+    extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
+
+  case class InconsistentServiceException(expected: String, actual: String) 
+    extends Exception("Inconsistent service classes: Expected " + expected + " but got " + actual)
 
   /**
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>.
    */
+  @throws(classOf[ActorAlreadyAliveException])
+  @throws(classOf[InconsistentSerializerException])
+  @throws(classOf[InconsistentServiceException])
   def alive(port: Int, 
             serializer: Serializer = defaultSerializer, 
             serviceFactory: ServiceFactory = TcpServiceFactory): Unit = synchronized {
-    createNetKernelOnPort(Actor.self, port, serializer, serviceFactory)
+    kernels.get(Actor.self) match {
+      case Some(kern) =>
+        val MyPort       = port
+        val (portMismatch, kernPort) = kern.service.node match {
+          case Node(_, MyPort)  => (false, MyPort)
+          case Node(_, unknown) => (true, unknown)
+        }
+        if (portMismatch)
+          // are we running on the same port?
+          throw ActorAlreadyAliveException(kernPort)
+        ensureKernelConsistent(kern, serializer, serviceFactory) 
+        Debug.warning(this + ": alive already called on port " + port)
+      case None       =>
+        createNetKernelOnPort(Actor.self, port, serializer, serviceFactory)
+    }
   }
 
+  private def ensureKernelConsistent(kern: NetKernel, serializer: Serializer, serviceFactory: ServiceFactory) {
+    if (kern.service.serializer != serializer)
+      // are we using the same serializer?
+      throw InconsistentSerializerException(serializer, kern.service.serializer)
+    if (!(serviceFactory createsService kern.service))
+      // are we using the same service layer?
+      throw InconsistentServiceException(serviceFactory.serviceClass.getName, kern.service.getClass.getName)
+  }
+
+  // assumes lock for this is already held
   private[remote] def createNetKernelOnPort(actor: Actor, 
                                             port: Int, 
                                             serializer: Serializer, 
                                             serviceFactory: ServiceFactory): NetKernel = {
-    Debug.info("createNetKernelOnPort: creating net kernel for actor " + actor + " on port " + port)
+    Debug.info("createNetKernelOnPort: creating net kernel for actor " + actor + 
+        " on port " + port + " using service factory " + serviceFactory)
     val serv = serviceFactory(port, serializer)
     val kern = serv.kernel
-    kernels += Pair(actor, kern)
+    addNetKernel(actor, kern)
+    kern
+  }
+
+  // does NOT invoke kernel.register()
+  private def addNetKernel(actor: Actor, kern: NetKernel) {
+    kernels += Pair(actor, kern) // assumes no such mapping previously exists
 
     actor.onTerminate {
       Debug.info("alive actor "+actor+" terminated")
@@ -103,38 +165,29 @@ object RemoteActor {
       }
     }
 
-    kern
   }
 
-  @deprecated("this member is going to be removed in a future release")
-  def createKernelOnPort(port: Int): NetKernel =
-    createNetKernelOnPort(Actor.self, port, defaultSerializer, TcpServiceFactory)
+  case class ActorNotAliveException(a: Actor) 
+    extends Exception("Actor " + a + " is not currently alive (listening on port)")
+
+  case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
+    extends Exception("Name " + sym + " is already registered for channel " + a)
 
   /**
    * Registers <code>a</code> under <code>name</code> on this
-   * node.
+   * node. Is an error if the actor is not currently alive, or if
+   * the name being registered is already being used to identify
+   * another actor on the same port.
    */
-  def register(name: Symbol, 
-               a: Actor, 
-               serializer: Serializer = defaultSerializer,
-               serviceFactory: ServiceFactory = TcpServiceFactory): Unit = synchronized {
-    val kernel = kernelFor(a, serializer, serviceFactory)
+  @throws(classOf[ActorNotAliveException])
+  @throws(classOf[NameAlreadyRegisteredException])
+  def register(name: Symbol, a: Actor): Unit = synchronized {
+    val kernel = kernelFor(a).getOrElse(throw ActorNotAliveException(a)) 
     kernel.register(name, a)
   }
 
-  private def selfKernel(serializer: Serializer, serviceFactory: ServiceFactory) = 
-    kernelFor(Actor.self, serializer, serviceFactory)
-
-  private def kernelFor(a: Actor, serializer: Serializer, serviceFactory: ServiceFactory) = kernels.get(a) match {
-    case None =>
-      // establish remotely accessible
-      // return path (sender)
-      createNetKernelOnPort(a, TcpService.generatePort, serializer, serviceFactory)
-    case Some(k) =>
-      // serializer + factory arguments are ignored here in the case where we already have
-      // a NetKernel instance
-      k
-  }
+  private def selfKernel = kernelFor(Actor.self)
+  private def kernelFor(a: Actor) = kernels.get(a)
 
   def remoteStart[A <: Actor, S <: Serializer](node: Node, 
                                                serializer: Serializer,
@@ -168,7 +221,7 @@ object RemoteActor {
 
   def stopListeners(): Unit = synchronized {
     if (remoteListenerStarted) {
-      RemoteStartActor ! Terminate
+      RemoteStartActor.send(Terminate, null)
       remoteListenerStarted = false
     }
   }
@@ -177,19 +230,41 @@ object RemoteActor {
    * Returns (a proxy for) the actor registered under
    * <code>name</code> on <code>node</code>.
    */
+  @throws(classOf[InconsistentSerializerException])
+  @throws(classOf[InconsistentServiceException])
   def select(node: Node, 
              sym: Symbol, 
              serializer: Serializer = defaultSerializer,
              serviceFactory: ServiceFactory = TcpServiceFactory): AbstractActor = synchronized {
-    selfKernel(serializer, serviceFactory).getOrCreateProxy(node.canonicalForm, sym)
+    val thisKern = selfKernel match {
+      case Some(kern) => 
+        // a NetKernel was found, but we need to validate if its consistent
+        // with serializer + serviceFactory
+        ensureKernelConsistent(kern, serializer, serviceFactory)
+        kern
+      case None       =>
+        // if there's no selfKernel yet, assume the user doesn't care about
+        // which port this actor will listen on. Therefore, search all kernels
+        // first to see if we can find a suitable kernel (matching serializer
+        // + serviceFactory), before picking a random port
+        val matches = kernels.valuesIterator.filter(kern => {
+          (kern.service.serializer == serializer) && 
+          (serviceFactory createsService kern.service)
+        }).toList
+        if (matches.isEmpty) {
+          // no candidates found, so use random port
+          createNetKernelOnPort(Actor.self, TcpService.generatePort, serializer, serviceFactory)
+        } else {
+          // valid candidate found
+          val kern = matches.head
+          // update mapping 
+          addNetKernel(Actor.self, kern)
+          kern
+        }
+    }
+    thisKern.getOrCreateProxy(node.canonicalForm, sym)
   }
 
-  private[remote] def someNetKernel: NetKernel =
-    kernels.valuesIterator.next
-
-  @deprecated("this member is going to be removed in a future release")
-  def someKernel: NetKernel =
-    someNetKernel
 }
 
 
@@ -203,7 +278,16 @@ object RemoteActor {
  */
 case class Node(address: String, port: Int) {
   import java.net.{ InetAddress, InetSocketAddress }
+
+  /**
+   * Returns an InetSocketAddress representation of this Node
+   */
   def toInetSocketAddress = new InetSocketAddress(address, port)
+
+  /**
+   * Returns the canonical representation of this form, resolving the
+   * address into canonical form (as determined by the Java API)
+   */
   def canonicalForm: Node = {
     val a = InetAddress.getByName(address)
     Node(a.getCanonicalHostName, port)

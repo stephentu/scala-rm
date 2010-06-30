@@ -100,16 +100,10 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
   var channelMap = new HashMap[Symbol, OutputChannel[Any]]
   var sessionMap = new HashMap[OutputChannel[Any], Symbol]
 
-  private def safely(f: => Unit) {
-    try {
-      f
-    } catch {
-      case t: Throwable =>
-        Debug.error(this + ": caught " + t.getMessage + " in react loop")
-        Debug.doError {
-          t.printStackTrace
-        }
-    }
+  override def exceptionHandler: PartialFunction[Exception, Unit] = {
+    case e: Exception =>
+      Debug.error(this + ": caught exception with message: " + e.getMessage)
+      Debug.doError { e.printStackTrace }
   }
 
   /** 
@@ -129,12 +123,12 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
         react {
           case cmd@Apply0(rfun) =>
             Debug.info("cmd@Apply0: " + cmd)
-            safely { kernel.remoteApply(node, name, sender, rfun) }
+            kernel.remoteApply(node, name, sender, rfun)
 
           case cmd@LocalApply0(rfun, target) =>
             Debug.info("cmd@LocalApply0: " + cmd)
             Debug.info("target: " + target + ", creator: " + creator)
-            safely { rfun(target, creator) }
+            rfun(target, creator)
 
           // Request from remote proxy.
           // `this` is local proxy.
@@ -179,7 +173,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
                 sessionMap -= ch
                 val msg = resp.asInstanceOf[AnyRef]
                 // send back response
-                safely { kernel.forward(sender, node, name, msg, sid) }
+                kernel.forward(sender, node, name, msg, sid)
 
               case None =>
                 Debug.info(this+": cannot find session for "+ch)
@@ -204,9 +198,10 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
                 'nosession 
               }
 
-            safely { kernel.forward(sender, node, name, msg, sessionName) }
+            kernel.forward(sender, node, name, msg, sessionName)
         }
     }
   }
 
+  override def toString = "<DelegateActor for: " + creator + ">"
 }

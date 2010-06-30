@@ -69,11 +69,25 @@ private[remote] class NetKernel(val service: Service) {
   private val actors = new HashMap[Symbol, OutputChannel[Any]]
   private val names = new HashMap[OutputChannel[Any], Symbol]
 
+  import RemoteActor.NameAlreadyRegisteredException
+
+  @throws(classOf[NameAlreadyRegisteredException])
   def register(name: Symbol, a: OutputChannel[Any]): Unit = synchronized {
-    actors += Pair(name, a)
-    names  += Pair(a, name)
+    actors.get(name) match {
+      case Some(actor) =>
+        if (a != actor)
+          // trying to clobber the name of another actor
+          throw NameAlreadyRegisteredException(name, actor)
+        Debug.warning("registering " + name + " to channel " + a)
+      case None        =>
+        actors += Pair(name, a)
+        names  += Pair(a, name)
+    }
   }
 
+  /**
+   * Errors silently if a mapping did not previously exist
+   */
   def unregister(a: OutputChannel[Any]): Unit = synchronized {
     names -= a
     actors.retain((_,v) => v != a)
@@ -82,6 +96,7 @@ private[remote] class NetKernel(val service: Service) {
   def getOrCreateName(from: OutputChannel[Any]) = names.get(from) match {
     case None =>
       val freshName = FreshNameCreator.newName("remotesender")
+      Debug.info("Made freshName for output channel: " + from)
       register(freshName, from)
       freshName
     case Some(name) =>
@@ -109,7 +124,7 @@ private[remote] class NetKernel(val service: Service) {
     sendToNode(receiverLoc.node, RemoteApply0(senderLoc, receiverLoc, rfun))
   }
 
-  def createProxy(node: Node, sym: Symbol): Proxy = {
+  private def createProxy(node: Node, sym: Symbol): Proxy = {
     val p = new Proxy(node, sym, this)
     proxies += Pair((node, sym), p)
     p
@@ -123,16 +138,6 @@ private[remote] class NetKernel(val service: Service) {
       proxies.get((senderNode, senderName)) match {
         case Some(senderProxy) => senderProxy
         case None              => createProxy(senderNode, senderName)
-      }
-    }
-
-  /* Register proxy if no other proxy has been registered.
-   */
-  def registerProxy(senderNode: Node, senderName: Symbol, p: Proxy): Unit =
-    proxies.synchronized {
-      proxies.get((senderNode, senderName)) match {
-        case Some(senderProxy) => // do nothing
-        case None              => proxies += Pair((senderNode, senderName), p)
       }
     }
 
