@@ -46,6 +46,8 @@ private class WriteEntry(val chan: SocketChannel, buf: ByteBuffer) {
       }
 }
 
+
+
 object NioService extends ServiceCreator with NodeImplicits {
 
   type MyService = NioService
@@ -68,7 +70,44 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
   private val connectionMap  = new HashMap[InetSocketAddress, SocketChannel]
   private val channelMap     = new HashMap[SocketChannel, ChannelState]
   private val writeQueue     = new LinkedBlockingQueue[WriteEntry]
+  private val readQueue      = new LinkedBlockingQueue[ReadEntry]
   private val connectionLock = new Object
+
+  private class ReadEntry(state: ChannelState, buf: Array[Byte], errorHandler: Exception => Unit) {
+    def tryRead {
+      /** Comsume the chunk into the message state handler */
+      state.messageState.consume(buf)
+
+      def forwardKernel(meta: Array[Byte], data: Array[Byte]) {
+        val msg = serializer.deserialize(Some(meta), data)
+        kernel.processMsg(state.remoteNode, msg)
+      }
+
+      def forwardHandshake(meta: Array[Byte], data: Array[Byte]) {
+        val handshakeState = state.handshakeState.get
+        assert(!handshakeState.done && handshakeState.isReceiving)
+        val msg = serializer.javaDeserialize(Some(meta), data)
+        handshakeState.processMessage(msg)
+      }
+
+      while (state.messageState.hasSerializerMessage) {
+        val (meta, data) = state.messageState.nextSerializerMessage
+        state.handshakeState match {
+          case Some(handshakeState) =>
+            if (handshakeState.done)
+              forwardKernel(meta, data)
+            else if (handshakeState.isReceiving)
+              forwardHandshake(meta, data)
+            else {
+              Debug.error(this + ": tryRead - handshake should never be sending here")
+              errorHandler(new IllegalStateException("handshake should never be sending here"))
+            }
+          case None                 => 
+            forwardKernel(meta, data)
+        }
+      }
+    }
+  }
 
   private def registerOpChange(op: RegisterInterestOp) {
     registerQueue.synchronized {
@@ -101,6 +140,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       messageState.reset
       handshakeState.foreach(_.reset)
     }
+    def remoteNode: Node = chan.socket
   }
 
   sealed trait MessageStateEnum
@@ -302,18 +342,20 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     Debug.info(this + ": Now serving on channel " + node)
     startSelectLoop
     startWriteLoop
+    startReadLoop
   }
 
-  private def startAction(action: => Unit) {
+  private def startAction(name: String)(action: => Unit) {
     val t = new Thread(new Runnable {
       override def run = action
     })
     t.setDaemon(true) /** Set daemon so we don't have to worry about explicit termination */
+    t.setName("NioService-" + port + "-" + name)
     t.start
   }
 
   private def startSelectLoop {
-    startAction(selectLoop)
+    startAction("SelectLoop")(selectLoop)
   }
 
   /** Warning: direct byte buffers are not guaranteed to be backed by array */
@@ -391,7 +433,7 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       val socketChannel = key.channel.asInstanceOf[SocketChannel]
       val state = getChannelState(socketChannel)
 
-      def tearDownChannel(ex: Throwable) {
+      def tearDownChannel(ex: Exception) {
         key.cancel
         socketChannel.close
         state.handshakeState.foreach(_.future.finishWithError(ex))
@@ -427,37 +469,8 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
       readBuffer.rewind
       readBuffer.get(chunk) /** copy what we just read into chunk */
 
-      /** Comsume the chunk into the message state handler */
-      state.messageState.consume(chunk)
-
-      def forwardKernel(meta: Array[Byte], data: Array[Byte]) {
-        val msg = serializer.deserialize(Some(meta), data)
-        kernel.processMsg(socketChannel.socket, msg)
-      }
-
-      def forwardHandshake(meta: Array[Byte], data: Array[Byte]) {
-        val handshakeState = state.handshakeState.get
-        assert(!handshakeState.done && handshakeState.isReceiving)
-        val msg = serializer.javaDeserialize(Some(meta), data)
-        handshakeState.processMessage(msg)
-      }
-
-      while (state.messageState.hasSerializerMessage) {
-        val (meta, data) = state.messageState.nextSerializerMessage
-        state.handshakeState match {
-          case Some(handshakeState) =>
-            if (handshakeState.done)
-              forwardKernel(meta, data)
-            else if (handshakeState.isReceiving)
-              forwardHandshake(meta, data)
-            else {
-              Debug.error(this + ": processRead - handshake should never be sending here")
-              tearDownChannel(new IllegalHandshakeStateException)
-            }
-          case None                 => 
-            forwardKernel(meta, data)
-        }
-      }
+      // To be processed by the readLoop
+      readQueue.put(new ReadEntry(state, chunk, tearDownChannel _))
 
     }
 
@@ -495,7 +508,9 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
     }
   }
 
-  private def startWriteLoop = startAction(writeLoop) 
+  private def startWriteLoop {
+    startAction("WriteLoop")(writeLoop) 
+  }
 
   private def writeLoop = {
     Debug.info(this + ": writeLoop started...")
@@ -520,9 +535,27 @@ class NioService(port: Int, val serializer: Serializer) extends Service {
             None
         }
       } catch { 
-        case e =>
+        case e: Exception =>
           Debug.error(this + " caught exception in write loop: " + e.getMessage)
-          e.printStackTrace
+          Debug.doError { e.printStackTrace }
+      }
+    }
+  }
+
+  private def startReadLoop {
+    startAction("ReadLoop")(readLoop)
+  }
+
+  private def readLoop = {
+    Debug.info(this + ": readLoop started...")
+    while (true) {
+      try {
+        val nextRead = readQueue.take
+        nextRead.tryRead
+      } catch {
+        case e: Exception =>
+          Debug.error(this + " caught exception in read loop: " + e.getMessage)
+          Debug.doError { e.printStackTrace }
       }
     }
   }
