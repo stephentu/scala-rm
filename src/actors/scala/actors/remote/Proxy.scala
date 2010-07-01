@@ -16,7 +16,8 @@ import scala.collection.mutable.HashMap
  * @author Philipp Haller
  */
 @serializable
-private[remote] class Proxy(node: Node, name: Symbol, @transient var kernel: NetKernel) extends AbstractActor {
+private[remote] class Proxy(conn: Connection, name: Symbol, @transient var kernel: NetKernel) 
+  extends AbstractActor {
 
   @transient
   private[remote] var del: Actor = null
@@ -24,7 +25,7 @@ private[remote] class Proxy(node: Node, name: Symbol, @transient var kernel: Net
 
   private def startDelegate() {
     Debug.info(this + ": New delegate actor created")
-    del = new DelegateActor(this, node, name, kernel)
+    del = new DelegateActor(this, conn, name, kernel)
     del.start()
   }
 
@@ -61,8 +62,7 @@ private[remote] class Proxy(node: Node, name: Symbol, @transient var kernel: Net
   def exit(from: AbstractActor, reason: AnyRef): Unit =
     del ! Apply0(new ExitFun(reason))
 
-  override def toString() =
-    name+"@"+node
+  override def toString = "<" + name + "@" + conn.remoteNode + ">"
 }
 
 @serializable
@@ -97,7 +97,7 @@ private[remote] case class Apply0(rfun: Function2[AbstractActor, Proxy, Unit])
 /**
  * @author Philipp Haller
  */
-private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, kernel: NetKernel) extends Actor {
+private[remote] class DelegateActor(creator: Proxy, conn: Connection, name: Symbol, kernel: NetKernel) extends Actor {
   var channelMap = new HashMap[Symbol, OutputChannel[Any]]
   var sessionMap = new HashMap[OutputChannel[Any], Symbol]
 
@@ -124,7 +124,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
         react {
           case cmd@Apply0(rfun) =>
             Debug.info("cmd@Apply0: " + cmd)
-            kernel.remoteApply(node, name, sender, rfun)
+            kernel.remoteApply(conn, name, sender, rfun)
 
           case cmd@LocalApply0(rfun, target) =>
             Debug.info("cmd@LocalApply0: " + cmd)
@@ -160,7 +160,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
             }
 
           case cmd@Terminate =>
-            Debug.info("cmd@Terminate: terminating delegate actor to node " + node)
+            Debug.info("cmd@Terminate: terminating delegate actor to node " + conn.remoteNode)
             exit()
 
           // local proxy receives response to
@@ -174,7 +174,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
                 sessionMap -= ch
                 val msg = resp.asInstanceOf[AnyRef]
                 // send back response
-                kernel.forward(sender, node, name, msg, sid)
+                kernel.forward(sender, conn, name, msg, sid)
 
               case None =>
                 Debug.info(this+": cannot find session for "+ch)
@@ -189,7 +189,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
               if (sender.getClass.toString.contains("Channel")) { // how bout sender.isInstanceOf[Channel[_]] ?
                 Debug.info(this + ": sync send: sender: " + sender)
                 // create fresh session ID...
-                val fresh = FreshNameCreator.newName(node+"@"+name)
+                val fresh = FreshNameCreator.newName(conn.remoteNode+"@"+name)
                 // ...that maps to reply channel
                 channelMap += Pair(fresh, sender)
                 Debug.info(this + ": mapped " + fresh + " -> " + sender)
@@ -199,7 +199,7 @@ private[remote] class DelegateActor(creator: Proxy, node: Node, name: Symbol, ke
                 'nosession 
               }
 
-            kernel.forward(sender, node, name, msg, sessionName)
+            kernel.forward(sender, conn, name, msg, sessionName)
         }
     }
   }

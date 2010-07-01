@@ -13,43 +13,88 @@ package remote
 import java.io.{ ByteArrayOutputStream, DataOutputStream }
 
 /**
- * @version 0.9.10
- * @author Philipp Haller
+ * Mode of operation. Can be blocking or non-blocking
  */
-trait Service {
-  val kernel = new NetKernel(this)
-  val serializer: Serializer
+object ServiceMode extends Enumeration {
+  val Blocking, NonBlocking = Value
+}
 
-  /**
-   * Returns the node that this service is listening on
-   */
-  def node: Node
+trait HasServiceMode {
+  def mode: ServiceMode
+}
 
-  /**
-   * Returns the local endpoint to connect to remote node n
-   * @param   n - remote node
-   * @returns local node
-   */
-  def localNodeFor(n: Node): Node
+trait CanTerminate {
+  def terminate(): Unit
+}
 
-  /**
-   * Send message datums to the given node, as separate messages, but 
-   * preserving the order on the wire. This should be an atomic operation
-   * in the sense that no other data should be mixed in with this data stream
-   * when it is sent
-   */
-  def send(node: Node, data: Array[Byte]*) {
-    rawSend(node, encodeAndConcat(data.toArray))
+private class HandlerGroup {
+  val handlers = new ListBuffer[() => Unit]
+  def addHandler(f: => Unit) {
+    handler += () => f
+  }
+  def invokeHandlers() {
+    handlers.foreach(f => f())
+  }
+}
+
+trait TerminationHandlers { this: CanTerminate =>
+
+  private val preTerminateHandlers  = new HandlerGroup
+  private val postTerminateHandlers = new HandlerGroup
+
+  protected def doTerminate(): Unit
+  
+  override def terminate() {
+    preTerminateHandlers.invokeHandlers()
+    doTerminate() 
+    postTerminateHandlers.invokeHandlers() 
   }
 
-  /**
-   * Implemented by subclasses to perform the actual transmission
-   * of the data across the wire. The implementation should make
-   * no effort to encode the data, but should only send the raw
-   * bytes over the wire.
-   */
-  protected def rawSend(node: Node, data: Array[Byte]): Unit
+  def preTerminate(f: => Unit) {
+    preTerminateHandlers addHandler f
+  }
 
+  def postTerminate(f: => Unit) {
+    postTerminateHandlers addHandler f
+  }
+
+}
+
+
+trait Listener extends HasServiceMode with CanTerminate {
+  def port: Int
+}
+
+trait Connection extends HasServiceMode with CanTerminate with TerminationHandlers {
+
+  def serializer: Serializer
+
+  /**
+   * Returns the (canonical) remote node
+   */
+  def remoteNode: Node
+
+  /**
+   * Returns the (canonical) local node
+   */
+  def localNode: Node
+
+  /**
+   * Send data down the wire. There are no specified semantics of
+   * send other than the data arrives in the same order (for instance,
+   * send could be async or not, it is implementation dependent) and 
+   * together on the wire
+   */
+  def send(data: Array[Byte]*): Unit
+
+}
+
+trait ServiceProvider extends HasServiceMode with CanTerminate {
+  def connect(node: Node, serializer: Serializer): Connection
+  def listen(port: Int): Listener
+}
+
+trait EncodingHelpers {
   /**
    * Takes datums, encodes each datum separately, and returns
    * a single byte array which is the concatenation of the encoded
@@ -64,14 +109,63 @@ trait Service {
    * Default encoding is to simply prepend the length of the
    * unencoded message as a 4-byte int.
    */
-  def encode(unenc: Array[Byte]): Array[Byte] = {
+  protected def encode(unenc: Array[Byte]): Array[Byte] = {
     val baos    = new ByteArrayOutputStream(unenc.length + 4)
     val dataout = new DataOutputStream(baos)
     dataout.writeInt(unenc.length)
     dataout.write(unenc)
     baos.toByteArray
   }
+}
 
-  def start(): Unit
-  def terminate(): Unit
+/**
+ * @version 0.9.10
+ * @author Philipp Haller
+ */
+trait Service extends CanTerminate {
+
+  protected def serviceProviderFor(mode: ServiceMode.Value): ServiceProvider
+
+  private val nonBlockingService = serviceProviderFor ServiceMode.NonBlocking
+  private val blockingService    = serviceProviderFor ServiceMode.Blocking
+
+  private def serviceProviderFor0(mode: ServiceMode.Value) = mode match {
+    case ServiceMode.NonBlocking => nonBlockingService
+    case ServiceMode.Blocking    => blockingService
+  }
+
+  private val connections = new HashMap[(Node, Serializer, Mode), Connection]
+
+  def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): Connection = synchronized {
+    connections.get((node, serializer, mode)) match {
+      case Some(conn) => conn
+      case None =>
+        val newConn = serviceProviderFor0(mode).connect(node, serializer)
+        connections += (node, serializer, mode) -> newConn
+        newConn.preTerminate { connections -= (node, serializer, mode) }
+        newConn
+    }
+  }
+
+  private val listeners = new HashMap[Int, Listener]
+
+  /**
+   * Start listening on this port, using mode
+   */
+  def listen(port: Int, mode: ServiceMode.Value) {
+    serviceProviderFor0(mode).listen(port)
+  }
+
+  /**
+   * Stop listening on this port 
+   */
+  def unlisten(port: Int) {
+    // TODO: error handle
+    listeners(port).stopListening
+  }
+
+  override def terminate() {
+
+  }
+
 }
