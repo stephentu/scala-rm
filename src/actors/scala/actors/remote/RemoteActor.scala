@@ -52,11 +52,9 @@ object RemoteActor {
   private val portToMode = new HashMap[Int, ServiceMode]
 
   /**
-   * Maps mode to backing service implementation
+   * Backing net kernel
    */
-  private val modeToService = new HashMap[ServiceMode.Value, Service]
-
-  private lazy val netKernel = new NetKernel
+  private lazy val netKernel = new NetKernel(new StandardService)
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -119,20 +117,7 @@ object RemoteActor {
     netKernel.register(name, actor)
   }
 
-  private def listenOnPort(port: Int, mode: ServiceMode.Value) { getService(mode).listen(port) }
-
-  private def getService(mode: ServiceMode.value) = synchronized {
-    modeToService.get(mode) match {
-      case Some(serv) => serv
-      case None       => 
-        val serv = mode match {
-          case ServiceMode.Blocking    => new BlockingService
-          case ServiceMode.NonBlocking => new NonBlockingService
-        }
-        modeToService += mode -> serv
-        serv
-    }
-  }
+  private def listenOnPort(port: Int, mode: ServiceMode.Value) { netKernel.listen(port, mode) }
 
   // does NOT invoke kernel.register()
   //private def addNetKernel(actor: Actor, kern: NetKernel) {

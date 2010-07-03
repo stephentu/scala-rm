@@ -24,6 +24,9 @@ trait HasServiceMode {
 }
 
 trait CanTerminate {
+  /**
+   * Can assume that terminate() will only be invoked at most once
+   */
   def terminate(): Unit
 }
 
@@ -34,6 +37,19 @@ private class HandlerGroup {
   }
   def invokeHandlers() {
     handlers.foreach(f => f())
+  }
+}
+
+trait TerminateOnError { this: CanTerminate =>
+  protected def terminateOnError(f: => Unit) {
+    try {
+      f
+    } catch {
+      case e: Exception =>
+        Debug.error(this + ": caught " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+        terminate()
+    }
   }
 }
 
@@ -60,14 +76,35 @@ trait TerminationHandlers { this: CanTerminate =>
 
 }
 
+trait ReceiveCallbackAware {
+  type ReceiveCallback = (Connection, Array[Byte]) => Unit
+}
 
-trait Listener extends HasServiceMode with CanTerminate {
+trait Listener 
+  extends HasServiceMode 
+  with    CanTerminate
+  with    ConnectionCallbackAware {
+
+  protected val connectionCallback: ConnectionCallback
+
+  protected def receiveConnection(conn: Connection) {
+    connectionCallback(this, conn)
+  }
+
   def port: Int
 }
 
-trait Connection extends HasServiceMode with CanTerminate with TerminationHandlers {
+trait Connection 
+  extends HasServiceMode 
+  with    CanTerminate 
+  with    TerminationHandlers 
+  with    ReceiveCallbackAware {
 
-  def serializer: Serializer
+  protected val receiveCallback: ReceiveCallback
+
+  protected def receiveBytes(bytes: Array[Byte]) {
+    receiveCallback(this, bytes)
+  }
 
   /**
    * Returns the (canonical) remote node
@@ -89,9 +126,19 @@ trait Connection extends HasServiceMode with CanTerminate with TerminationHandle
 
 }
 
-trait ServiceProvider extends HasServiceMode with CanTerminate {
-  def connect(node: Node, serializer: Serializer): Connection
-  def listen(port: Int): Listener
+trait ConnectionCallbackAware {
+  type ConnectionCallback = (Listener, Connection) => Unit
+}
+
+trait ServiceProvider 
+  extends HasServiceMode 
+  with    CanTerminate 
+  with    ReceiveCallbackAware 
+  with    ConnectionCallbackAware {
+
+  def connect(node: Node, receiveCallback: ReceiveCallback): Connection
+  def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: ReceiveCallback): Listener
+
 }
 
 trait EncodingHelpers {
@@ -110,6 +157,7 @@ trait EncodingHelpers {
    * unencoded message as a 4-byte int.
    */
   protected def encode(unenc: Array[Byte]): Array[Byte] = {
+    // TODO: handle overflow
     val baos    = new ByteArrayOutputStream(unenc.length + 4)
     val dataout = new DataOutputStream(baos)
     dataout.writeInt(unenc.length)
@@ -126,8 +174,18 @@ trait Service extends CanTerminate {
 
   protected def serviceProviderFor(mode: ServiceMode.Value): ServiceProvider
 
-  private val nonBlockingService = serviceProviderFor ServiceMode.NonBlocking
-  private val blockingService    = serviceProviderFor ServiceMode.Blocking
+  private var nonBlockServiceSet = false
+  private var blockServiceSet    = false
+
+  private lazy val nonBlockingService = {
+    nonBlockServiceSet = true
+    serviceProviderFor ServiceMode.NonBlocking
+  }
+
+  private lazy val blockingService = {
+    blockServiceSet = true
+    serviceProviderFor ServiceMode.Blocking
+  }
 
   private def serviceProviderFor0(mode: ServiceMode.Value) = mode match {
     case ServiceMode.NonBlocking => nonBlockingService
@@ -136,11 +194,11 @@ trait Service extends CanTerminate {
 
   private val connections = new HashMap[(Node, Serializer, Mode), Connection]
 
-  def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): Connection = synchronized {
+  def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): Connection = connections.synchronized {
     connections.get((node, serializer, mode)) match {
       case Some(conn) => conn
       case None =>
-        val newConn = serviceProviderFor0(mode).connect(node, serializer)
+        val newConn = serviceProviderFor0(mode).connect(node, /* TODO: CALLBACK */ null)
         connections += (node, serializer, mode) -> newConn
         newConn.preTerminate { connections -= (node, serializer, mode) }
         newConn
@@ -153,18 +211,39 @@ trait Service extends CanTerminate {
    * Start listening on this port, using mode
    */
   def listen(port: Int, mode: ServiceMode.Value) {
-    serviceProviderFor0(mode).listen(port)
+    listeners.synchronized { 
+      listeners.get(port) match {
+        case Some(listener) =>
+          // do nothing
+        case None =>
+          val listener = serviceProviderFor0(mode).listen(port)
+          listerens += port -> listener
+          listener
+      }
+    }
   }
 
   /**
    * Stop listening on this port 
    */
   def unlisten(port: Int) {
-    // TODO: error handle
-    listeners(port).stopListening
+    listeners.synchronized [
+      listeners.get(port) match {
+        case Some(listener) =>
+          listener.terminate()
+        case None =>
+          throw new IllegalArgumentException("No listener on port " + port)
+      }
+    }
   }
 
   override def terminate() {
+
+    if (nonBlockServiceSet)
+      nonBlockingService.terminate()
+
+    if (blockServiceSet)
+      blockingService.terminate()
 
   }
 

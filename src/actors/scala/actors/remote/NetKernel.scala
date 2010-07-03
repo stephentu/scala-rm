@@ -30,7 +30,7 @@ case class Locator(node: Node, name: Symbol)
  * @version 0.9.17
  * @author Philipp Haller
  */
-private[remote] class NetKernel(val service: Service) {
+private[remote] class NetKernel(service: Service) {
 
   import java.io.IOException
 
@@ -124,6 +124,10 @@ private[remote] class NetKernel(val service: Service) {
 
   def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): Connection =
     service.connect(node, serializer, serviceMode)
+
+  def listen(port: Int, serviceMode: ServiceMode.Value) {
+    service.listen(port, serviceMode)
+  }
 
   def getOrCreateProxy(conn: Connection, senderName: Symbol): Proxy =
     proxies.synchronized {
