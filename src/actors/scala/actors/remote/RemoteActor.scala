@@ -49,12 +49,12 @@ object RemoteActor {
   /**
    * Maps listening port to the mode it is running in
    */
-  private val portToMode = new HashMap[Int, ServiceMode]
+  private val portToMode = new HashMap[Int, ServiceMode.Value]
 
   /**
    * Backing net kernel
    */
-  private lazy val netKernel = new NetKernel(new StandardService)
+  private lazy val netKernel = new NetKernel
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -76,7 +76,7 @@ object RemoteActor {
   case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
     extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
-  case class InconsistentServiceException(expected: ServiceMode, actual: ServiceMode) 
+  case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
     extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)
 
   /**
@@ -146,26 +146,26 @@ object RemoteActor {
   case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
     extends Exception("Name " + sym + " is already registered for channel " + a)
 
-  def remoteStart[A <: Actor, S <: Serializer](node: Node, 
-                                               serializer: Serializer,
-                                               actorClass: Class[A], 
-                                               port: Int, 
-                                               name: Symbol,
-                                               serviceFactory: Option[ServiceFactory],
-                                               serializerClass: Option[Class[S]]) {
-    remoteStart(node, serializer, actorClass.getName, port, name, serviceFactory, serializerClass.map(_.getName))
-  } 
+  //def remoteStart[A <: Actor, S <: Serializer](node: Node, 
+  //                                             serializer: Serializer,
+  //                                             actorClass: Class[A], 
+  //                                             port: Int, 
+  //                                             name: Symbol,
+  //                                             serviceFactory: Option[ServiceFactory],
+  //                                             serializerClass: Option[Class[S]]) {
+  //  remoteStart(node, serializer, actorClass.getName, port, name, serviceFactory, serializerClass.map(_.getName))
+  //} 
 
-  def remoteStart(node: Node,
-                  serializer: Serializer,
-                  actorClass: String, 
-                  port: Int, 
-                  name: Symbol,
-                  serviceFactory: Option[ServiceFactory],
-                  serializerClass: Option[String]) {
-    val remoteActor = select(node, 'remoteStartActor, serializer)
-    remoteActor ! RemoteStart(actorClass, port, name, serviceFactory, serializerClass)
-  }
+  //def remoteStart(node: Node,
+  //                serializer: Serializer,
+  //                actorClass: String, 
+  //                port: Int, 
+  //                name: Symbol,
+  //                serviceFactory: Option[ServiceFactory],
+  //                serializerClass: Option[String]) {
+  //  val remoteActor = select(node, 'remoteStartActor, serializer)
+  //  remoteActor ! RemoteStart(actorClass, port, name, serviceFactory, serializerClass)
+  //}
 
   private var remoteListenerStarted = false
 
@@ -191,7 +191,7 @@ object RemoteActor {
   @throws(classOf[InconsistentServiceException])
   def select(node: Node, sym: Symbol, 
              serializer: Serializer = defaultSerializer,
-             serviceMode: ServiceMode.Value = Blocking): AbstractActor = synchronized {
+             serviceMode: ServiceMode.Value = ServiceMode.Blocking): AbstractActor = synchronized {
     val connection = netKernel.connect(node, serializer, serviceMode)
     netKernel.getOrCreateProxy(connection, sym)
   }

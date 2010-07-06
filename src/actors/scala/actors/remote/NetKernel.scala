@@ -30,30 +30,26 @@ case class Locator(node: Node, name: Symbol)
  * @version 0.9.17
  * @author Philipp Haller
  */
-private[remote] class NetKernel(service: Service) {
+private[remote] class NetKernel {
+
+  private val service = new StandardService(processMsg _)
 
   import java.io.IOException
 
   def send(conn: Connection, msg: AnyRef) = {
-    Debug.info("--NetKernel.send--")
-    Debug.info("conn: " + conn)
-    Debug.info("msg: " + msg)
-    val meta = conn.serializer.serializeMetaData(msg) match {
-      case Some(data) => data 
-      case None       => Array[Byte]()
-    }
-    val bytes = conn.serializer.serialize(msg)
-    service.send(conn, meta, bytes)
+    service.send(conn, msg)
   }
 
   def namedSend(conn: Connection, senderLoc: Locator, receiverLoc: Locator,
                 msg: AnyRef, session: Symbol) {
-    val metadata = service.serializer.serializeMetaData(msg) match {
-      case Some(data) => data
-      case None       => null
+    service.send(conn) { serializer =>
+      val metadata = serializer.serializeMetaData(msg) match {
+        case Some(data) => data
+        case None       => null
+      }
+      val bytes = serializer.serialize(msg)
+      NamedSend(senderLoc, receiverLoc, metadata, bytes, session)
     }
-    val bytes = service.serializer.serialize(msg)
-    send(conn, NamedSend(senderLoc, receiverLoc, metadata, bytes, session))
   }
 
   private val actors = new HashMap[Symbol, OutputChannel[Any]]
@@ -137,7 +133,7 @@ private[remote] class NetKernel(service: Service) {
       }
     }
 
-  def processMsg(conn: Connection, msg: AnyRef): Unit = synchronized {
+  private def processMsg(conn: Connection, serializer: Serializer, msg: AnyRef): Unit = synchronized {
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)
@@ -156,7 +152,7 @@ private[remote] class NetKernel(service: Service) {
 
         def sendToProxy(a: OutputChannel[Any]) {
           try {
-            val msg = service.serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
+            val msg = serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
             val senderProxy = getOrCreateProxy(conn, senderLoc.name)
             senderProxy.send(SendTo(a, msg, session), null)
           } catch {

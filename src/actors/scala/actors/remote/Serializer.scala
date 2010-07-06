@@ -153,7 +153,7 @@ abstract class Serializer {
   // Default java serialization methods to use during handshake process
 
   def readJavaObject(inp: DataInputStream) = readObjectBytes(inp) {
-    (meta, data) => javaDeserialize(None, data)
+    (meta, data) => javaDeserialize(data)
   }
 
   def writeJavaObject(out: DataOutputStream, obj: AnyRef) {
@@ -170,7 +170,7 @@ abstract class Serializer {
     bos.toByteArray()
   }
 
-  def javaDeserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
+  def javaDeserialize(bytes: Array[Byte]): AnyRef = {
     val bis = new ByteArrayInputStream(bytes)
     val in  = new ObjectInputStream(bis)
     in.readObject()

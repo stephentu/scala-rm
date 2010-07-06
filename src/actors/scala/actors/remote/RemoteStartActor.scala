@@ -19,7 +19,6 @@ import RemoteActor._
 case class RemoteStart(actorClass: String,
                        port: Int,
                        name: Symbol,
-                       serviceFactory: Option[ServiceFactory],
                        serializerClass: Option[String])
 
 private[scala] object RemoteStartActor extends Actor {
@@ -59,35 +58,35 @@ private[scala] object RemoteStartActor extends Actor {
   }
 
   def act {
-    alive(getPort, newSerializer)
-    register('remoteStartActor, this)
-    Debug.info(this + ": started")
-    loop {
-      react {
-        case r @ RemoteStart(actorClass, port, name, serviceFactory, serializerClass) =>
-          Debug.info(this + ": remote start message: " + r)
-          try {
-            val actor = newActor(actorClass) 
-            val serializer = serializerClass match {
-              case Some(clz) => newSerializer(clz)
-              case None      => RemoteActor.defaultSerializer
-            }
-            val factory = serviceFactory.getOrElse(TcpServiceFactory) 
-            val kernel = RemoteActor.createNetKernelOnPort(actor, port, serializer, factory)
-            kernel.register(name, actor)
-            Debug.info(this + ": Starting new actor: " + actor)
-            actor.start()
-          } catch {
-            case e =>
-              Debug.error(this + ": Error on remote start: " + e.getMessage)
-          }
-        case Terminate =>
-          Debug.info(this + ": Got terminate message")
-          exit()
-        case m =>
-          Debug.info(this + ": Ignoring unknown message: " + m)
-      }
-    }
+    //alive(getPort)
+    //register('remoteStartActor, this)
+    //Debug.info(this + ": started")
+    //loop {
+    //  react {
+    //    case r @ RemoteStart(actorClass, port, name, serviceFactory, serializerClass) =>
+    //      Debug.info(this + ": remote start message: " + r)
+    //      try {
+    //        val actor = newActor(actorClass) 
+    //        val serializer = serializerClass match {
+    //          case Some(clz) => newSerializer(clz)
+    //          case None      => RemoteActor.defaultSerializer
+    //        }
+    //        val factory = serviceFactory.getOrElse(TcpServiceFactory) 
+    //        val kernel = RemoteActor.createNetKernelOnPort(actor, port, serializer, factory)
+    //        kernel.register(name, actor)
+    //        Debug.info(this + ": Starting new actor: " + actor)
+    //        actor.start()
+    //      } catch {
+    //        case e =>
+    //          Debug.error(this + ": Error on remote start: " + e.getMessage)
+    //      }
+    //    case Terminate =>
+    //      Debug.info(this + ": Got terminate message")
+    //      exit()
+    //    case m =>
+    //      Debug.info(this + ": Ignoring unknown message: " + m)
+    //  }
+    //}
   }
 
   override def toString = "<RemoteStartActor>"

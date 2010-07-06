@@ -16,7 +16,7 @@ import java.net.{ InetAddress, InetSocketAddress, Socket }
 import java.nio.ByteBuffer
 import java.nio.channels.{ SelectionKey, Selector, 
                            ServerSocketChannel, SocketChannel }
-import java.nio.channels.spi.SelectorProvider
+import java.nio.channels.spi.{ AbstractSelectableChannel, SelectorProvider }
 
 import java.util.concurrent.LinkedBlockingQueue
 
@@ -84,7 +84,7 @@ private class MessageState {
 
   def hasMessage = !messageQueue.isEmpty
 
-  def nextMessage {
+  def nextMessage = {
     assert(hasMessage)
     messageQueue.dequeue()
   }
@@ -93,7 +93,10 @@ private class MessageState {
 }
 
 
-class NonBlockingServiceProvider extends ServiceProvider {
+class NonBlockingServiceProvider 
+  extends ServiceProvider
+  with    BytesReceiveCallbackAware
+  with    ConnectionCallbackAware {
 
   override def mode = ServiceMode.NonBlocking
 
@@ -109,7 +112,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
     }
   }
 
-  class RegisterChannel(socket: SocketChannel, 
+  class RegisterChannel(socket: AbstractSelectableChannel, 
                         op: Int, 
                         attachment: Option[AnyRef]) extends Operation {
     def apply() {
@@ -123,12 +126,13 @@ class NonBlockingServiceProvider extends ServiceProvider {
     operationQueue.synchronized {
       operationQueue += op
     }
+    selector.wakeup()
   }
 
 
   class NonBlockingServiceConnection(
       socketChannel: SocketChannel,
-      override val receiveCallback: ReceiveCallback)
+      override val receiveCallback: BytesReceiveCallback)
     extends Connection 
     with    TerminateOnError {
 
@@ -144,7 +148,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
     override def mode = ServiceMode.NonBlocking
 
-    override def terminate() {
+    override def doTerminate() {
       // cancel the key
       socketChannel.keyFor(selector).cancel()
 
@@ -158,16 +162,11 @@ class NonBlockingServiceProvider extends ServiceProvider {
           writeQueue += bytes.toArray.map(b => ByteBuffer.wrap(b))
           if (!isWriting && socketChannel.isConnected) {
             isWriting = true
-            () => changeToWriteMode _ 
+            () => addOperation(new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE))
           } else () => ()
         }
         todo()
       }
-    }
-
-    private def changeToWriteMode {
-      addOperation(new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE))
-      selector.wakeup()
     }
 
     def doRead(key: SelectionKey) {
@@ -177,7 +176,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       var cnt = 0
       val hasError = 
         try {
-          while ((cnt = socketChannel.read(readBuffer)) > 0) {
+          while ({ cnt = socketChannel.read(readBuffer); cnt } > 0) {
             totalBytesRead += cnt
           }
           false
@@ -243,11 +242,12 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
   class NonBlockingServiceListener(
       override val port: Int, 
-      serverSocketChannel: ServeSocketChannel,
+      serverSocketChannel: ServerSocketChannel,
       override val connectionCallback: ConnectionCallback,
-      receiveCallback: ReceiveCallback)
-    extends Listener
-    with    ReceiveCallbackAware {
+      receiveCallback: BytesReceiveCallback)
+    extends Listener {
+
+    override def mode = ServiceMode.NonBlocking
 
     def doAccept(key: SelectionKey) {
       /** For a channel to receive an accept even, it must be a server channel */
@@ -257,9 +257,12 @@ class NonBlockingServiceProvider extends ServiceProvider {
       clientSocketChannel.configureBlocking(false)
       val conn = new NonBlockingServiceConnection(clientSocketChannel, receiveCallback)
       clientSocketChannel.register(selector, SelectionKey.OP_READ, conn)
-      connectionCallback.receiveConnection(conn)
+      receiveConnection(conn)
     }
 
+    override def doTerminate() {
+      serverSocketChannel.close()
+    }
 
   }
 
@@ -291,22 +294,22 @@ class NonBlockingServiceProvider extends ServiceProvider {
   }
 
 
-  override def connect(node: Node, receiveCallback: ReceiveCallback) = {
+  override def connect(node: Node, receiveCallback: BytesReceiveCallback) = {
     val clientSocket = SocketChannel.open
     clientSocket.configureBlocking(false)
-    val connected = clientSocket.connect(new InetSocketAddress(node.address, node.pot))
+    val connected = clientSocket.connect(new InetSocketAddress(node.address, node.port))
     val interestOp = if (connected) SelectionKey.OP_READ else SelectionKey.OP_CONNECT
     val conn = new NonBlockingServiceConnection(clientSocket, receiveCallback)
-    addOperation(new RegisterChannel(clientSocket, interestOp, conn)) 
+    addOperation(new RegisterChannel(clientSocket, interestOp, Some(conn))) 
     conn
   }
 
-  override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: ReceiveCallback) = {
+  override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
     val serverSocketChannel = ServerSocketChannel.open
     serverSocketChannel.configureBlocking(false)
     serverSocketChannel.socket.bind(new InetSocketAddress(port))
     val listener = new NonBlockingServiceListener(port, serverSocketChannel, connectionCallback, receiveCallback)
-    addOperation(new RegisterChannel(serverSocketChannel, SelectionKey.OP_ACCEPT, listener))    
+    addOperation(new RegisterChannel(serverSocketChannel, SelectionKey.OP_ACCEPT, Some(listener)))    
     listener
   }
 
@@ -351,6 +354,10 @@ class NonBlockingServiceProvider extends ServiceProvider {
     t.setName(name)
     t.setDaemon(daemon)
     t.start()
+  }
+
+  override def terminate() {
+
   }
 
 }

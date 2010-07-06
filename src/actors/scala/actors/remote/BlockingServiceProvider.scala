@@ -26,10 +26,11 @@ object BlockingServiceProvider {
 
 class BlockingServiceWorker(
     so: Socket, 
-    override val receiveCallback: ReceiveCallback)
-  extends Thread("BlockingServiceWorker-" + BlockingServiceProvide.nextWorkerId)
+    override val receiveCallback: (Connection, Array[Byte]) => Unit)
+  extends Thread("BlockingServiceWorker-" + BlockingServiceProvider.nextWorkerId)
   with    Connection 
   with    EncodingHelpers 
+  with    BytesReceiveCallbackAware 
   with    TerminateOnError {
 
   override def mode = ServiceMode.Blocking
@@ -62,7 +63,7 @@ class BlockingServiceWorker(
       assert(data.length > 0)
       terminateOnError {
         dataout.write(data)
-        data.flush()
+        dataout.flush()
       }
     }
   }
@@ -95,17 +96,18 @@ class BlockingServiceWorker(
 
 class BlockingServiceListener(
     override val port: Int, 
-    override val connectionCallback: ConnectionCallback,
-    receiveCallback: ReceiveCallback) 
+    override val connectionCallback: (Listener, Connection) => Unit,
+    receiveCallback: (Connection, Array[Byte]) => Unit) 
   extends Thread("BlockingServiceListener-" + port)
-  with    Listener {
+  with    Listener
+  with    TerminateOnError {
 
   override def mode = ServiceMode.Blocking
 
   // start listening right away
   start()
 
-  private val terminated = false
+  private var terminated = false
 
   private val serverSocket = new ServerSocket(port)
 
@@ -119,7 +121,7 @@ class BlockingServiceListener(
     }
   }
 
-  override def terminate() {
+  override def doTerminate() {
     synchronized {
       if (terminated) return
       terminated = true
@@ -135,13 +137,13 @@ class BlockingServiceProvider extends ServiceProvider {
 
   override def mode = ServiceMode.Blocking
 
-  override def connect(node: Node, receiveCallback: ReceiveCallback): Connection = {
-    val socket = new Socket(n.address, n.port)
+  override def connect(node: Node, receiveCallback: BytesReceiveCallback): Connection = {
+    val socket = new Socket(node.address, node.port)
     // ctor starts thread
     new BlockingServiceWorker(socket, receiveCallback)
   }
 
-  override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: ReceiveCallback) = {
+  override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
     // ctor starts thread
     new BlockingServiceListener(port, connectionCallback, receiveCallback)
   }
@@ -153,118 +155,3 @@ class BlockingServiceProvider extends ServiceProvider {
   override def toString = "<BlockingServiceProvider>"
 
 }
-
-//private[actors] class TcpServiceWorker(id: Int, parent: TcpService, so: Socket) 
-//extends Thread("TcpServiceWorker-" + id) {
-//
-//  import scala.concurrent.SyncVar
-//
-//  val datain  = new DataInputStream(so.getInputStream)
-//  val dataout = new DataOutputStream(so.getOutputStream)
-//
-//  val remoteNode = Node(so.getInetAddress.getHostName,  so.getPort) 
-//  val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
-//
-//  def doHandshake {
-//    val s = parent.serializer
-//    s.initialState match {
-//      case Some(initialState) =>
-//
-//        var curState = initialState
-//        Debug.info(this + ": initialState = " + curState)
-//
-//        def getNextMessage =
-//          if (s.nextHandshakeMessage.isDefinedAt(curState)) {
-//            val (nextState, nextMsg) = s.nextHandshakeMessage.apply(curState)
-//            Debug.info(this + ": " + curState + " -> " + Pair(nextState, nextMsg))
-//            curState = nextState
-//            nextMsg
-//          } else
-//            throw new IllegalHandshakeStateException("getNextMessage undefined at " + curState)
-//
-//        def handleNextMessage(msg: Any) {
-//          if (s.handleHandshakeMessage.isDefinedAt((curState, msg))) {
-//            val nextState = s.handleHandshakeMessage.apply((curState, msg))
-//            Debug.info(this + ": " + Pair(curState, msg) + " -> " + nextState)
-//            curState = nextState
-//          } else
-//            throw new IllegalHandshakeStateException("handleNextMessage undefined at " + curState)
-//        }
-//
-//        def sendMessage(msg: Any) {
-//          Debug.info(this + ": sendMessage(msg = " + msg + ")")
-//          s.writeJavaObject(dataout, msg.asInstanceOf[AnyRef])
-//        }
-//
-//        def readMessage: AnyRef = {
-//          Debug.info(this + ": readMessage waiting for message")
-//          val msg = s.readJavaObject(datain).asInstanceOf[AnyRef]
-//          Debug.info(this + ": readMessage read " + msg)
-//          msg
-//        }
-//            
-//        var continue = true
-//
-//        while (continue) {
-//          getNextMessage match {
-//            case Some(msg) => sendMessage(msg)
-//            case None      => continue = false
-//          }
-//          if (continue) handleNextMessage(readMessage)
-//        }
-//
-//        Debug.info(this + ": handshake finished")
-//
-//      case None =>
-//        /** Do nothing; skip handshake */
-//        Debug.info(this + ": no handshake to perform")
-//    }
-//  }
-//
-//  def transmit(data: Array[Byte]): Unit = synchronized {
-//    if (running) {
-//      Debug.info(this+": checking to see if handshake is finished")
-//      if (handshakeStatus.get) {
-//        Debug.info(this+": transmitting " + data.length + " encoded bytes...")
-//        assert(data.length > 0) // should never send unencoded data at this point
-//        dataout.write(data)
-//        dataout.flush()
-//      } else 
-//        throw new IllegalStateException("Cannot transmit when handshake failed")
-//    } else
-//      throw new IllegalStateException("Cannot transmit when not running")
-//  }
-//
-//  var running         = true
-//  val handshakeStatus = new SyncVar[Boolean]
-//
-//  def halt = synchronized {
-//    so.close()
-//    running = false
-//  }
-//
-//  override def run() {
-//    try {
-//      if (running) {
-//        doHandshake
-//        handshakeStatus.set(true)
-//      }
-//      while (running) {
-//        val msg = parent.serializer.readObject(datain);
-//        parent.kernel.processMsg(remoteNode, msg)
-//      }
-//    }
-//    catch {
-//      case ioe: IOException =>
-//        Debug.info(this+": caught "+ioe)
-//        parent nodeDown remoteNode
-//      case e: Exception =>
-//        Debug.info(this+": caught "+e)
-//        parent nodeDown remoteNode
-//    }
-//    Debug.info(this+": service terminated at "+parent.node)
-//  }
-//
-//  override def toString = "<TcpServiceWorker (id " + id + "): local = " + 
-//    localNode + " -> remote = " + remoteNode + ">"
-//}
