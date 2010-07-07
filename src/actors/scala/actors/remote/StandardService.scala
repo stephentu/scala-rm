@@ -117,7 +117,7 @@ class ConnectionState(conn: Connection,
           // messages queued up in send queue
           sendQueue.foreach { msg => 
             val t = serialize(msg)
-            conn.send(t._1, t._2)
+            conn.send(Array(t._1, t._2))
           }
         }
     }
@@ -175,7 +175,7 @@ class ConnectionState(conn: Connection,
     }
     if (doSend) {
       val t = serialize(msg(serializer.get))
-      conn.send(t._1, t._2)
+      conn.send(Array(t._1, t._2))
     }
   }
 

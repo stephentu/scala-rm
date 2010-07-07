@@ -52,8 +52,8 @@ class BlockingServiceWorker(
     so.close() 
   }
 
-  override def send(data: Array[Byte]*) {
-    rawSend(encodeAndConcat(data.toArray))
+  override def send(data: Array[Array[Byte]]) {
+    rawSend(encodeAndConcat(data))
   }
 
   private def rawSend(data: Array[Byte]) {

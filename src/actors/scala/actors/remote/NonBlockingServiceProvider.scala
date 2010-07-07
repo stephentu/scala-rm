@@ -31,7 +31,9 @@ case object ReadingSize extends MessageStateEnum
 case object ReadingMessage extends MessageStateEnum
 
 private class MessageState {
-  var buffer = ByteBuffer.allocate(4)
+  private var _sizeBuffer = ByteBuffer.allocate(4) // cached version for reading sizes
+
+  var buffer = _sizeBuffer 
   var state: MessageStateEnum = ReadingSize
   var messageSize  = 4
   val messageQueue = new Queue[Array[Byte]]
@@ -60,7 +62,8 @@ private class MessageState {
   }
 
   def startReadingSize {
-    buffer      = ByteBuffer.allocate(4) 
+    _sizeBuffer.clear()
+    buffer      = _sizeBuffer
     state       = ReadingSize
     messageSize = 4
   }
@@ -163,7 +166,8 @@ class NonBlockingServiceProvider
       socketChannel: SocketChannel,
       override val receiveCallback: BytesReceiveCallback)
     extends Connection 
-    with    TerminateOnError {
+    with    TerminateOnError 
+    with    EncodingHelpers {
 
     private val so = socketChannel.socket
 
@@ -188,34 +192,26 @@ class NonBlockingServiceProvider
       socketChannel.close()
     }
 
-    private def encode(bytes: Array[Byte]) = {
-      val buf = ByteBuffer.allocate(bytes.length + 4)
-      buf.putInt(bytes.length)
-      buf.put(bytes)
-      buf.rewind()
-      buf
-    }
+    private val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE)
+    private val ChangeToWriteMode = () => addOperation(WriteChangeOp)
+    private val DoNothing = () => ()
 
-    private lazy val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE)
-
-    override def send(bytes: Array[Byte]*) {
-      if (!bytes.toArray.isEmpty) {
-        val todo = writeQueue.synchronized {
-          writeQueue += bytes.toArray.map(b => encode(b))
-          if (!isWriting && socketChannel.isConnected) {
-            isWriting = true
-            () => addOperation(WriteChangeOp)
-          } else () => ()
-        }
-        todo()
+    override def send(bytes: Array[Array[Byte]]) {
+      val todo = writeQueue.synchronized {
+        writeQueue += encodeToByteBuffers(bytes)
+        if (!isWriting && socketChannel.isConnected) {
+          isWriting = true
+          ChangeToWriteMode
+        } else DoNothing
       }
+      todo()
     }
 
     def doRead(key: SelectionKey) {
       assert(!isWriting)
       readBuffer.clear()
       var totalBytesRead = 0
-      val (hasError, hasEOF) = 
+      val shouldTerminate = 
         try {
           var continue = true
           var cnt = 0
@@ -226,12 +222,12 @@ class NonBlockingServiceProvider
             else
               totalBytesRead += cnt
           }
-          (false, cnt == -1)
+          cnt == -1
         } catch {
           case e: IOException => 
             Debug.error(this + ": Exception " + e.getMessage + " when reading")
             Debug.doError { e.printStackTrace }
-            (true, false)
+            true
         }
 
       Debug.info(this + ": totalBytesRead is " + totalBytesRead)
@@ -247,7 +243,7 @@ class NonBlockingServiceProvider
         }
       }
 
-      if (hasEOF || hasError) 
+      if (shouldTerminate) 
         terminate()
     }
 

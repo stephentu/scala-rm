@@ -11,6 +11,7 @@ package scala.actors
 package remote
 
 import java.io.{ ByteArrayOutputStream, DataOutputStream }
+import java.nio.ByteBuffer
 
 import scala.collection.mutable.{ HashMap, ListBuffer }
 
@@ -127,7 +128,15 @@ trait Connection
    * send could be async or not, it is implementation dependent) and 
    * together on the wire
    */
-  def send(data: Array[Byte]*): Unit
+  def send(data: Array[Array[Byte]]): Unit
+
+  def send(data: Array[Byte]) { 
+    // avoid use of Array$.apply() - this is faster
+    val datum = new Array[Byte](1)
+    datum(0) = data
+    send(datum) 
+  }
+
 
   var attachment: Option[AnyRef] = None
 
@@ -149,13 +158,29 @@ trait ServiceProvider
 }
 
 trait EncodingHelpers {
+
+  /**
+   * This is a hack so we don't have to use reflection to do a map.
+   */
+  protected def noReflectMap[T, T1](array: Array[T], mapper: T => T1, creator: Int => Array[T1]): Array[T1] = {
+    val newArray = creator(array.length)
+    for (i <- 0 until array.length) {
+      newArray(i) = mapper(array(i))
+    }
+    newArray
+  }
+
+  protected def encodeToByteBuffers(datums: Array[Array[Byte]]): Array[ByteBuffer] = {
+    noReflectMap(datums, encodeToByteBuffer _, x => new Array[ByteBuffer](x))
+  }
+
   /**
    * Takes datums, encodes each datum separately, and returns
    * a single byte array which is the concatenation of the encoded
    * datums. 
    */
   protected def encodeAndConcat(datums: Array[Array[Byte]]): Array[Byte] =
-    datums.map(encode(_)).flatMap(x => x)
+    datums.map(encodeToArray(_)).flatMap(x => x)
 
   /**
    * Takes an unencoded byte array, and returns an encoded
@@ -163,7 +188,7 @@ trait EncodingHelpers {
    * Default encoding is to simply prepend the length of the
    * unencoded message as a 4-byte int.
    */
-  protected def encode(unenc: Array[Byte]): Array[Byte] = {
+  protected def encodeToArray(unenc: Array[Byte]): Array[Byte] = {
     // TODO: handle overflow
     val baos    = new ByteArrayOutputStream(unenc.length + 4)
     val dataout = new DataOutputStream(baos)
@@ -171,6 +196,16 @@ trait EncodingHelpers {
     dataout.write(unenc)
     baos.toByteArray
   }
+
+  protected def encodeToByteBuffer(unenc: Array[Byte]): ByteBuffer = {
+    // TODO: handle overflow
+    val buf = ByteBuffer.allocate(unenc.length + 4)
+    buf.putInt(unenc.length)
+    buf.put(unenc)
+    buf.rewind()
+    buf
+  }
+
 }
 
 /**
