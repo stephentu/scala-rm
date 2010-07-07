@@ -132,11 +132,10 @@ trait Connection
 
   def send(data: Array[Byte]) { 
     // avoid use of Array$.apply() - this is faster
-    val datum = new Array[Byte](1)
+    val datum = new Array[Array[Byte]](1)
     datum(0) = data
     send(datum) 
   }
-
 
   var attachment: Option[AnyRef] = None
 
@@ -163,9 +162,12 @@ trait EncodingHelpers {
    * This is a hack so we don't have to use reflection to do a map.
    */
   protected def noReflectMap[T, T1](array: Array[T], mapper: T => T1, creator: Int => Array[T1]): Array[T1] = {
-    val newArray = creator(array.length)
-    for (i <- 0 until array.length) {
-      newArray(i) = mapper(array(i))
+    val len = array.length
+    val newArray = creator(len)
+    var idx = 0
+    while (idx < len) {
+      newArray(idx) = mapper(array(idx))
+      idx += 1
     }
     newArray
   }
