@@ -20,7 +20,7 @@ import java.nio.channels.spi.{ AbstractSelectableChannel, SelectorProvider }
 
 import java.util.concurrent.LinkedBlockingQueue
 
-import scala.collection.mutable.{ HashMap, ListBuffer, Queue }
+import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
 
 // receiving message state management 
 
@@ -92,6 +92,33 @@ private class MessageState {
 
 }
 
+object InterestOpUtil {
+    // for debug purposes
+    sealed trait InterestOp {
+      val op: Int
+      def isInterested(_op: Int) = { (op & _op) != 0 }
+    }
+
+    case object OP_READ    extends InterestOp {
+      val op = SelectionKey.OP_READ
+    }
+
+    case object OP_WRITE   extends InterestOp {
+      val op = SelectionKey.OP_WRITE
+    }
+
+    case object OP_CONNECT extends InterestOp {
+      val op = SelectionKey.OP_CONNECT
+    }
+
+    case object OP_ACCEPT  extends InterestOp {
+      val op = SelectionKey.OP_ACCEPT
+    }
+
+    private val Ops = List(OP_READ, OP_WRITE, OP_CONNECT, OP_ACCEPT)
+
+    def enumerateSet(ops: Int) = Ops.filter(_.isInterested(ops))
+}
 
 class NonBlockingServiceProvider 
   extends ServiceProvider
@@ -107,34 +134,8 @@ class NonBlockingServiceProvider
   type Operation = Function0[Unit]
 
   class ChangeInterestOp(socket: SocketChannel, op: Int) extends Operation {
-    
-    // for debug purposes
-    private sealed trait InterestOp {
-      val op: Int
-      def isInterested(_op: Int) = { (op & _op) != 0 }
-    }
-
-    private case object OP_READ    extends InterestOp {
-      val op = SelectionKey.OP_READ
-    }
-
-    private case object OP_WRITE   extends InterestOp {
-      val op = SelectionKey.OP_WRITE
-    }
-
-    private case object OP_CONNECT extends InterestOp {
-      val op = SelectionKey.OP_CONNECT
-    }
-
-    private case object OP_ACCEPT  extends InterestOp {
-      val op = SelectionKey.OP_ACCEPT
-    }
-
-    private val Ops = List(OP_READ, OP_WRITE, OP_CONNECT, OP_ACCEPT)
-
-    private def enumerateSet(ops: Int) = Ops.filter(_.isInterested(ops))
-    
     def apply() {
+      import InterestOpUtil._
       Debug.info("setting channel " + socket + " to be interested in: " + enumerateSet(op))
       socket.keyFor(selector).interestOps(op)
     }
@@ -148,7 +149,7 @@ class NonBlockingServiceProvider
     }
   }
 
-  private val operationQueue = new ListBuffer[Operation]
+  private val operationQueue = new ArrayBuffer[Operation]
 
   private def addOperation(op: Operation) {
     operationQueue.synchronized {
@@ -188,12 +189,14 @@ class NonBlockingServiceProvider
     }
 
     private def encode(bytes: Array[Byte]) = {
-      val buf = ByteBuffer.allocate(bytes.size + 4)
-      buf.putInt(bytes.size)
+      val buf = ByteBuffer.allocate(bytes.length + 4)
+      buf.putInt(bytes.length)
       buf.put(bytes)
       buf.rewind()
       buf
     }
+
+    private lazy val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE)
 
     override def send(bytes: Array[Byte]*) {
       if (!bytes.toArray.isEmpty) {
@@ -201,7 +204,7 @@ class NonBlockingServiceProvider
           writeQueue += bytes.toArray.map(b => encode(b))
           if (!isWriting && socketChannel.isConnected) {
             isWriting = true
-            () => addOperation(new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE))
+            () => addOperation(WriteChangeOp)
           } else () => ()
         }
         todo()
@@ -212,18 +215,23 @@ class NonBlockingServiceProvider
       assert(!isWriting)
       readBuffer.clear()
       var totalBytesRead = 0
-      var cnt = 0
-      val hasError = 
+      val (hasError, hasEOF) = 
         try {
-          while ({ cnt = socketChannel.read(readBuffer); cnt } > 0) {
-            totalBytesRead += cnt
+          var continue = true
+          var cnt = 0
+          while (continue) {
+            cnt = socketChannel.read(readBuffer)
+            if (cnt <= 0)
+              continue = false
+            else
+              totalBytesRead += cnt
           }
-          false
+          (false, cnt == -1)
         } catch {
           case e: IOException => 
             Debug.error(this + ": Exception " + e.getMessage + " when reading")
             Debug.doError { e.printStackTrace }
-            true
+            (true, false)
         }
 
       Debug.info(this + ": totalBytesRead is " + totalBytesRead)
@@ -239,7 +247,7 @@ class NonBlockingServiceProvider
         }
       }
 
-      if (cnt == -1 || hasError) 
+      if (hasEOF || hasError) 
         terminate()
     }
 
@@ -252,7 +260,7 @@ class NonBlockingServiceProvider
             val curEntry = writeQueue.head
             val bytesWritten = socketChannel.write(curEntry)
             Debug.info(this + ": doWrite() - wrote " + bytesWritten + " bytes to " + key.channel)
-            val finished = !curEntry.exists(_.remaining > 0)
+            val finished = curEntry(curEntry.length - 1).remaining == 0
             if (finished) { 
               writeQueue.dequeue
               Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + writeQueue.size)
