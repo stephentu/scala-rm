@@ -104,9 +104,6 @@ class BlockingServiceListener(
 
   override def mode = ServiceMode.Blocking
 
-  // start listening right away
-  start()
-
   private var terminated = false
 
   private val serverSocket = new ServerSocket(port)
@@ -144,8 +141,9 @@ class BlockingServiceProvider extends ServiceProvider {
   }
 
   override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
-    // ctor starts thread
-    new BlockingServiceListener(port, connectionCallback, receiveCallback)
+    val listener = new BlockingServiceListener(port, connectionCallback, receiveCallback)
+    listener.start()
+    listener
   }
 
   override def terminate() {

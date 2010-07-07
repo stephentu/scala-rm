@@ -107,7 +107,35 @@ class NonBlockingServiceProvider
   type Operation = Function0[Unit]
 
   class ChangeInterestOp(socket: SocketChannel, op: Int) extends Operation {
+    
+    // for debug purposes
+    private sealed trait InterestOp {
+      val op: Int
+      def isInterested(_op: Int) = { (op & _op) != 0 }
+    }
+
+    private case object OP_READ    extends InterestOp {
+      val op = SelectionKey.OP_READ
+    }
+
+    private case object OP_WRITE   extends InterestOp {
+      val op = SelectionKey.OP_WRITE
+    }
+
+    private case object OP_CONNECT extends InterestOp {
+      val op = SelectionKey.OP_CONNECT
+    }
+
+    private case object OP_ACCEPT  extends InterestOp {
+      val op = SelectionKey.OP_ACCEPT
+    }
+
+    private val Ops = List(OP_READ, OP_WRITE, OP_CONNECT, OP_ACCEPT)
+
+    private def enumerateSet(ops: Int) = Ops.filter(_.isInterested(ops))
+    
     def apply() {
+      Debug.info("setting channel " + socket + " to be interested in: " + enumerateSet(op))
       socket.keyFor(selector).interestOps(op)
     }
   }
@@ -137,8 +165,11 @@ class NonBlockingServiceProvider
     with    TerminateOnError {
 
     private val so = socketChannel.socket
-    override val remoteNode = Node(so.getInetAddress.getHostName,  so.getPort) 
-    override val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
+
+    // TODO: for correctness, will need to wait until the socket channel is
+    // connected before allowing the following two values to be computed
+    override lazy val remoteNode = Node(so.getInetAddress.getHostName,  so.getPort) 
+    override lazy val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
 
     private val messageState = new MessageState
 
@@ -156,10 +187,18 @@ class NonBlockingServiceProvider
       socketChannel.close()
     }
 
+    private def encode(bytes: Array[Byte]) = {
+      val buf = ByteBuffer.allocate(bytes.size + 4)
+      buf.putInt(bytes.size)
+      buf.put(bytes)
+      buf.rewind()
+      buf
+    }
+
     override def send(bytes: Array[Byte]*) {
       if (!bytes.toArray.isEmpty) {
         val todo = writeQueue.synchronized {
-          writeQueue += bytes.toArray.map(b => ByteBuffer.wrap(b))
+          writeQueue += bytes.toArray.map(b => encode(b))
           if (!isWriting && socketChannel.isConnected) {
             isWriting = true
             () => addOperation(new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE))
@@ -187,6 +226,8 @@ class NonBlockingServiceProvider
             true
         }
 
+      Debug.info(this + ": totalBytesRead is " + totalBytesRead)
+
       if (totalBytesRead > 0) {
         val chunk = new Array[Byte](totalBytesRead)
         readBuffer.rewind
@@ -210,12 +251,20 @@ class NonBlockingServiceProvider
           while (!writeQueue.isEmpty && !socketFull) {
             val curEntry = writeQueue.head
             val bytesWritten = socketChannel.write(curEntry)
+            Debug.info(this + ": doWrite() - wrote " + bytesWritten + " bytes to " + key.channel)
             val finished = !curEntry.exists(_.remaining > 0)
-            if (finished) writeQueue.dequeue
-            if (bytesWritten == 0 && !finished) socketFull = true
+            if (finished) { 
+              writeQueue.dequeue
+              Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + writeQueue.size)
+            }
+            if (bytesWritten == 0 && !finished) {
+              socketFull = true
+              Debug.info(this + ": doWrite() - socket is full")
+            }
           }
           if (writeQueue.isEmpty) {
             // back to reading
+            Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
             isWriting = false
             key.interestOps(SelectionKey.OP_READ)
           }
@@ -237,6 +286,8 @@ class NonBlockingServiceProvider
         } else key.interestOps(SelectionKey.OP_READ)
       }
     }
+
+    override def toString = "<NonBlockingServiceConnection: " + socketChannel + ">"
 
   }
 
@@ -263,6 +314,8 @@ class NonBlockingServiceProvider
     override def doTerminate() {
       serverSocketChannel.close()
     }
+
+    override def toString = "<NonBlockingServiceListener: " + serverSocketChannel + ">"
 
   }
 
