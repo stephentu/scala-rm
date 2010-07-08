@@ -18,7 +18,8 @@ import java.nio.channels.{ SelectionKey, Selector,
                            ServerSocketChannel, SocketChannel }
 import java.nio.channels.spi.{ AbstractSelectableChannel, SelectorProvider }
 
-import java.util.concurrent.{ ConcurrentLinkedQueue, Executors, LinkedBlockingQueue }
+import java.util.{ Comparator, PriorityQueue }
+import java.util.concurrent.{ ConcurrentLinkedQueue, Executors }
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
@@ -128,6 +129,38 @@ object NonBlockingServiceProvider {
   val NumSelectLoops = Runtime.getRuntime.availableProcessors * 4
 }
 
+class ByteBufferPool {
+
+  private val comparator = new Comparator[ByteBuffer] {
+    override def compare(b1: ByteBuffer, b2: ByteBuffer): Int = b2.capacity - b1.capacity // max heap
+    override def equals(obj: Any): Boolean = this == obj
+  }
+
+  private val bufferQueue = new PriorityQueue[ByteBuffer](16, comparator)
+
+  def take(minCap: Int): ByteBuffer = {
+    val candidate = bufferQueue.peek
+    if ((candidate eq null) || candidate.capacity < minCap) {
+      ByteBuffer.allocateDirect(align(minCap))
+    } else {
+      val ret = bufferQueue.poll()
+      assert(ret ne null) 
+      ret.clear()
+      ret
+    }
+  }
+
+  def release(buf: ByteBuffer) { bufferQueue.offer(buf) }
+
+  // align to power of two
+  private def align(cap: Int): Int = {
+    assert(cap > 0)
+    var i = 1
+    while (i < cap) i <<= 1
+    i
+  }
+
+}
 
 class NonBlockingServiceProvider 
   extends ServiceProvider
@@ -163,6 +196,17 @@ class NonBlockingServiceProvider
 
   class SelectorLoop(id: Int) extends Runnable {
 
+    object SendBufPool extends ByteBufferPool
+
+    private def encodeToByteBuffer(unenc: Array[Byte]): ByteBuffer = {
+      val len = unenc.length
+      val buf = SendBufPool.take(len + 4)
+      buf.putInt(len)
+      buf.put(unenc)
+      buf.flip()
+      buf
+    }
+
     private val selector = SelectorProvider.provider.openSelector
 
     // selector key registration management
@@ -174,7 +218,7 @@ class NonBlockingServiceProvider
     class ChangeInterestOp(socket: SocketChannel, op: Int) extends Operation {
       override def invoke() {
         import InterestOpUtil._
-        Debug.info("setting channel " + socket + " to be interested in: " + enumerateSet(op))
+        //Debug.info("setting channel " + socket + " to be interested in: " + enumerateSet(op))
         socket.keyFor(selector).interestOps(op)
       }
     }
@@ -198,8 +242,7 @@ class NonBlockingServiceProvider
     class NonBlockingServiceConnection(
         socketChannel: SocketChannel,
         override val receiveCallback: BytesReceiveCallback)
-      extends Connection 
-      with    EncodingHelpers {
+      extends Connection {
 
       private val so = socketChannel.socket
 
@@ -210,7 +253,8 @@ class NonBlockingServiceProvider
 
       private val messageState = new MessageState
 
-      private val writeQueue = new Queue[ByteBuffer]
+      private val writeQueue = new Queue[Array[Byte]]
+      private val unfinishedWriteQueue = new Queue[ByteBuffer]
 
       private var isWriting = false
 
@@ -228,7 +272,7 @@ class NonBlockingServiceProvider
 
       override def send(bytes: Array[Byte]) {
         writeQueue.synchronized {
-          writeQueue += encodeToByteBuffer(bytes)
+          writeQueue += bytes
           if (!isWriting && socketChannel.isConnected) {
             isWriting = true
             addOperation(WriteChangeOp) 
@@ -238,8 +282,8 @@ class NonBlockingServiceProvider
 
       override def send(bytes0: Array[Byte], bytes1: Array[Byte]) {
         writeQueue.synchronized {
-          writeQueue += encodeToByteBuffer(bytes0)
-          writeQueue += encodeToByteBuffer(bytes1)
+          writeQueue += bytes0
+          writeQueue += bytes1
           if (!isWriting && socketChannel.isConnected) {
             isWriting = true
             addOperation(WriteChangeOp)
@@ -270,7 +314,7 @@ class NonBlockingServiceProvider
               true
           }
 
-        Debug.info(this + ": totalBytesRead is " + totalBytesRead)
+        //Debug.info(this + ": totalBytesRead is " + totalBytesRead)
 
         if (totalBytesRead > 0) {
           val chunk = new Array[Byte](totalBytesRead)
@@ -292,23 +336,34 @@ class NonBlockingServiceProvider
         try {
           writeQueue.synchronized {
             var socketFull = false
-            while (!writeQueue.isEmpty && !socketFull) {
-              val curEntry = writeQueue.head
+
+            // drain writeQueue into unfinishedWriteQueue (and encode to BB)
+            while (!writeQueue.isEmpty) {
+              val curBytes = writeQueue.head
+              val curEntry = encodeToByteBuffer(curBytes)
+              writeQueue.dequeue()
+              unfinishedWriteQueue += curEntry
+            }
+
+            // now try to drain the unfinishedWriteQueue
+            while (!unfinishedWriteQueue.isEmpty && !socketFull) {
+              val curEntry = unfinishedWriteQueue.head
               val bytesWritten = socketChannel.write(curEntry)
-              Debug.info(this + ": doWrite() - wrote " + bytesWritten + " bytes to " + key.channel)
               val finished = curEntry.remaining == 0
               if (finished) { 
-                writeQueue.dequeue
-                Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + writeQueue.size)
+                unfinishedWriteQueue.dequeue()
+                SendBufPool.release(curEntry)
+                //Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + unfinishedWriteQueue.size)
               }
               if (bytesWritten == 0 && !finished) {
                 socketFull = true
-                Debug.info(this + ": doWrite() - socket is full")
+                //Debug.info(this + ": doWrite() - socket is full")
               }
             }
-            if (writeQueue.isEmpty) {
+
+            if (unfinishedWriteQueue.isEmpty) {
               // back to reading
-              Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
+              //Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
               isWriting = false
               key.interestOps(SelectionKey.OP_READ)
             }
@@ -367,7 +422,7 @@ class NonBlockingServiceProvider
                      receiveCallback: BytesReceiveCallback,
                      listener: Listener,
                      connectionCallback: ConnectionCallback) {
-      Debug.info(this + ": processAccept from " + clientSocketChannel)
+      //Debug.info(this + ": processAccept from " + clientSocketChannel)
       clientSocketChannel.configureBlocking(false)
       val conn = new NonBlockingServiceConnection(clientSocketChannel, receiveCallback)
       addOperation(new RegisterChannel(clientSocketChannel, SelectionKey.OP_READ, Some(conn)))
@@ -389,9 +444,9 @@ class NonBlockingServiceProvider
       while (true) {
         try {
           processOperationQueue()
-          Debug.info(this + ": selectLoop calling select()")
+          //Debug.info(this + ": selectLoop calling select()")
           selector.select() /** This is a blocking operation */
-          Debug.info(this + ": selectLoop awaken from select()")
+          //Debug.info(this + ": selectLoop awaken from select()")
           val selectedKeys = selector.selectedKeys.iterator
           while (selectedKeys.hasNext) {
             val key = selectedKeys.next()
