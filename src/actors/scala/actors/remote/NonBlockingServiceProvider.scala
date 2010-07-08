@@ -24,78 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
 
-// receiving message state management 
 
-sealed trait MessageStateEnum
-/** In the middle of reading the message size header (4 bytes) */
-case object ReadingSize extends MessageStateEnum
-/** In the middle of reading the variable size message */
-case object ReadingMessage extends MessageStateEnum
-
-private class MessageState {
-  private var _sizeBuffer = ByteBuffer.allocate(4) // cached version for reading sizes
-
-  var buffer = _sizeBuffer 
-  var state: MessageStateEnum = ReadingSize
-  var messageSize  = 4
-  val messageQueue = new Queue[Array[Byte]]
-
-  def consume(bytes: Array[Byte]) {
-    import scala.math.min
-    var idx = 0
-    while (idx < bytes.length) {
-      val bytesToPut = min(bytes.length - idx, bytesLeftInState)
-      buffer.put(bytes, idx, bytesToPut)     
-      idx += bytesToPut
-      if (isFull) {
-        buffer.flip
-        state match {
-          case ReadingSize =>
-            val size = buffer.getInt
-            startReadingMessage(size)
-          case ReadingMessage =>
-            val msg = new Array[Byte](messageSize)
-            buffer.get(msg)
-            messageQueue += msg
-            startReadingSize
-        } 
-      }
-    }
-  }
-
-  def startReadingSize {
-    _sizeBuffer.clear()
-    buffer      = _sizeBuffer
-    state       = ReadingSize
-    messageSize = 4
-  }
-
-  def startReadingMessage(size: Int) {
-    buffer      = ByteBuffer.allocate(size) 
-    state       = ReadingMessage
-    messageSize = size 
-  }
-
-  def reset {
-    messageQueue.clear
-    startReadingSize
-  }
-
-  /** The number of bytes left needed to read before a state change */
-  def bytesLeftInState = messageSize - buffer.position
-
-  /** IS the buffer full */
-  def isFull = bytesLeftInState == 0
-
-  def hasMessage = !messageQueue.isEmpty
-
-  def nextMessage = {
-    assert(hasMessage)
-    messageQueue.dequeue()
-  }
-
-
-}
 
 object InterestOpUtil {
     // for debug purposes
@@ -129,7 +58,7 @@ object NonBlockingServiceProvider {
   val NumSelectLoops = Runtime.getRuntime.availableProcessors * 4
 }
 
-class ByteBufferPool {
+class VaryingSizeByteBufferPool {
 
   private val comparator = new Comparator[ByteBuffer] {
     override def compare(b1: ByteBuffer, b2: ByteBuffer): Int = b2.capacity - b1.capacity // max heap
@@ -159,6 +88,23 @@ class ByteBufferPool {
     while (i < cap) i <<= 1
     i
   }
+
+}
+
+class FixedSizeByteBufferPool(fixedSize: Int) {
+  assert(fixedSize > 0)
+  private val bufferQueue = new ArrayBuffer[ByteBuffer]
+
+  def take(): ByteBuffer = 
+    if (bufferQueue.isEmpty) {
+      ByteBuffer.allocateDirect(fixedSize)
+    } else {
+      val last = bufferQueue(bufferQueue.size - 1)
+      bufferQueue.reduceToSize(bufferQueue.size - 1) // remove last
+      last
+    }
+
+  def release(buf: ByteBuffer) { bufferQueue += buf }
 
 }
 
@@ -196,7 +142,7 @@ class NonBlockingServiceProvider
 
   class SelectorLoop(id: Int) extends Runnable {
 
-    object SendBufPool extends ByteBufferPool
+    object SendBufPool extends VaryingSizeByteBufferPool
 
     private def encodeToByteBuffer(unenc: Array[Byte]): ByteBuffer = {
       val len = unenc.length
@@ -237,6 +183,99 @@ class NonBlockingServiceProvider
       if (!operationQueue.offer(op))
         throw new RuntimeException("Could not offer operation to queue")
       selector.wakeup()
+    }
+
+    private val readBuffer = ByteBuffer.allocateDirect(8192)
+
+    // receiving message state management 
+
+    private class MessageState {
+
+      var isReadingSize = true
+      var messageSize   = 4
+      var bytesSoFar    = 0
+      var currentArray  = new Array[Byte](4)
+
+      val messageQueue = new Queue[Array[Byte]]
+
+      private def getInt(bytes: Array[Byte]): Int = {
+        // big endian
+        (bytes(0).toInt & 0xFF) << 24 | 
+        (bytes(1).toInt & 0xFF) << 16 | 
+        (bytes(2).toInt & 0xFF) << 8  |
+        (bytes(3).toInt & 0xFF)
+      }
+
+      def doRead(chan: SocketChannel): Boolean = {
+        import scala.math.min
+
+        readBuffer.clear()
+
+        var totalBytesRead = 0
+        val shouldTerminate = 
+          try {
+            var continue = true
+            var cnt = 0
+            while (continue) {
+              cnt = chan.read(readBuffer)
+              if (cnt <= 0)
+                continue = false
+              else
+                totalBytesRead += cnt
+            }
+            cnt == -1
+          } catch {
+            case e: IOException => 
+              Debug.error(this + ": Exception " + e.getMessage + " when reading")
+              Debug.doError { e.printStackTrace }
+              true
+          }
+
+        if (totalBytesRead > 0) {
+          readBuffer.flip()
+          while (readBuffer.remaining > 0) {
+            // some bytes are here to process, so process as many as
+            // possible
+            val toCopy = min(readBuffer.remaining, messageSize - bytesSoFar)
+            readBuffer.get(currentArray, bytesSoFar, toCopy)
+            bytesSoFar += toCopy
+
+            // this message is done
+            if (bytesSoFar == messageSize) 
+              if (isReadingSize)
+                startReadingMessage(getInt(currentArray))
+              else {
+                messageQueue += currentArray
+                startReadingSize()
+              }
+          }
+        } 
+
+        shouldTerminate
+      }
+
+      def startReadingSize() {
+        isReadingSize = true
+        messageSize   = 4
+        bytesSoFar    = 0
+        currentArray  = new Array[Byte](4)
+      }
+
+      def startReadingMessage(size: Int) {
+        isReadingSize = false
+        messageSize   = size 
+        bytesSoFar    = 0
+        currentArray  = new Array[Byte](size)
+      }
+
+      def reset() {
+        messageQueue.clear
+        startReadingSize()
+      }
+
+      def hasMessage = !messageQueue.isEmpty
+      def nextMessage() = messageQueue.dequeue()
+
     }
 
     class NonBlockingServiceConnection(
@@ -293,38 +332,12 @@ class NonBlockingServiceProvider
 
       def doRead(key: SelectionKey) {
         assert(!isWriting)
-        readBuffer.clear()
-        var totalBytesRead = 0
-        val shouldTerminate = 
-          try {
-            var continue = true
-            var cnt = 0
-            while (continue) {
-              cnt = socketChannel.read(readBuffer)
-              if (cnt <= 0)
-                continue = false
-              else
-                totalBytesRead += cnt
-            }
-            cnt == -1
-          } catch {
-            case e: IOException => 
-              Debug.error(this + ": Exception " + e.getMessage + " when reading")
-              Debug.doError { e.printStackTrace }
-              true
-          }
 
-        //Debug.info(this + ": totalBytesRead is " + totalBytesRead)
+        val shouldTerminate = messageState.doRead(socketChannel)
 
-        if (totalBytesRead > 0) {
-          val chunk = new Array[Byte](totalBytesRead)
-          readBuffer.rewind
-          readBuffer.get(chunk) /** copy what we just read into chunk */
-          messageState.consume(chunk)
-          while (messageState.hasMessage) {
-            val nextMsg = messageState.nextMessage
-            receiveBytes(nextMsg)
-          }
+        while (messageState.hasMessage) {
+          val nextMsg = messageState.nextMessage
+          receiveBytes(nextMsg)
         }
 
         if (shouldTerminate) 
@@ -476,9 +489,6 @@ class NonBlockingServiceProvider
     private def processAccept(key: SelectionKey) {
       key.attachment.asInstanceOf[NonBlockingServiceListener].doAccept(key)
     }
-
-    /** Warning: direct byte buffers are not guaranteed to be backed by array */
-    private val readBuffer = ByteBuffer.allocateDirect(8192) 
 
     // handle reads
 
