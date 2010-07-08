@@ -30,8 +30,7 @@ class BlockingServiceWorker(
   extends Thread("BlockingServiceWorker-" + BlockingServiceProvider.nextWorkerId)
   with    Connection 
   with    EncodingHelpers 
-  with    BytesReceiveCallbackAware 
-  with    TerminateOnError {
+  with    BytesReceiveCallbackAware {
 
   override def mode = ServiceMode.Blocking
 
@@ -52,18 +51,42 @@ class BlockingServiceWorker(
     so.close() 
   }
 
-  override def send(data: Array[Array[Byte]]) {
-    rawSend(encodeAndConcat(data))
+  private def send0(data: Array[Byte]) {
+    dataout.writeInt(data.length)
+    dataout.write(data)
   }
 
-  private def rawSend(data: Array[Byte]) {
+  override def send(data: Array[Byte]) {
     synchronized {
       if (terminated)
-        throw new IllegalStateException("Cannot rawSend when not running")
+        throw new IllegalStateException("Cannot send when not running")
       assert(data.length > 0)
-      terminateOnError {
-        dataout.write(data)
+      try {
+        send0(data)
         dataout.flush()
+      } catch {
+        case e: IOException => 
+          Debug.error(this + ": caught " + e.getMessage)
+          Debug.doError { e.printStackTrace }
+          terminate()
+      }
+    }
+  }
+
+  override def send(data0: Array[Byte], data1: Array[Byte]) {
+    synchronized {
+      if (terminated)
+        throw new IllegalStateException("Cannot send when not running")
+      assert(data0.length > 0 && data1.length > 0)
+      try {
+        send0(data0)
+        send0(data1)
+        dataout.flush()
+      } catch {
+        case e: IOException => 
+          Debug.error(this + ": caught " + e.getMessage)
+          Debug.doError { e.printStackTrace }
+          terminate()
       }
     }
   }
@@ -72,7 +95,7 @@ class BlockingServiceWorker(
   start()
 
   override def run() {
-    terminateOnError {
+    try {
       while (true) {
         val length = datain.readInt()
         if (length == 0) {
@@ -88,7 +111,13 @@ class BlockingServiceWorker(
           receiveBytes(bytes)
         }
       }
+    } catch {
+      case e: Exception =>
+        Debug.error(this + ": caught " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+        terminate()
     }
+
   }
 
   override def toString = "<BlockingServiceWorker: " + so + ">"
@@ -99,8 +128,7 @@ class BlockingServiceListener(
     override val connectionCallback: (Listener, Connection) => Unit,
     receiveCallback: (Connection, Array[Byte]) => Unit) 
   extends Thread("BlockingServiceListener-" + port)
-  with    Listener
-  with    TerminateOnError {
+  with    Listener {
 
   override def mode = ServiceMode.Blocking
 
@@ -109,12 +137,17 @@ class BlockingServiceListener(
   private val serverSocket = new ServerSocket(port)
 
   override def run() {
-    terminateOnError {
+    try {
       while (true) {
         val client = serverSocket.accept()
         val conn = new BlockingServiceWorker(client, receiveCallback)
         receiveConnection(conn)
       }
+    } catch {
+      case e: Exception =>
+        Debug.error(this + ": caught " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+        terminate()
     }
   }
 

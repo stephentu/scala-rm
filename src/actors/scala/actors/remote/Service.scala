@@ -43,19 +43,6 @@ private class HandlerGroup {
   }
 }
 
-trait TerminateOnError { this: CanTerminate =>
-  def terminateOnError(f: => Unit) {
-    try {
-      f
-    } catch {
-      case e: Exception =>
-        Debug.error(this + ": caught " + e.getMessage)
-        Debug.doError { e.printStackTrace }
-        terminate()
-    }
-  }
-}
-
 trait TerminationHandlers extends CanTerminate {
 
   private val preTerminateHandlers  = new HandlerGroup
@@ -122,20 +109,9 @@ trait Connection
    */
   def localNode: Node
 
-  /**
-   * Send data down the wire. There are no specified semantics of
-   * send other than the data arrives in the same order (for instance,
-   * send could be async or not, it is implementation dependent) and 
-   * together on the wire
-   */
-  def send(data: Array[Array[Byte]]): Unit
+  def send(data: Array[Byte]): Unit
 
-  def send(data: Array[Byte]) { 
-    // avoid use of Array$.apply() - this is faster
-    val datum = new Array[Array[Byte]](1)
-    datum(0) = data
-    send(datum) 
-  }
+  def send(data0: Array[Byte], data1: Array[Byte]): Unit
 
   var attachment: Option[AnyRef] = None
 
@@ -157,32 +133,6 @@ trait ServiceProvider
 }
 
 trait EncodingHelpers {
-
-  /**
-   * This is a hack so we don't have to use reflection to do a map.
-   */
-  protected def noReflectMap[T, T1](array: Array[T], mapper: T => T1, creator: Int => Array[T1]): Array[T1] = {
-    val len = array.length
-    val newArray = creator(len)
-    var idx = 0
-    while (idx < len) {
-      newArray(idx) = mapper(array(idx))
-      idx += 1
-    }
-    newArray
-  }
-
-  protected def encodeToByteBuffers(datums: Array[Array[Byte]]): Array[ByteBuffer] = {
-    noReflectMap(datums, encodeToByteBuffer _, x => new Array[ByteBuffer](x))
-  }
-
-  /**
-   * Takes datums, encodes each datum separately, and returns
-   * a single byte array which is the concatenation of the encoded
-   * datums. 
-   */
-  protected def encodeAndConcat(datums: Array[Array[Byte]]): Array[Byte] =
-    datums.map(encodeToArray(_)).flatMap(x => x)
 
   /**
    * Takes an unencoded byte array, and returns an encoded
