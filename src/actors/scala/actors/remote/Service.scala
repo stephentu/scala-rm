@@ -82,7 +82,13 @@ trait Listener
   protected val connectionCallback: ConnectionCallback
 
   protected def receiveConnection(conn: Connection) {
-    connectionCallback(this, conn)
+    try {
+      connectionCallback(this, conn)
+    } catch {
+      case e: Exception =>
+        Debug.error("Caught exception calling connectionCallback: " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+    }
   }
 
   def port: Int
@@ -96,7 +102,13 @@ trait Connection
   protected val receiveCallback: BytesReceiveCallback
 
   protected def receiveBytes(bytes: Array[Byte]) {
-    receiveCallback(this, bytes)
+    try {
+      receiveCallback(this, bytes)
+    } catch {
+      case e: Exception =>
+        Debug.error("Caught exception calling receiveCallback: " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+    }
   }
 
   /**
@@ -263,3 +275,6 @@ abstract class Service(objectReceiveCallack: (Connection, Serializer, AnyRef) =>
   }
 
 }
+
+class ProviderAlreadyClosedException extends RuntimeException
+class ConnectionAlreadyClosedException extends RuntimeException

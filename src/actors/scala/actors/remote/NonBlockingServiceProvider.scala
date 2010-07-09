@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
 
 
-
 object InterestOpUtil {
     // for debug purposes
     sealed trait InterestOp {
@@ -56,6 +55,7 @@ object InterestOpUtil {
 
 object NonBlockingServiceProvider {
   val NumSelectLoops = Runtime.getRuntime.availableProcessors * 4
+  val ReadBufSize = 8192
 }
 
 class VaryingSizeByteBufferPool {
@@ -81,12 +81,13 @@ class VaryingSizeByteBufferPool {
 
   def release(buf: ByteBuffer) { bufferQueue.offer(buf) }
 
-  // align to power of two
-  private def align(cap: Int): Int = {
-    assert(cap > 0)
-    var i = 1
-    while (i < cap) i <<= 1
-    i
+  // next multiple of 8. assumes i > 0 and that the next multiple wont
+  // overflow
+  def align(i: Int): Int = {
+    if ((i & 0x7) != 0x0) 
+      (((i >>> 0x3) + 0x1) << 0x3)
+    else
+      i
   }
 
 }
@@ -140,7 +141,9 @@ class NonBlockingServiceProvider
 
   private val selectLoopIdx = new AtomicInteger
 
-  class SelectorLoop(id: Int) extends Runnable {
+  class SelectorLoop(id: Int) 
+    extends Runnable
+    with    CanTerminate {
 
     object SendBufPool extends VaryingSizeByteBufferPool
 
@@ -185,7 +188,7 @@ class NonBlockingServiceProvider
       selector.wakeup()
     }
 
-    private val readBuffer = ByteBuffer.allocateDirect(8192)
+    private val readBuffer = ByteBuffer.allocateDirect(ReadBufSize)
 
     // receiving message state management 
 
@@ -206,6 +209,8 @@ class NonBlockingServiceProvider
         (bytes(3).toInt & 0xFF)
       }
 
+      // returns true iff either EOF was reached, or an exception
+      // occured during read
       def doRead(chan: SocketChannel): Boolean = {
         import scala.math.min
 
@@ -332,7 +337,6 @@ class NonBlockingServiceProvider
 
       def doRead(key: SelectionKey) {
         assert(!isWriting)
-
         val shouldTerminate = messageState.doRead(socketChannel)
 
         while (messageState.hasMessage) {
@@ -348,8 +352,6 @@ class NonBlockingServiceProvider
         assert(isWriting)
         try {
           writeQueue.synchronized {
-            var socketFull = false
-
             // drain writeQueue into unfinishedWriteQueue (and encode to BB)
             while (!writeQueue.isEmpty) {
               val curBytes = writeQueue.head
@@ -357,24 +359,27 @@ class NonBlockingServiceProvider
               writeQueue.dequeue()
               unfinishedWriteQueue += curEntry
             }
+          }
 
-            // now try to drain the unfinishedWriteQueue
-            while (!unfinishedWriteQueue.isEmpty && !socketFull) {
-              val curEntry = unfinishedWriteQueue.head
-              val bytesWritten = socketChannel.write(curEntry)
-              val finished = curEntry.remaining == 0
-              if (finished) { 
-                unfinishedWriteQueue.dequeue()
-                SendBufPool.release(curEntry)
-                //Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + unfinishedWriteQueue.size)
-              }
-              if (bytesWritten == 0 && !finished) {
-                socketFull = true
-                //Debug.info(this + ": doWrite() - socket is full")
-              }
+          var socketFull = false
+          // now try to drain the unfinishedWriteQueue
+          while (!unfinishedWriteQueue.isEmpty && !socketFull) {
+            val curEntry = unfinishedWriteQueue.head
+            val bytesWritten = socketChannel.write(curEntry)
+            val finished = curEntry.remaining == 0
+            if (finished) { 
+              unfinishedWriteQueue.dequeue()
+              SendBufPool.release(curEntry)
+              //Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + unfinishedWriteQueue.size)
             }
+            if (bytesWritten == 0 && !finished) {
+              socketFull = true
+              //Debug.info(this + ": doWrite() - socket is full")
+            }
+          }
 
-            if (unfinishedWriteQueue.isEmpty) {
+          writeQueue.synchronized {
+            if (unfinishedWriteQueue.isEmpty && writeQueue.isEmpty) {
               // back to reading
               //Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
               isWriting = false
@@ -382,7 +387,10 @@ class NonBlockingServiceProvider
             }
           }
         } catch {
-          case e: IOException => terminate()
+          case e: IOException => 
+            Debug.error(this + ": caught IOException in doWrite: " + e.getMessage)       
+            Debug.doError { e.printStackTrace }
+            terminate()
         }
       }
 
@@ -390,7 +398,10 @@ class NonBlockingServiceProvider
         try { 
           socketChannel.finishConnect()
         } catch {
-          case e: IOException => terminate()
+          case e: IOException => 
+            Debug.error(this + ": caught IOException in doFinishConnect: " + e.getMessage)       
+            Debug.doError { e.printStackTrace }
+            terminate()
         }
         
         // check write queue. if it is not empty and we're not in write mode,
@@ -399,7 +410,8 @@ class NonBlockingServiceProvider
           if (!writeQueue.isEmpty && !isWriting) {
             isWriting = true
             key.interestOps(SelectionKey.OP_WRITE)
-          } else key.interestOps(SelectionKey.OP_READ)
+          } else 
+            key.interestOps(SelectionKey.OP_READ)
         }
       }
 
@@ -420,7 +432,8 @@ class NonBlockingServiceProvider
         /** For a channel to receive an accept even, it must be a server channel */
         val serverSocketChannel = key.channel.asInstanceOf[ServerSocketChannel]
         val clientSocketChannel = serverSocketChannel.accept
-        nextSelectLoop().finishAccept(clientSocketChannel, receiveCallback, this, connectionCallback)
+        val conn = nextSelectLoop().finishAccept(clientSocketChannel, receiveCallback)
+        receiveConnection(conn)
       }
 
       override def doTerminate() {
@@ -431,15 +444,11 @@ class NonBlockingServiceProvider
 
     }
 
-    def finishAccept(clientSocketChannel: SocketChannel, 
-                     receiveCallback: BytesReceiveCallback,
-                     listener: Listener,
-                     connectionCallback: ConnectionCallback) {
-      //Debug.info(this + ": processAccept from " + clientSocketChannel)
+    def finishAccept(clientSocketChannel: SocketChannel, receiveCallback: BytesReceiveCallback) = {
       clientSocketChannel.configureBlocking(false)
       val conn = new NonBlockingServiceConnection(clientSocketChannel, receiveCallback)
       addOperation(new RegisterChannel(clientSocketChannel, SelectionKey.OP_READ, Some(conn)))
-      connectionCallback(listener, conn)
+      conn
     }
 
     private def processOperationQueue() {
@@ -453,8 +462,13 @@ class NonBlockingServiceProvider
       }
     }
 
+    @volatile
+    private var terminated = false
+
+    private val shutdownLock = new Object
+
     override def run() {
-      while (true) {
+      while (!terminated) {
         try {
           processOperationQueue()
           //Debug.info(this + ": selectLoop calling select()")
@@ -480,6 +494,7 @@ class NonBlockingServiceProvider
           case e: Exception =>
             Debug.error(this + " caught exception in select loop: " + e.getMessage)
             Debug.doError { e.printStackTrace }
+            terminate()
         }
       }
     }
@@ -508,17 +523,23 @@ class NonBlockingServiceProvider
       key.attachment.asInstanceOf[NonBlockingServiceConnection].doFinishConnect(key)
     }
 
-    def connect(node: Node, receiveCallback: BytesReceiveCallback) = {
+    private def ensureAlive() {
+      if (terminated) throw new ProviderAlreadyClosedException 
+    }
+
+    def connect(node: Node, receiveCallback: BytesReceiveCallback) = shutdownLock.synchronized {
+      ensureAlive()
       val clientSocket = SocketChannel.open
       clientSocket.configureBlocking(false)
       val connected = clientSocket.connect(new InetSocketAddress(node.address, node.port))
       val interestOp = if (connected) SelectionKey.OP_READ else SelectionKey.OP_CONNECT
       val conn = new NonBlockingServiceConnection(clientSocket, receiveCallback)
-      addOperation(new RegisterChannel(clientSocket, interestOp, Some(conn))) 
+      addOperation(new RegisterChannel(clientSocket, interestOp, Some(conn)))
       conn
     }
 
-    def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
+    def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = shutdownLock.synchronized {
+      ensureAlive()
       val serverSocketChannel = ServerSocketChannel.open
       serverSocketChannel.configureBlocking(false)
       serverSocketChannel.socket.bind(new InetSocketAddress(port))
@@ -529,8 +550,11 @@ class NonBlockingServiceProvider
 
     override def toString = "<SelectorLoop " + id + ">"
 
-    def terminate() {
-
+    override def terminate() {
+      shutdownLock.synchronized {
+        terminated = true
+        selector.close()
+      }
     }
 
   }
