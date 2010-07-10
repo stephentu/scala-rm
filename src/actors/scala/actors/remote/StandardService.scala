@@ -13,8 +13,7 @@ package remote
 import scala.collection.mutable.{ HashMap, Queue }
 
 object ConnectionStatus extends Enumeration {
-  val New, 
-      WaitingForSerializer,
+  val WaitingForSerializer,
       Handshaking, 
       Established, 
       Terminated = Value
@@ -62,87 +61,148 @@ class HandshakeState(serializer: Serializer) {
 
 }
 
-class ConnectionState(conn: Connection, 
-                      var serializer: Option[Serializer],
-                      objectReceiveCallback: (Connection, Serializer, AnyRef) => Unit) {
+class DefaultMessageConnection(byteConn: ByteConnection, 
+                               var serializer: Option[Serializer],
+                               override val receiveCallback: MessageReceiveCallback,
+                               isServer: Boolean)
+  extends MessageConnection {
 
-  private var _status: ConnectionStatus.Value = ConnectionStatus.New
+  override def localNode = byteConn.localNode
+  override def remoteNode = byteConn.remoteNode
+  override def doTerminate() {
+    synchronized {
+      if (!sendQueue.isEmpty) {
+        Debug.info(this + ": waiting 5 seconds for sendQueue to drain")
+        wait(5000)
+      }
+      byteConn.terminate()
+      status = ConnectionStatus.Terminated
+    }
+  }
+  override def mode = byteConn.mode
+
+  override def toString = "<DefaultMessageConnection using: " + byteConn + ">" 
+    
+  private var _status: ConnectionStatus.Value = _ 
   def status = _status
-  def status_=(newStatus: ConnectionStatus.Value) { _status = newStatus }
+  private def status_=(newStatus: ConnectionStatus.Value) { _status = newStatus }
 
-  var handshakeState: Option[HandshakeState] = serializer.map(new HandshakeState(_))
+  private var handshakeState: Option[HandshakeState] = serializer.map(new HandshakeState(_))
 
   def isWaitingForSerializer = status == ConnectionStatus.WaitingForSerializer
-  def isNew         = status == ConnectionStatus.New
   def isHandshaking = status == ConnectionStatus.Handshaking
   def isEstablished = status == ConnectionStatus.Established
+  def isTerminated = status == ConnectionStatus.Terminated
 
   private val messageQueue = new Queue[Array[Byte]]
 
-  def bootstrapClient() {
-    // clients start out in New mode, and with a serializer defined
-    assert(isNew && serializer.isDefined)
+  // bootstrap in CTOR
+  if (isServer)
+    bootstrapServer()
+  else
+    bootstrapClient()
+
+  assert(status ne null)
+
+  private def bootstrapClient() {
+    // clients start out with a serializer defined
+    assert(serializer.isDefined)
 
     // send class name of serializer to remote side
-    conn.send(serializer.get.getClass.getName.getBytes)
+    Debug.info(this + ": sending serializer name: " + serializer.get.getClass.getName)
+    byteConn.send(serializer.get.getClass.getName.getBytes)
 
     if (!handshakeState.get.isDone) {
       // if serializer requires handshake, place in handshake mode...
-      synchronized { status = ConnectionStatus.Handshaking }
+      status = ConnectionStatus.Handshaking
       // ... and send the first message from this end
       sendNextMessage()
     } else 
       // otherwise, in established mode (ready to send messages)
-      synchronized { status = ConnectionStatus.Established }
+      status = ConnectionStatus.Established 
   }
 
-  def bootstrapServer() {
-    // servers start out in New mode, with no serializer defined
-    assert(isNew && !serializer.isDefined)
-
-    synchronized { status = ConnectionStatus.WaitingForSerializer }
+  private def bootstrapServer() {
+    // servers start out with no serializer defined
+    assert(!serializer.isDefined)
+    status = ConnectionStatus.WaitingForSerializer
   }
 
-  def sendNextMessage() {
-    assert(isNew || isHandshaking)
+  // assumes lock on this is held
+  private def sendNextMessage() {
+    assert(isHandshaking)
     handshakeState.get.nextHandshakeMessage() match {
       case Some(msg) =>
+        Debug.info(this + ": nextHandshakeMessage: " + msg)
         val data = serializer.get.javaSerialize(msg.asInstanceOf[AnyRef])
-        conn.send(data)
+        byteConn.send(data)
       case None =>
         // done
-        synchronized { 
-          status = ConnectionStatus.Established 
-          // run this synchronized b/c we try to respect the order for which
-          // messages queued up in send queue
-          sendQueue.foreach { msg => 
-            val t = serialize(msg)
-            conn.send(t._1, t._2)
-          }
+        status = ConnectionStatus.Established
+        sendQueue.foreach { f =>
+          val msg = f(serializer.get)
+          Debug.info(this + ": serializing " + msg + " from sendQueue")
+          val t = serialize(msg)
+          byteConn.send(t._1, t._2)
         }
+        sendQueue.clear()
+        notifyAll()
+        Debug.info(this + ": handshake completed")
     }
   }
 
   def receive(bytes: Array[Byte]) {
-    messageQueue enqueue bytes
+    assert(status ne null)
+
+    Debug.info(this + ": received " + bytes.length + " bytes")
+    messageQueue += bytes
     while (hasNextAction) {
       if (isWaitingForSerializer) {
-        val clzName = new String(nextMessage())
-        val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer]
-        serializer = Some(_serializer)
-        handshakeState = Some(new HandshakeState(_serializer))
+        try {
+          val clzName = new String(nextMessage())
+          Debug.info(this + ": going to create serializer of clz " + clzName)
+          val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer]
+          serializer = Some(_serializer)
+          handshakeState = Some(new HandshakeState(_serializer))
 
-        // same logic as in bootstrapClient()
-        if (!handshakeState.get.isDone) {
-          synchronized { status = ConnectionStatus.Handshaking }
-          sendNextMessage()
-        } else 
-          synchronized { status = ConnectionStatus.Established }
+          // same logic as in bootstrapClient()
+          if (!handshakeState.get.isDone) {
+            synchronized {
+              if (isTerminated) return
+              status = ConnectionStatus.Handshaking
+              sendNextMessage()
+            }
+          } else 
+            synchronized {
+              if (isTerminated) return
+              status = ConnectionStatus.Established 
+            }
+        } catch {
+          case e: InstantiationException =>
+            Debug.error(this + ": could not instantiate class: " + e.getMessage)
+            Debug.doError { e.printStackTrace }
+            terminate()
+          case e: ClassNotFoundException =>
+            Debug.error(this + ": could not find class: " + e.getMessage)
+            Debug.doError { e.printStackTrace }
+            terminate()
+          case e: ClassCastException =>
+            Debug.error(this + ": could not cast class to Serializer: " + e.getMessage)
+            Debug.doError { e.printStackTrace }
+            terminate()
+        }
       } else if (isHandshaking) {
-        handshakeState.get.handleNextMessage(nextJavaMessage())
-        sendNextMessage()
+        val msg = nextJavaMessage()
+        Debug.info(this + ": receive() - nextJavaMessage(): " + msg)
+        handshakeState.get.handleNextMessage(msg)
+        synchronized { 
+          if (isTerminated) return
+          sendNextMessage()
+        }
       } else if (isEstablished) {
-        objectReceiveCallback(conn, serializer.get, nextSerializerMessage())   
+        val nextMsg = nextSerializerMessage()
+        Debug.info(this + ": calling receiveMessage with " + nextMsg)
+        receiveMessage(serializer.get, nextMsg)
       }
     }
   }
@@ -161,21 +221,20 @@ class ConnectionState(conn: Connection,
   private val sendQueue = new Queue[Serializer => AnyRef]
 
   def send(msg: Serializer => AnyRef) {
-    val doSend = synchronized {
+    synchronized {
       status match {
-        case ConnectionStatus.New =>
-          throw new IllegalStateException("should not be NEW")
         case ConnectionStatus.Terminated =>
           throw new IllegalStateException("Cannot send on terminated channel")
         case ConnectionStatus.WaitingForSerializer | ConnectionStatus.Handshaking =>
-          sendQueue enqueue msg      
-          false
-        case ConnectionStatus.Established => true
+          Debug.info(this + ": send() - queuing up msg")
+          sendQueue += msg // queue it up
+        case ConnectionStatus.Established =>
+          // call send immediately
+          val m = msg(serializer.get)
+          Debug.info(this + ": send() - serializing message: " + m)
+          val t = serialize(m)
+          byteConn.send(t._1, t._2)
       }
-    }
-    if (doSend) {
-      val t = serialize(msg(serializer.get))
-      conn.send(t._1, t._2)
     }
   }
 
@@ -192,13 +251,13 @@ class ConnectionState(conn: Connection,
 
   private def nextMessage() = {
     assert(hasSimpleMessage)
-    messageQueue dequeue
+    messageQueue.dequeue()
   }
 
   private def nextMessageTuple() = {
     assert(hasSerializerMessage)
-    val meta = messageQueue.dequeue
-    val data = messageQueue.dequeue
+    val meta = messageQueue.dequeue()
+    val data = messageQueue.dequeue()
     (meta, data)
   }
 
@@ -216,40 +275,33 @@ class ConnectionState(conn: Connection,
 
 }
 
-class StandardService(objectReceiveCallback: (Connection, Serializer, AnyRef) => Unit) 
-  extends Service(objectReceiveCallback) {
-
-  private def withState(conn: Connection)(f: ConnectionState => Unit) {
-    if (conn.attachment eq null)
-      throw new IllegalArgumentException("conn does not have attachment")
-    if (!conn.attachment.isInstanceOf[ConnectionState])
-      throw new IllegalArgumentException("Attachment is not a connection state")
-    f(conn.attachment.asInstanceOf[ConnectionState])
-  }
-
-  override val receiveCallback = (conn: Connection, bytes: Array[Byte]) => {
-    withState(conn) { state => state.receive(bytes) }
-  }
-
-  override val connectionCallback = (listener: Listener, conn: Connection) => {
-    val state = new ConnectionState(conn, None, objectReceiveCallback)
-    state.bootstrapServer()
-    conn.attachment = Some(state)
-  }
-
-  override def attachmentFor(newConn: Connection, serializer: Serializer) = {
-    val newConnState = new ConnectionState(newConn, Some(serializer), objectReceiveCallback)
-    newConnState.bootstrapClient()
-    Some(newConnState)
-  }
+class StandardService extends Service {
 
   override def serviceProviderFor(mode: ServiceMode.Value) = mode match {
     case ServiceMode.NonBlocking => new NonBlockingServiceProvider
     case ServiceMode.Blocking    => new BlockingServiceProvider
   }
 
-  override def send(conn: Connection)(f: Serializer => AnyRef) {
-    withState(conn) { state => state.send(f) }
+  private val recvCall0 = (conn: ByteConnection, bytes: Array[Byte]) => {
+    conn.attachment_!.asInstanceOf[DefaultMessageConnection].receive(bytes)
+  }
+
+  override def connect(node: Node, 
+                       serializer: Serializer, 
+                       mode: ServiceMode.Value, 
+                       recvCallback: MessageReceiveCallback): MessageConnection = {
+    val byteConn = serviceProviderFor0(mode).connect(node, recvCall0)
+    val msgConn = new DefaultMessageConnection(byteConn, Some(serializer), recvCallback, false)
+    byteConn.attach(msgConn)
+    msgConn
+  }
+
+  override def listen(port: Int, mode: ServiceMode.Value, recvCallback: MessageReceiveCallback): Listener = {
+    val connectionCallback = (listener: Listener, byteConn: ByteConnection) => {
+      val msgConn = new DefaultMessageConnection(byteConn, None, recvCallback, true)
+      byteConn.attach(msgConn)
+    }
+    serviceProviderFor0(mode).listen(port, connectionCallback, recvCall0)
   }
 
 }

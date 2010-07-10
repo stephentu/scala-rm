@@ -16,7 +16,7 @@ import scala.collection.mutable.HashMap
  * @author Philipp Haller
  */
 @serializable
-private[remote] class Proxy(conn: Connection, name: Symbol, @transient var kernel: NetKernel) 
+private[remote] class Proxy(conn: MessageConnection, name: Symbol, @transient var kernel: NetKernel) 
   extends AbstractActor {
 
   @transient
@@ -97,7 +97,7 @@ private[remote] case class Apply0(rfun: Function2[AbstractActor, Proxy, Unit])
 /**
  * @author Philipp Haller
  */
-private[remote] class DelegateActor(creator: Proxy, conn: Connection, name: Symbol, kernel: NetKernel) extends Actor {
+private[remote] class DelegateActor(creator: Proxy, conn: MessageConnection, name: Symbol, kernel: NetKernel) extends Actor {
   var channelMap = new HashMap[Symbol, OutputChannel[Any]]
   var sessionMap = new HashMap[OutputChannel[Any], Symbol]
 

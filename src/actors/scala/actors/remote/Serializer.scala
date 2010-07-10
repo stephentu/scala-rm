@@ -90,6 +90,12 @@ abstract class Serializer {
     case _             => false
   }
 
+  /**
+   * Default hashCode method for serializers. Returns uniqueId (cast as an
+   * int)
+   */
+  override def hashCode = uniqueId.toInt
+
   /** Expects data to be in format [ int, bytes ]. Returns null if the length
    * read is 0. */
   @throws(classOf[IOException])

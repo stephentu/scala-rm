@@ -47,14 +47,14 @@ object RemoteActor {
   private val actors = new HashMap[Actor, HashSet[Int]]
 
   /**
-   * Maps listening port to the mode it is running in
+   * Maps listening port to listener 
    */
-  private val portToMode = new HashMap[Int, ServiceMode.Value]
+  private val portToMode = new HashMap[Int, Listener]
 
   /**
    * Backing net kernel
    */
-  private lazy val netKernel = new NetKernel
+  private val netKernel = new NetKernel
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -89,10 +89,10 @@ object RemoteActor {
     // check to see if the port can support this service mode, or if we
     // need to start listening
     portToMode.get(port) match {
-      case Some(mode0) =>
+      case Some(listener) =>
         // check to see if the mode is consistent on the port
-        if (mode0 != serviceMode) 
-          throw InconsistentServiceException(serviceMode, mode0)
+        if (listener.mode != serviceMode) 
+          throw InconsistentServiceException(serviceMode, listener.mode)
       case None =>
         // need to listen
         listenOnPort(port, serviceMode)
@@ -117,7 +117,10 @@ object RemoteActor {
     netKernel.register(name, actor)
   }
 
-  private def listenOnPort(port: Int, mode: ServiceMode.Value) { netKernel.listen(port, mode) }
+  private def listenOnPort(port: Int, mode: ServiceMode.Value) { 
+    val listener = netKernel.listen(port, mode) 
+    portToMode += port -> listener
+  }
 
   // does NOT invoke kernel.register()
   //private def addNetKernel(actor: Actor, kern: NetKernel) {
@@ -183,6 +186,21 @@ object RemoteActor {
     }
   }
 
+  private val connections = new HashMap[(Node, Serializer, ServiceMode.Value), MessageConnection]
+
+  private def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): MessageConnection = synchronized {
+    connections.get((node, serializer, mode)) match {
+      case Some(conn) =>
+        conn
+        // TODO: check if its still valid
+      case None =>
+        val conn = netKernel.connect(node, serializer, mode)
+        connections += ((node, serializer, mode)) -> conn
+        conn
+    }
+  }
+
+
   /**
    * Returns (a proxy for) the actor registered under
    * <code>name</code> on <code>node</code>.
@@ -192,8 +210,7 @@ object RemoteActor {
   def select(node: Node, sym: Symbol, 
              serializer: Serializer = defaultSerializer,
              serviceMode: ServiceMode.Value = ServiceMode.Blocking): AbstractActor = synchronized {
-    val connection = netKernel.connect(node, serializer, serviceMode)
-    netKernel.getOrCreateProxy(connection, sym)
+    netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym)
   }
 
 }

@@ -25,11 +25,10 @@ class BlockingServiceProvider extends ServiceProvider {
 
   class BlockingServiceWorker(
       so: Socket, 
-      override val receiveCallback: (Connection, Array[Byte]) => Unit)
+      override val receiveCallback: BytesReceiveCallback)
     extends Runnable
-    with    Connection 
-    with    EncodingHelpers 
-    with    BytesReceiveCallbackAware {
+    with    ByteConnection 
+    with    EncodingHelpers {
 
     override def mode = ServiceMode.Blocking
 
@@ -122,8 +121,8 @@ class BlockingServiceProvider extends ServiceProvider {
 
   class BlockingServiceListener(
       override val port: Int, 
-      override val connectionCallback: (Listener, Connection) => Unit,
-      receiveCallback: (Connection, Array[Byte]) => Unit) 
+      override val connectionCallback: ConnectionCallback,
+      receiveCallback: BytesReceiveCallback)
     extends Runnable
     with    Listener {
 
@@ -161,7 +160,7 @@ class BlockingServiceProvider extends ServiceProvider {
 
   override def mode = ServiceMode.Blocking
 
-  override def connect(node: Node, receiveCallback: BytesReceiveCallback): Connection = {
+  override def connect(node: Node, receiveCallback: BytesReceiveCallback) = {
     val socket = new Socket(node.address, node.port)
     val worker = new BlockingServiceWorker(socket, receiveCallback)
     executor.execute(worker)

@@ -44,6 +44,7 @@ case object Resolved
  *  @author Philipp Haller
  */
 class JavaSerializer(cl: ClassLoader) extends Serializer {
+  def this() = this(null)
 
   override def initialState: Option[Any] = Some(SendID)
 

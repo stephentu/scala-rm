@@ -32,17 +32,12 @@ case class Locator(node: Node, name: Symbol)
  */
 private[remote] class NetKernel {
 
-  private val service = new StandardService(processMsg _)
+  private val service = new StandardService
 
   import java.io.IOException
 
-  def send(conn: Connection, msg: AnyRef) = {
-    service.send(conn, msg)
-  }
-
-  def namedSend(conn: Connection, senderLoc: Locator, receiverLoc: Locator,
-                msg: AnyRef, session: Symbol) {
-    service.send(conn) { serializer =>
+  def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Symbol) {
+    conn.send { serializer: Serializer =>
       val metadata = serializer.serializeMetaData(msg) match {
         case Some(data) => data
         case None       => null
@@ -89,43 +84,44 @@ private[remote] class NetKernel {
       name
   }
 
-  def send(conn: Connection, name: Symbol, msg: AnyRef): Unit =
+  def send(conn: MessageConnection, name: Symbol, msg: AnyRef): Unit =
     send(conn, name, msg, 'nosession)
 
-  def send(conn: Connection, name: Symbol, msg: AnyRef, session: Symbol) {
+  def send(conn: MessageConnection, name: Symbol, msg: AnyRef, session: Symbol) {
     val senderLoc   = Locator(conn.localNode, getOrCreateName(Actor.self))
     val receiverLoc = Locator(conn.remoteNode, name)
     namedSend(conn, senderLoc, receiverLoc, msg, session)
   }
 
-  def forward(from: OutputChannel[Any], conn: Connection, name: Symbol, msg: AnyRef, session: Symbol) {
+  def forward(from: OutputChannel[Any], conn: MessageConnection, name: Symbol, msg: AnyRef, session: Symbol) {
     val senderLoc   = Locator(conn.localNode, getOrCreateName(from))
     val receiverLoc = Locator(conn.remoteNode, name)
     namedSend(conn, senderLoc, receiverLoc, msg, session)
   }
 
-  def remoteApply(conn: Connection, name: Symbol, from: OutputChannel[Any], rfun: Function2[AbstractActor, Proxy, Unit]) {
+  def remoteApply(conn: MessageConnection, name: Symbol, from: OutputChannel[Any], rfun: Function2[AbstractActor, Proxy, Unit]) {
     val senderLoc   = Locator(conn.localNode, getOrCreateName(from))
     val receiverLoc = Locator(conn.remoteNode, name)
-    send(conn, RemoteApply0(senderLoc, receiverLoc, rfun))
+    conn.send(RemoteApply0(senderLoc, receiverLoc, rfun))
   }
 
-  private def createProxy(conn: Connection, sym: Symbol): Proxy = {
+  private def createProxy(conn: MessageConnection, sym: Symbol): Proxy = {
     val p = new Proxy(conn, sym, this)
     proxies += Pair((conn, sym), p)
     p
   }
 
-  val proxies = new HashMap[(Connection, Symbol), Proxy]
+  private val proxies = new HashMap[(MessageConnection, Symbol), Proxy]
 
-  def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): Connection =
-    service.connect(node, serializer, serviceMode)
+  private val processMsgFunc = processMsg _
 
-  def listen(port: Int, serviceMode: ServiceMode.Value) {
-    service.listen(port, serviceMode)
-  }
+  def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection =
+    service.connect(node, serializer, serviceMode, processMsgFunc)
 
-  def getOrCreateProxy(conn: Connection, senderName: Symbol): Proxy =
+  def listen(port: Int, serviceMode: ServiceMode.Value): Listener = 
+    service.listen(port, serviceMode, processMsgFunc)
+
+  def getOrCreateProxy(conn: MessageConnection, senderName: Symbol): Proxy =
     proxies.synchronized {
       proxies.get((conn, senderName)) match {
         case Some(senderProxy) => senderProxy
@@ -133,7 +129,7 @@ private[remote] class NetKernel {
       }
     }
 
-  private def processMsg(conn: Connection, serializer: Serializer, msg: AnyRef): Unit = synchronized {
+  private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef): Unit = synchronized {
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)

@@ -66,22 +66,13 @@ trait TerminationHandlers extends CanTerminate {
 
 }
 
-trait BytesReceiveCallbackAware {
-  type BytesReceiveCallback = (Connection, Array[Byte]) => Unit
-}
-
-trait ObjectReceiveCallbackAware {
-  type ObjectReceiveCallback = (Connection, Serializer, AnyRef) => Unit
-}
-
 trait Listener 
   extends HasServiceMode 
-  with    TerminationHandlers 
-  with    ConnectionCallbackAware {
+  with    TerminationHandlers {
 
   protected val connectionCallback: ConnectionCallback
 
-  protected def receiveConnection(conn: Connection) {
+  protected def receiveConnection(conn: ByteConnection) {
     try {
       connectionCallback(this, conn)
     } catch {
@@ -96,8 +87,40 @@ trait Listener
 
 trait Connection 
   extends HasServiceMode 
-  with    TerminationHandlers 
-  with    BytesReceiveCallbackAware {
+  with    TerminationHandlers {
+
+  /**
+   * Returns the (canonical) remote node
+   */
+  def remoteNode: Node
+
+  /**
+   * Returns the (canonical) local node
+   */
+  def localNode: Node
+
+  private var _attachment: Option[AnyRef] = None
+  private val attachLock = new Object
+
+  def attach(attachment: AnyRef) {
+    assert(attachment ne null)
+    attachLock.synchronized {
+      _attachment = Some(attachment)
+      attachLock.notifyAll()
+    }
+  }
+
+  def attachment_? = attachLock.synchronized { _attachment }
+
+  def attachment_! = attachLock.synchronized {
+    while (!_attachment.isDefined) attachLock.wait()
+    assert(_attachment.isDefined)
+    _attachment.get
+  }
+
+}
+
+trait ByteConnection extends Connection {
 
   protected val receiveCallback: BytesReceiveCallback
 
@@ -111,37 +134,35 @@ trait Connection
     }
   }
 
-  /**
-   * Returns the (canonical) remote node
-   */
-  def remoteNode: Node
-
-  /**
-   * Returns the (canonical) local node
-   */
-  def localNode: Node
-
   def send(data: Array[Byte]): Unit
 
   def send(data0: Array[Byte], data1: Array[Byte]): Unit
 
-  var attachment: Option[AnyRef] = None
+}
+
+trait MessageConnection extends Connection {
+
+  protected val receiveCallback: MessageReceiveCallback
+
+  protected def receiveMessage(s: Serializer, message: AnyRef) {
+    try {
+      receiveCallback(this, s, message)
+    } catch {
+      case e: Exception =>
+        Debug.error("Caught exception calling receiveCallback: " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+    }
+  }
+
+  def send(f: Serializer => AnyRef): Unit 
+
+  def send(msg: AnyRef) { send { _: Serializer => msg } }
 
 }
 
-trait ConnectionCallbackAware {
-  type ConnectionCallback = (Listener, Connection) => Unit
-}
-
-trait ServiceProvider 
-  extends HasServiceMode 
-  with    CanTerminate 
-  with    BytesReceiveCallbackAware 
-  with    ConnectionCallbackAware {
-
-  def connect(node: Node, receiveCallback: BytesReceiveCallback): Connection
+trait ServiceProvider extends HasServiceMode with CanTerminate {
+  def connect(node: Node, receiveCallback: BytesReceiveCallback): ByteConnection
   def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback): Listener
-
 }
 
 trait EncodingHelpers {
@@ -176,11 +197,7 @@ trait EncodingHelpers {
  * @version 0.9.10
  * @author Philipp Haller
  */
-abstract class Service(objectReceiveCallack: (Connection, Serializer, AnyRef) => Unit)
-  extends CanTerminate 
-  with    BytesReceiveCallbackAware 
-  with    ConnectionCallbackAware 
-  with    ObjectReceiveCallbackAware {
+abstract class Service extends CanTerminate {
 
   protected def serviceProviderFor(mode: ServiceMode.Value): ServiceProvider
 
@@ -197,72 +214,17 @@ abstract class Service(objectReceiveCallack: (Connection, Serializer, AnyRef) =>
     serviceProviderFor(ServiceMode.Blocking)
   }
 
-  private def serviceProviderFor0(mode: ServiceMode.Value) = mode match {
+  protected def serviceProviderFor0(mode: ServiceMode.Value) = mode match {
     case ServiceMode.NonBlocking => nonBlockingService
     case ServiceMode.Blocking    => blockingService
   }
 
-  protected def receiveCallback: BytesReceiveCallback
-  protected def connectionCallback: ConnectionCallback
-
-  private val connections = new HashMap[(Node, Serializer, ServiceMode.Value), Connection]
-
-  protected def attachmentFor(newConn: Connection, serializer: Serializer): Option[AnyRef]
-
   def connect(node: Node, 
               serializer: Serializer, 
-              mode: ServiceMode.Value): Connection = 
-    connections.synchronized {
-      connections.get((node, serializer, mode)) match {
-        case Some(conn) => conn
-        case None =>
-          val newConn = serviceProviderFor0(mode).connect(node, receiveCallback)
-          connections += (node, serializer, mode) -> newConn
-          newConn.preTerminate { 
-            connections.synchronized {
-              connections -= ((node, serializer, mode))
-            }
-          }
-          newConn.attachment = attachmentFor(newConn, serializer)
-          newConn
-      }
-    }
+              mode: ServiceMode.Value,
+              recvCallback: MessageReceiveCallback): MessageConnection
 
-  def send(conn: Connection)(f: Serializer => AnyRef): Unit 
-
-  def send(conn: Connection, msg: AnyRef) { send(conn) { _ => msg } }
-
-  private val listeners = new HashMap[Int, Listener]
-
-  /**
-   * Start listening on this port, using mode
-   */
-  def listen(port: Int, mode: ServiceMode.Value) {
-    listeners.synchronized { 
-      listeners.get(port) match {
-        case Some(listener) =>
-          // do nothing
-        case None =>
-          val listener = serviceProviderFor0(mode).listen(port, connectionCallback, receiveCallback)
-          listeners += port -> listener
-          listener
-      }
-    }
-  }
-
-  /**
-   * Stop listening on this port 
-   */
-  def unlisten(port: Int) {
-    listeners.synchronized {
-      listeners.get(port) match {
-        case Some(listener) =>
-          listener.terminate()
-        case None =>
-          throw new IllegalArgumentException("No listener on port " + port)
-      }
-    }
-  }
+  def listen(port: Int, mode: ServiceMode.Value, recvCallback: MessageReceiveCallback): Listener
 
   override def terminate() {
 

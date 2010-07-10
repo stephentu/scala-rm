@@ -23,6 +23,7 @@ import java.util.concurrent.{ ConcurrentLinkedQueue, Executors }
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
+import scala.concurrent.SyncVar
 
 
 object InterestOpUtil {
@@ -109,10 +110,7 @@ class FixedSizeByteBufferPool(fixedSize: Int) {
 
 }
 
-class NonBlockingServiceProvider 
-  extends ServiceProvider
-  with    BytesReceiveCallbackAware
-  with    ConnectionCallbackAware {
+class NonBlockingServiceProvider extends ServiceProvider {
 
   import NonBlockingServiceProvider._
 
@@ -164,12 +162,22 @@ class NonBlockingServiceProvider
       def invoke(): Unit
     }
 
+    import InterestOpUtil._
+
     class ChangeInterestOp(socket: SocketChannel, op: Int) extends Operation {
       override def invoke() {
-        import InterestOpUtil._
-        //Debug.info("setting channel " + socket + " to be interested in: " + enumerateSet(op))
-        socket.keyFor(selector).interestOps(op)
+
+        import java.nio.channels.CancelledKeyException
+
+        try {
+          socket.keyFor(selector).interestOps(op)
+          Debug.info(this + ": done!")
+        } catch {
+          case e: CancelledKeyException =>
+            Debug.error(this + ": tried to set interestOps for " + socket + " to " + enumerateSet(op) + ", but key was cancelled already")
+        }
       }
+      override def toString = "<ChangeInterestOp: " + socket + " to " + enumerateSet(op) + ">"
     }
 
     class RegisterChannel(socket: AbstractSelectableChannel, 
@@ -177,6 +185,22 @@ class NonBlockingServiceProvider
                           attachment: Option[AnyRef]) extends Operation {
       override def invoke() {
         socket.register(selector, op, attachment.getOrElse(null)) 
+        Debug.info(this + ": done!")
+      }
+      override def toString = "<RegisterChannel: " + socket + " with " + enumerateSet(op) + ">"
+    }
+
+    class QuerySelectorKeyAttachments extends Operation {
+      private val future = new SyncVar[List[CanTerminate]]
+      def attachments = future.get
+      override def invoke() {
+        val l = new ListBuffer[CanTerminate]
+        val iter = selector.keys.iterator
+        while (iter.hasNext) {
+          val key = iter.next()
+          l += key.attachment.asInstanceOf[CanTerminate]
+        }
+        future.set(l.toList)
       }
     }
 
@@ -185,6 +209,7 @@ class NonBlockingServiceProvider
     private def addOperation(op: Operation) {
       if (!operationQueue.offer(op))
         throw new RuntimeException("Could not offer operation to queue")
+      Debug.info(this + ": " + op + " added and calling wakeup()")
       selector.wakeup()
     }
 
@@ -286,7 +311,7 @@ class NonBlockingServiceProvider
     class NonBlockingServiceConnection(
         socketChannel: SocketChannel,
         override val receiveCallback: BytesReceiveCallback)
-      extends Connection {
+      extends ByteConnection {
 
       private val so = socketChannel.socket
 
@@ -301,21 +326,47 @@ class NonBlockingServiceProvider
       private val unfinishedWriteQueue = new Queue[ByteBuffer]
 
       private var isWriting = false
+      private var shouldNotify = false
+      private var terminated = false
+
+      private def ensureAlive() {
+        if (terminated) throw new ConnectionAlreadyClosedException
+      }
 
       override def mode = ServiceMode.NonBlocking
 
       override def doTerminate() {
-        // cancel the key
-        socketChannel.keyFor(selector).cancel()
+        writeQueue.synchronized {
+          if (!terminated) {
+            // flag as terminated so no new packets are sent, and subsequent
+            // calls to terminate() will have no effect
+            terminated = true
 
-        // close the socket
-        socketChannel.close()
+            // wait 5 seconds for writeQueue to drain existing packets which
+            // have not gone out on the wire, if the socket is still connected
+            if (isWriting && socketChannel.isConnected) {
+              shouldNotify = true
+              Debug.info(this + ": doTerminate(): waiting for write queue to drain for 5 seconds")
+              writeQueue.wait(5000)
+            }
+            shouldNotify = false
+            if (isWriting) 
+              Debug.error(this + ": could not wait for write queue to drain")
+
+            // cancel the key
+            socketChannel.keyFor(selector).cancel()
+
+            // close the socket
+            socketChannel.close()
+          }
+        }
       }
 
       private val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE)
 
       override def send(bytes: Array[Byte]) {
         writeQueue.synchronized {
+          ensureAlive()
           writeQueue += bytes
           if (!isWriting && socketChannel.isConnected) {
             isWriting = true
@@ -326,6 +377,7 @@ class NonBlockingServiceProvider
 
       override def send(bytes0: Array[Byte], bytes1: Array[Byte]) {
         writeQueue.synchronized {
+          ensureAlive()
           writeQueue += bytes0
           writeQueue += bytes1
           if (!isWriting && socketChannel.isConnected) {
@@ -336,7 +388,6 @@ class NonBlockingServiceProvider
       }
 
       def doRead(key: SelectionKey) {
-        assert(!isWriting)
         val shouldTerminate = messageState.doRead(socketChannel)
 
         while (messageState.hasMessage) {
@@ -345,6 +396,8 @@ class NonBlockingServiceProvider
         }
 
         if (shouldTerminate) 
+          // TODO: terminate IMMEDIATELY here, since the connection is
+          // probably bad
           terminate()
       }
 
@@ -381,37 +434,47 @@ class NonBlockingServiceProvider
           writeQueue.synchronized {
             if (unfinishedWriteQueue.isEmpty && writeQueue.isEmpty) {
               // back to reading
-              //Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
+              Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
               isWriting = false
               key.interestOps(SelectionKey.OP_READ)
+              if (shouldNotify) 
+                writeQueue.notifyAll()
             }
           }
         } catch {
           case e: IOException => 
             Debug.error(this + ": caught IOException in doWrite: " + e.getMessage)       
             Debug.doError { e.printStackTrace }
+            writeQueue.synchronized {
+              // since we had an error in writing, we don't want to have to
+              // wait to drain the write queue on termination (since writes
+              // probably won't succeed anyways)
+              isWriting = false
+            }
             terminate()
         }
       }
 
       def doFinishConnect(key: SelectionKey) {
         try { 
+
           socketChannel.finishConnect()
+
+          // check write queue. if it is not empty and we're not in write mode,
+          // put us in write mode. otherwise, put us in read mode
+          writeQueue.synchronized {
+            if (!writeQueue.isEmpty && !isWriting) {
+              isWriting = true
+              key.interestOps(SelectionKey.OP_WRITE)
+            } else 
+              key.interestOps(SelectionKey.OP_READ)
+          }
+
         } catch {
           case e: IOException => 
             Debug.error(this + ": caught IOException in doFinishConnect: " + e.getMessage)       
             Debug.doError { e.printStackTrace }
             terminate()
-        }
-        
-        // check write queue. if it is not empty and we're not in write mode,
-        // put us in write mode. otherwise, put us in read mode
-        writeQueue.synchronized {
-          if (!writeQueue.isEmpty && !isWriting) {
-            isWriting = true
-            key.interestOps(SelectionKey.OP_WRITE)
-          } else 
-            key.interestOps(SelectionKey.OP_READ)
         }
       }
 
@@ -471,9 +534,9 @@ class NonBlockingServiceProvider
       while (!terminated) {
         try {
           processOperationQueue()
-          //Debug.info(this + ": selectLoop calling select()")
-          selector.select() /** This is a blocking operation */
-          //Debug.info(this + ": selectLoop awaken from select()")
+          //Debug.info(this + ": calling select()")
+          selector.select() /** TODO: consider using select(long) alternative */
+          //Debug.info(this + ": woke up from select()")
           val selectedKeys = selector.selectedKeys.iterator
           while (selectedKeys.hasNext) {
             val key = selectedKeys.next()
@@ -497,6 +560,7 @@ class NonBlockingServiceProvider
             terminate()
         }
       }
+      Debug.info(this + ": run() is finished")
     }
 
     // handle accepts
@@ -529,6 +593,7 @@ class NonBlockingServiceProvider
 
     def connect(node: Node, receiveCallback: BytesReceiveCallback) = shutdownLock.synchronized {
       ensureAlive()
+      Debug.info(this + ": connect called to: " + node)
       val clientSocket = SocketChannel.open
       clientSocket.configureBlocking(false)
       val connected = clientSocket.connect(new InetSocketAddress(node.address, node.port))
@@ -540,6 +605,7 @@ class NonBlockingServiceProvider
 
     def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = shutdownLock.synchronized {
       ensureAlive()
+      Debug.info(this + ": listening on port: " + port)
       val serverSocketChannel = ServerSocketChannel.open
       serverSocketChannel.configureBlocking(false)
       serverSocketChannel.socket.bind(new InetSocketAddress(port))
@@ -550,10 +616,27 @@ class NonBlockingServiceProvider
 
     override def toString = "<SelectorLoop " + id + ">"
 
+    private var shutdownInitiated = false
+
     override def terminate() {
       shutdownLock.synchronized {
-        terminated = true
-        selector.close()
+        if (!shutdownInitiated) {
+          shutdownInitiated = true
+
+          // try to terminate all the keys gracefully first
+          val query = new QuerySelectorKeyAttachments
+          addOperation(query) // key set is *not* threadsafe
+          query.attachments.foreach { _.terminate() }
+
+          // now shut the loop down
+          Debug.info(this + ": closing selector")
+          terminated = true
+          selector.close()
+
+          // and shut the thread pool down
+          executor.shutdownNow()
+
+        }
       }
     }
 
