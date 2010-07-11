@@ -41,15 +41,7 @@ import scala.collection.mutable.{ HashMap, HashSet }
  */
 object RemoteActor {
 
-  /**
-   * Maps actors to the port(s) it is listening on
-   */
-  private val actors = new HashMap[Actor, HashSet[Int]]
-
-  /**
-   * Maps listening port to listener 
-   */
-  private val portToMode = new HashMap[Int, Listener]
+  private val actorsByPort = new HashMap[Int, HashSet[Actor]]
 
   /**
    * Backing net kernel
@@ -73,44 +65,46 @@ object RemoteActor {
    */
   def defaultSerializer: Serializer = new JavaSerializer(cl)
 
-  case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
-    extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
-  case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
-    extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)
 
   /**
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>.
    */
   @throws(classOf[InconsistentServiceException])
-  def alive(port: Int, serviceMode: ServiceMode.Value = ServiceMode.Blocking): Unit = synchronized {
+  def alive(port: Int, serviceMode: ServiceMode.Value = ServiceMode.Blocking): Unit = actorsByPort.synchronized {
+    // listen if necessary
+    listenOnPort(port, serviceMode)
 
-    // check to see if the port can support this service mode, or if we
-    // need to start listening
-    portToMode.get(port) match {
-      case Some(listener) =>
-        // check to see if the mode is consistent on the port
-        if (listener.mode != serviceMode) 
-          throw InconsistentServiceException(serviceMode, listener.mode)
-      case None =>
-        // need to listen
-        listenOnPort(port, serviceMode)
-    }
-
-    // now register the actor w/ this name
+    // now register the actor
     val thisActor = Actor.self
-    val registrations = actors.get(thisActor) match {
-      case Some(r) => r
+    val registrations = actorsByPort.get(port) match {
+      case Some(set) => 
+        set += thisActor
       case None =>
-        val r = new HashSet[Int]
-        actors += thisActor -> r 
-        r
+        val set = new HashSet[Actor]
+        set += thisActor
+        actorsByPort += port -> set 
     }
 
-    registrations += port
+    // termination handler
+    thisActor onTerminate {
+      Debug.info("alive actor " + thisActor + " terminated")
+      // Unregister actor from kernel
+      netKernel.unregister(thisActor)
 
-    // TODO: onTerminate handler
+      actorsByPort.synchronized {
+        val portsToTerminate = actorsByPort flatMap { case (port, set) => 
+          set -= thisActor
+          if (set.isEmpty) List()
+          else List(port)
+        }
+        portsToTerminate.map(p => (p, netKernel.listenerOn(p))).foreach {
+          case (_, Some(listener)) => listener.terminateTop()
+          case (p, None) => actorsByPort -= p
+        }
+      }
+    }
   }
 
   def register(name: Symbol, actor: Actor) {
@@ -118,36 +112,8 @@ object RemoteActor {
   }
 
   private def listenOnPort(port: Int, mode: ServiceMode.Value) { 
-    val listener = netKernel.listen(port, mode) 
-    portToMode += port -> listener
+    netKernel.listen(port, mode) 
   }
-
-  // does NOT invoke kernel.register()
-  //private def addNetKernel(actor: Actor, kern: NetKernel) {
-  //  kernels += Pair(actor, kern) // assumes no such mapping previously exists
-  //  val kernLock = this
-  //  actor.onTerminate {
-  //    Debug.info("alive actor "+actor+" terminated")
-  //    // Unregister actor from kernel
-  //    kern.unregister(actor)
-  //    val todo = kernLock.synchronized {
-  //      // remove mapping for `actor`
-  //      kernels -= actor
-  //      // terminate `kern` when it does
-  //      // not appear as value any more
-  //      if (!kernels.valuesIterator.contains(kern)) {
-  //        Debug.info("actor " + actor + " causing terminating "+kern)
-  //        // terminate NetKernel
-  //        () => kern.terminate()
-  //      } else 
-  //        () => ()
-  //    }
-  //    todo()
-  //  }
-  //}
-
-  case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
-    extends Exception("Name " + sym + " is already registered for channel " + a)
 
   //def remoteStart[A <: Actor, S <: Serializer](node: Node, 
   //                                             serializer: Serializer,
@@ -186,20 +152,8 @@ object RemoteActor {
     }
   }
 
-  private val connections = new HashMap[(Node, Serializer, ServiceMode.Value), MessageConnection]
-
-  private def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): MessageConnection = synchronized {
-    connections.get((node, serializer, mode)) match {
-      case Some(conn) =>
-        conn
-        // TODO: check if its still valid
-      case None =>
-        val conn = netKernel.connect(node, serializer, mode)
-        connections += ((node, serializer, mode)) -> conn
-        conn
-    }
-  }
-
+  private def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): MessageConnection =
+    netKernel.connect(node, serializer, mode)
 
   /**
    * Returns (a proxy for) the actor registered under
@@ -242,3 +196,12 @@ case class Node(address: String, port: Int) {
   }
   def isCanonical         = this == canonicalForm
 }
+
+case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
+  extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
+
+case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
+  extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)
+
+case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
+  extends Exception("Name " + sym + " is already registered for channel " + a)

@@ -50,8 +50,6 @@ private[remote] class NetKernel {
   private val actors = new HashMap[Symbol, OutputChannel[Any]]
   private val names = new HashMap[OutputChannel[Any], Symbol]
 
-  import RemoteActor.NameAlreadyRegisteredException
-
   @throws(classOf[NameAlreadyRegisteredException])
   def register(name: Symbol, a: OutputChannel[Any]): Unit = synchronized {
     actors.get(name) match {
@@ -115,11 +113,52 @@ private[remote] class NetKernel {
 
   private val processMsgFunc = processMsg _
 
-  def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection =
-    service.connect(node, serializer, serviceMode, processMsgFunc)
+  private val connectionCache = new HashMap[(Node, Serializer, ServiceMode.Value), MessageConnection]
 
-  def listen(port: Int, serviceMode: ServiceMode.Value): Listener = 
-    service.listen(port, serviceMode, processMsgFunc)
+  def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection =
+    connect0(node.canonicalForm, serializer, serviceMode)
+
+  private def connect0(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection = connectionCache.synchronized {
+    connectionCache.get((node, serializer, serviceMode)) match {
+      case Some(conn) => conn
+      case None =>
+        val conn = service.connect(node, serializer, serviceMode, processMsgFunc)
+        conn beforeTerminate {
+          connectionCache.synchronized {
+            connectionCache -= ((node, serializer, serviceMode))
+          }
+        }
+        connectionCache += ((node, serializer, serviceMode)) -> conn
+        conn
+    }
+  }
+
+  private val listeners = new HashMap[(Int, ServiceMode.Value), Listener]
+  private val listenersByPort = new HashMap[Int, Listener]
+
+  def listen(port: Int, serviceMode: ServiceMode.Value): Listener = listeners.synchronized {
+    listeners.get((port, serviceMode)) match {
+      case Some(listener) => listener
+      case None =>
+        // check the port
+        if (listenersByPort.contains(port))
+          throw InconsistentServiceException(serviceMode, listenersByPort(port).mode)
+
+        val listener = service.listen(port, serviceMode, processMsgFunc)
+        listener beforeTerminate {
+          listeners.synchronized {
+            listeners -= ((port, serviceMode))
+            listenersByPort -= port
+          }
+        }
+        listeners += ((port, serviceMode)) -> listener
+        listenersByPort += port -> listener
+        listener
+    }
+  }
+
+  def listenerOn(port: Int): Option[Listener] = listeners.synchronized { listenersByPort.get(port) }
+  def activeListeners: List[Listener] = listeners.synchronized { listeners.valuesIterator.toList }
 
   def getOrCreateProxy(conn: MessageConnection, senderName: Symbol): Proxy =
     proxies.synchronized {
@@ -202,7 +241,7 @@ private[remote] class NetKernel {
           react { case Terminate => i += 1 }
         else {
           Debug.info(this + ": terminating service")
-          service.terminate()
+          service.terminateTop()
           exit()
         }
       }
