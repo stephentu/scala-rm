@@ -19,7 +19,7 @@ import java.nio.channels.{ SelectionKey, Selector,
 import java.nio.channels.spi.{ AbstractSelectableChannel, SelectorProvider }
 
 import java.util.{ Comparator, PriorityQueue }
-import java.util.concurrent.{ ConcurrentLinkedQueue, Executors }
+import java.util.concurrent.{ ConcurrentLinkedQueue, ConcurrentHashMap, Executors }
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
@@ -55,7 +55,8 @@ object InterestOpUtil {
 }
 
 object NonBlockingServiceProvider {
-  val NumSelectLoops = Runtime.getRuntime.availableProcessors * 4
+  val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 4
+  val NumListenerLoops = Runtime.getRuntime.availableProcessors
   val ReadBufSize = 8192
 }
 
@@ -116,30 +117,47 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
   override def mode = ServiceMode.NonBlocking
 
-  private def nextSelectLoop() = {
-    val num = selectLoopIdx.getAndIncrement()
-    val idx = num % selectLoops.length
-    selectLoops(idx)
+  private def nextConnectionLoop() = {
+    val num = connLoopIdx.getAndIncrement()
+    val idx = num % connLoops.length
+    connLoops(idx)
   }
 
-  private val executor = Executors.newCachedThreadPool()
+  private def nextListenerLoop() = {
+    val num = listenerLoopIdx.getAndIncrement()
+    val idx = num % listenerLoops.length
+    listenerLoops(idx)
+  }
 
-  private val selectLoops = new Array[SelectorLoop](NumSelectLoops) 
+  private val connExecutor = Executors.newCachedThreadPool()
+  private val listenerExecutor = Executors.newCachedThreadPool()
+
+  private val connLoops = new Array[SelectorLoop](NumConnectionLoops) 
+  private val listenerLoops = new Array[SelectorLoop](NumListenerLoops) 
+
   initializeSelectLoops()
 
   private def initializeSelectLoops() {
     var idx = 0
-    while (idx < selectLoops.length) {
-      val selectLoop = new SelectorLoop(idx)
-      executor.execute(selectLoop) 
-      selectLoops(idx) = selectLoop
+    while (idx < listenerLoops.length) {
+      val listenerLoop = new SelectorLoop(idx, false)
+      listenerExecutor.execute(listenerLoop) 
+      listenerLoops(idx) = listenerLoop
+      idx += 1
+    }
+    idx = 0
+    while (idx < connLoops.length) {
+      val connLoop = new SelectorLoop(idx, true)
+      connExecutor.execute(connLoop) 
+      connLoops(idx) = connLoop
       idx += 1
     }
   }
 
-  private val selectLoopIdx = new AtomicInteger
+  private val connLoopIdx = new AtomicInteger
+  private val listenerLoopIdx = new AtomicInteger
 
-  class SelectorLoop(id: Int) 
+  class SelectorLoop(id: Int, isConn: Boolean) 
     extends Runnable
     with    CanTerminate {
 
@@ -184,13 +202,14 @@ class NonBlockingServiceProvider extends ServiceProvider {
                           op: Int, 
                           attachment: Option[AnyRef]) extends Operation {
       override def invoke() {
+        // TODO: catch exceptions
         socket.register(selector, op, attachment.getOrElse(null)) 
         Debug.info(this + ": done!")
       }
       override def toString = "<RegisterChannel: " + socket + " with " + enumerateSet(op) + ">"
     }
 
-    class QuerySelectorKeyAttachments extends Operation {
+    abstract class QuerySelectorKeyAttachments extends Operation {
       private val future = new SyncVar[List[CanTerminate]]
       def attachments = future.get
       override def invoke() {
@@ -198,11 +217,26 @@ class NonBlockingServiceProvider extends ServiceProvider {
         val iter = selector.keys.iterator
         while (iter.hasNext) {
           val key = iter.next()
-          l += key.attachment.asInstanceOf[CanTerminate]
+          val attachment = key.attachment.asInstanceOf[CanTerminate]
+          if (include_?(attachment)) l += attachment
         }
         future.set(l.toList)
       }
+      protected def include_?(attachment: CanTerminate): Boolean
     }
+
+    class QueryAllKeys extends QuerySelectorKeyAttachments {
+      override def include_?(attachment: CanTerminate) = true 
+    }
+
+    class QueryConnections extends QuerySelectorKeyAttachments {
+      override def include_?(attachment: CanTerminate) = attachment.isInstanceOf[Connection]
+    }
+
+    class QueryListeners extends QuerySelectorKeyAttachments {
+      override def include_?(attachment: CanTerminate) = attachment.isInstanceOf[Listener]
+    }
+
 
     private val operationQueue = new ConcurrentLinkedQueue[Operation]
 
@@ -322,50 +356,45 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
       private val messageState = new MessageState
 
+      // writeQueue guarded by terminateLock
       private val writeQueue = new Queue[Array[Byte]]
       private val unfinishedWriteQueue = new Queue[ByteBuffer]
 
+      // guarded by terminateLock
       private var isWriting = false
       private var shouldNotify = false
-      private var terminated = false
 
       private def ensureAlive() {
-        if (terminated) throw new ConnectionAlreadyClosedException
+        if (terminateInitiated) throw new ConnectionAlreadyClosedException
       }
 
       override def mode = ServiceMode.NonBlocking
 
-      override def doTerminate() {
-        writeQueue.synchronized {
-          if (!terminated) {
-            // flag as terminated so no new packets are sent, and subsequent
-            // calls to terminate() will have no effect
-            terminated = true
-
-            // wait 5 seconds for writeQueue to drain existing packets which
-            // have not gone out on the wire, if the socket is still connected
-            if (isWriting && socketChannel.isConnected) {
-              shouldNotify = true
-              Debug.info(this + ": doTerminate(): waiting for write queue to drain for 5 seconds")
-              writeQueue.wait(5000)
-            }
-            shouldNotify = false
-            if (isWriting) 
-              Debug.error(this + ": could not wait for write queue to drain")
-
-            // cancel the key
-            socketChannel.keyFor(selector).cancel()
-
-            // close the socket
-            socketChannel.close()
+      override def doTerminateImpl(isBottom: Boolean) {
+        if (!isBottom) { // if the terminate is from bottom, dont try to drain writeQueue b/c connection is already bad
+          // wait 5 seconds for writeQueue to drain existing packets which
+          // have not gone out on the wire, if the socket is still connected
+          if (isWriting && socketChannel.isConnected) {
+            shouldNotify = true
+            Debug.info(this + ": doTerminateImpl(): waiting for write queue to drain for 5 seconds")
+            terminateLock.wait(5000)
           }
+          shouldNotify = false
+          if (isWriting) 
+            Debug.error(this + ": write queue did not successfully drain")
         }
+
+        // cancel the key
+        socketChannel.keyFor(selector).cancel()
+
+        // close the socket
+        socketChannel.close()
       }
 
       private val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE)
 
       override def send(bytes: Array[Byte]) {
-        writeQueue.synchronized {
+        terminateLock.synchronized {
           ensureAlive()
           writeQueue += bytes
           if (!isWriting && socketChannel.isConnected) {
@@ -376,7 +405,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       }
 
       override def send(bytes0: Array[Byte], bytes1: Array[Byte]) {
-        writeQueue.synchronized {
+        terminateLock.synchronized {
           ensureAlive()
           writeQueue += bytes0
           writeQueue += bytes1
@@ -396,15 +425,13 @@ class NonBlockingServiceProvider extends ServiceProvider {
         }
 
         if (shouldTerminate) 
-          // TODO: terminate IMMEDIATELY here, since the connection is
-          // probably bad
-          terminate()
+          terminateBottom()
       }
 
       def doWrite(key: SelectionKey) {
         assert(isWriting)
         try {
-          writeQueue.synchronized {
+          terminateLock.synchronized {
             // drain writeQueue into unfinishedWriteQueue (and encode to BB)
             while (!writeQueue.isEmpty) {
               val curBytes = writeQueue.head
@@ -431,27 +458,27 @@ class NonBlockingServiceProvider extends ServiceProvider {
             }
           }
 
-          writeQueue.synchronized {
+          terminateLock.synchronized {
             if (unfinishedWriteQueue.isEmpty && writeQueue.isEmpty) {
               // back to reading
               Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
               isWriting = false
               key.interestOps(SelectionKey.OP_READ)
               if (shouldNotify) 
-                writeQueue.notifyAll()
+                terminateLock.notifyAll()
             }
           }
         } catch {
           case e: IOException => 
             Debug.error(this + ": caught IOException in doWrite: " + e.getMessage)       
             Debug.doError { e.printStackTrace }
-            writeQueue.synchronized {
+            terminateLock.synchronized {
               // since we had an error in writing, we don't want to have to
               // wait to drain the write queue on termination (since writes
               // probably won't succeed anyways)
               isWriting = false
             }
-            terminate()
+            terminateBottom()
         }
       }
 
@@ -462,7 +489,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
           // check write queue. if it is not empty and we're not in write mode,
           // put us in write mode. otherwise, put us in read mode
-          writeQueue.synchronized {
+          terminateLock.synchronized {
             if (!writeQueue.isEmpty && !isWriting) {
               isWriting = true
               key.interestOps(SelectionKey.OP_WRITE)
@@ -474,13 +501,17 @@ class NonBlockingServiceProvider extends ServiceProvider {
           case e: IOException => 
             Debug.error(this + ": caught IOException in doFinishConnect: " + e.getMessage)       
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
         }
       }
 
       override def toString = "<NonBlockingServiceConnection: " + socketChannel + ">"
 
     }
+
+    // used to put as value in concurrent hash map (since we dont care about
+    // the value, and there is no concurrent hash set)
+    private val DUMMY_VALUE = new Object
 
     class NonBlockingServiceListener(
         override val port: Int, 
@@ -489,17 +520,32 @@ class NonBlockingServiceProvider extends ServiceProvider {
         receiveCallback: BytesReceiveCallback)
       extends Listener {
 
+      private val childConnections = new ConcurrentHashMap[ByteConnection, Object]
+
       override def mode = ServiceMode.NonBlocking
 
       def doAccept(key: SelectionKey) {
         /** For a channel to receive an accept even, it must be a server channel */
         val serverSocketChannel = key.channel.asInstanceOf[ServerSocketChannel]
         val clientSocketChannel = serverSocketChannel.accept
-        val conn = nextSelectLoop().finishAccept(clientSocketChannel, receiveCallback)
+        val conn = nextConnectionLoop().finishAccept(clientSocketChannel, receiveCallback)
+        conn.afterTerminate {
+          childConnections.remove(conn)
+        }
+        childConnections.put(conn, DUMMY_VALUE)
         receiveConnection(conn)
       }
 
-      override def doTerminate() {
+      override def doTerminateImpl(isBottom: Boolean) {
+        Debug.info(this + ": doTerminateImpl() called")
+        val enum = childConnections.keys
+        while (enum.hasMoreElements) {
+          val conn = enum.nextElement()
+          if (isBottom)
+            conn.terminateBottom()
+          else
+            conn.terminateTop()
+        }
         serverSocketChannel.close()
       }
 
@@ -528,15 +574,13 @@ class NonBlockingServiceProvider extends ServiceProvider {
     @volatile
     private var terminated = false
 
-    private val shutdownLock = new Object
-
     override def run() {
       while (!terminated) {
         try {
           processOperationQueue()
           //Debug.info(this + ": calling select()")
-          selector.select() /** TODO: consider using select(long) alternative */
-          //Debug.info(this + ": woke up from select()")
+          val selected = selector.select() /** TODO: consider using select(long) alternative */
+          //Debug.info(this + ": woke up from select() with " + selected + " keys selected")
           val selectedKeys = selector.selectedKeys.iterator
           while (selectedKeys.hasNext) {
             val key = selectedKeys.next()
@@ -557,7 +601,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
           case e: Exception =>
             Debug.error(this + " caught exception in select loop: " + e.getMessage)
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
         }
       }
       Debug.info(this + ": run() is finished")
@@ -588,10 +632,10 @@ class NonBlockingServiceProvider extends ServiceProvider {
     }
 
     private def ensureAlive() {
-      if (terminated) throw new ProviderAlreadyClosedException 
+      if (terminateInitiated) throw new ProviderAlreadyClosedException 
     }
 
-    def connect(node: Node, receiveCallback: BytesReceiveCallback) = shutdownLock.synchronized {
+    def connect(node: Node, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
       ensureAlive()
       Debug.info(this + ": connect called to: " + node)
       val clientSocket = SocketChannel.open
@@ -603,7 +647,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       conn
     }
 
-    def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = shutdownLock.synchronized {
+    def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
       ensureAlive()
       Debug.info(this + ": listening on port: " + port)
       val serverSocketChannel = ServerSocketChannel.open
@@ -614,44 +658,51 @@ class NonBlockingServiceProvider extends ServiceProvider {
       listener
     }
 
-    override def toString = "<SelectorLoop " + id + ">"
+    override def toString = 
+      if (isConn)
+        "<SelectorLoop (Connections) " + id + ">"
+      else
+        "<SelectorLoop (Listeners) " + id + ">"
 
-    private var shutdownInitiated = false
 
-    override def terminate() {
-      shutdownLock.synchronized {
-        if (!shutdownInitiated) {
-          shutdownInitiated = true
-
-          // try to terminate all the keys gracefully first
-          val query = new QuerySelectorKeyAttachments
-          addOperation(query) // key set is *not* threadsafe
-          query.attachments.foreach { _.terminate() }
-
-          // now shut the loop down
-          Debug.info(this + ": closing selector")
-          terminated = true
-          selector.close()
-
-          // and shut the thread pool down
-          executor.shutdownNow()
-
-        }
+    override def doTerminateImpl(isBottom: Boolean) {
+      // try to terminate all the keys gracefully first
+      Debug.info(this + ":terminate() - shutting down keys")
+      val query = new QueryAllKeys
+      addOperation(query) 
+      query.attachments.foreach { q =>
+        if (isBottom) q.terminateBottom() else q.terminateTop()
       }
+
+      // now shut the loop down
+      terminated = true
+      Debug.info(this + ": closing selector")
+      selector.close()
     }
 
   }
 
   override def connect(node: Node, receiveCallback: BytesReceiveCallback) = {
-    nextSelectLoop().connect(node, receiveCallback)
+    nextConnectionLoop().connect(node, receiveCallback)
   }
 
   override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
-    nextSelectLoop().listen(port, connectionCallback, receiveCallback)
+    nextListenerLoop().listen(port, connectionCallback, receiveCallback)
   }
 
-  override def terminate() {
-    selectLoops foreach { _.terminate() }
+  override def doTerminateImpl(isBottom: Boolean) {
+    Debug.info(this + ": doTerminateImpl() - closing connLoops")
+    connLoops foreach { s =>
+      if (isBottom) s.terminateBottom() else s.terminateTop()
+    }
+    Debug.info(this + ": doTerminateImpl() - closing listenerLoops")
+    listenerLoops foreach { s =>
+      if (isBottom) s.terminateBottom() else s.terminateTop()
+    }
+
+    Debug.info(this + ": doTerminateImpl() - closing executors")
+    listenerExecutor.shutdownNow()
+    connExecutor.shutdownNow()
   }
 
 }

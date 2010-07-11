@@ -26,49 +26,87 @@ trait HasServiceMode {
   def mode: ServiceMode.Value
 }
 
+/**
+ * Can only be terminated once
+ */
 trait CanTerminate {
+
+  final def terminateTop() { doTerminate(false) }
+
+  final def terminateBottom() { doTerminate(true) }
+
+  protected final var preTerminate: Option[() => Unit] = None
+  final def beforeTerminate(f: => Unit) {
+    terminateLock.synchronized {
+      if (!terminateInitiated) {
+        assert(!terminateCompleted)
+        preTerminate match {
+          case Some(_) =>
+            Debug.warning(this + ": beforeTerminate() - terminate sequence already registered - replacing")
+            preTerminate = Some(() => f)
+          case None =>
+            preTerminate = Some(() => f)
+        }
+      } else 
+        Debug.info(this + ": beforeTerminate() - terminate sequence already started")
+    }
+  }
+
+  protected final var postTerminate: Option[() => Unit] = None
+  final def afterTerminate(f: => Unit) {
+    terminateLock.synchronized {
+      if (!terminateInitiated) {
+        assert(!terminateCompleted)
+        postTerminate match {
+          case Some(_) =>
+            Debug.warning(this + ": afterTerminate() - terminate sequence already registered - replacing")
+            postTerminate = Some(() => f)
+          case None =>
+            postTerminate = Some(() => f)
+        }
+      } else 
+        Debug.info(this + ": afterTerminate() - terminate sequence already started")
+    }
+  }
+
+  // assumes terminateLock already acquired
+  protected final def doTerminate(isBottom: Boolean) {
+    terminateLock.synchronized {
+      if (!terminateInitiated) {
+        assert(!terminateCompleted)
+        preTerminate match {
+          case Some(f) => f()
+          case None =>
+        }
+        terminateInitiated = true
+        doTerminateImpl(isBottom)
+        terminateCompleted = true
+        postTerminate match {
+          case Some(f) => f()
+          case None =>
+        }
+      }
+    }
+  }
+
   /**
-   * Can assume that terminate() will only be invoked at most once
+   * Guaranteed to only execute once. TerminateLock is acquired when
+   * doTerminateImpl() executes
    */
-  def terminate(): Unit
-}
+  protected def doTerminateImpl(isBottom: Boolean): Unit
 
-private class HandlerGroup {
-  val handlers = new ListBuffer[() => Unit]
-  def addHandler(f: => Unit) {
-    handlers += (() => f)
-  }
-  def invokeHandlers() {
-    handlers.foreach(f => f())
-  }
-}
+  protected final val terminateLock = new Object
 
-trait TerminationHandlers extends CanTerminate {
+  protected final var terminateInitiated = false
+  protected final var terminateCompleted = false
 
-  private val preTerminateHandlers  = new HandlerGroup
-  private val postTerminateHandlers = new HandlerGroup
-
-  protected def doTerminate(): Unit
-  
-  final override def terminate() {
-    preTerminateHandlers.invokeHandlers()
-    doTerminate() 
-    postTerminateHandlers.invokeHandlers() 
-  }
-
-  def preTerminate(f: => Unit) {
-    preTerminateHandlers addHandler f
-  }
-
-  def postTerminate(f: => Unit) {
-    postTerminateHandlers addHandler f
-  }
-
+  final def hasTerminateStarted = terminateLock.synchronized { terminateInitiated }
+  final def hasTerminateFinished = terminateLock.synchronized { terminateCompleted }
 }
 
 trait Listener 
   extends HasServiceMode 
-  with    TerminationHandlers {
+  with    CanTerminate {
 
   protected val connectionCallback: ConnectionCallback
 
@@ -87,7 +125,7 @@ trait Listener
 
 trait Connection 
   extends HasServiceMode 
-  with    TerminationHandlers {
+  with    CanTerminate {
 
   /**
    * Returns the (canonical) remote node
@@ -226,14 +264,10 @@ abstract class Service extends CanTerminate {
 
   def listen(port: Int, mode: ServiceMode.Value, recvCallback: MessageReceiveCallback): Listener
 
-  override def terminate() {
-
-    if (nonBlockServiceSet)
-      nonBlockingService.terminate()
-
-    if (blockServiceSet)
-      blockingService.terminate()
-
+  override def doTerminateImpl(isBottom: Boolean) {
+    assert(!isBottom)
+    if (nonBlockServiceSet) nonBlockingService.terminateTop()
+    if (blockServiceSet) blockingService.terminateTop()
   }
 
 }

@@ -41,11 +41,9 @@ class BlockingServiceProvider extends ServiceProvider {
     @volatile
     private var terminated = false
 
-    override def doTerminate() {
-      synchronized {
-        terminated = true
-        so.close()
-      }
+    override def doTerminateImpl(isBottom: Boolean) {
+      terminated = true
+      so.close()
     }
 
     private def send0(data: Array[Byte]) {
@@ -54,11 +52,11 @@ class BlockingServiceProvider extends ServiceProvider {
     }
 
     private def ensureAlive() {
-      if (terminated) throw new ConnectionAlreadyClosedException
+      if (terminateInitiated) throw new ConnectionAlreadyClosedException
     }
 
     override def send(data: Array[Byte]) {
-      synchronized {
+      terminateLock.synchronized {
         ensureAlive()
         assert(data.length > 0)
         try {
@@ -68,13 +66,13 @@ class BlockingServiceProvider extends ServiceProvider {
           case e: IOException => 
             Debug.error(this + ": caught " + e.getMessage)
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
         }
       }
     }
 
     override def send(data0: Array[Byte], data1: Array[Byte]) {
-      synchronized {
+      terminateLock.synchronized {
         ensureAlive()
         assert(data0.length > 0 && data1.length > 0)
         try {
@@ -85,7 +83,7 @@ class BlockingServiceProvider extends ServiceProvider {
           case e: IOException => 
             Debug.error(this + ": caught " + e.getMessage)
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
         }
       }
     }
@@ -111,7 +109,7 @@ class BlockingServiceProvider extends ServiceProvider {
         case e: Exception =>
           Debug.error(this + ": caught " + e.getMessage)
           Debug.doError { e.printStackTrace }
-          terminate()
+          terminateBottom()
       }
 
     }
@@ -145,11 +143,11 @@ class BlockingServiceProvider extends ServiceProvider {
         case e: Exception =>
           Debug.error(this + ": caught " + e.getMessage)
           Debug.doError { e.printStackTrace }
-          terminate()
+          terminateBottom()
       }
     }
 
-    override def doTerminate() {
+    override def doTerminateImpl(isBottom: Boolean) {
       terminated = true
       serverSocket.close()
     }
@@ -160,7 +158,12 @@ class BlockingServiceProvider extends ServiceProvider {
 
   override def mode = ServiceMode.Blocking
 
-  override def connect(node: Node, receiveCallback: BytesReceiveCallback) = {
+  private def ensureAlive() {
+    if (terminateInitiated) throw new ProviderAlreadyClosedException
+  }
+
+  override def connect(node: Node, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
+    ensureAlive()
     val socket = new Socket(node.address, node.port)
     val worker = new BlockingServiceWorker(socket, receiveCallback)
     executor.execute(worker)
@@ -168,12 +171,13 @@ class BlockingServiceProvider extends ServiceProvider {
   }
 
   override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
+    ensureAlive()
     val listener = new BlockingServiceListener(port, connectionCallback, receiveCallback)
     executor.execute(listener)
     listener
   }
 
-  override def terminate() {
+  override def doTerminateImpl(isBottom: Boolean) {
     executor.shutdownNow() 
   }
 

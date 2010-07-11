@@ -69,15 +69,16 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
   override def localNode = byteConn.localNode
   override def remoteNode = byteConn.remoteNode
-  override def doTerminate() {
-    synchronized {
-      if (!sendQueue.isEmpty) {
-        Debug.info(this + ": waiting 5 seconds for sendQueue to drain")
-        wait(5000)
-      }
-      byteConn.terminate()
-      status = ConnectionStatus.Terminated
+  override def doTerminateImpl(isBottom: Boolean) {
+    if (!isBottom && !sendQueue.isEmpty) {
+      Debug.info(this + ": waiting 5 seconds for sendQueue to drain")
+      terminateLock.wait(5000)
     }
+    if (isBottom)
+      byteConn.terminateBottom()
+    else
+      byteConn.terminateTop()
+    status = ConnectionStatus.Terminated
   }
   override def mode = byteConn.mode
 
@@ -92,7 +93,6 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   def isWaitingForSerializer = status == ConnectionStatus.WaitingForSerializer
   def isHandshaking = status == ConnectionStatus.Handshaking
   def isEstablished = status == ConnectionStatus.Established
-  def isTerminated = status == ConnectionStatus.Terminated
 
   private val messageQueue = new Queue[Array[Byte]]
 
@@ -146,7 +146,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
           byteConn.send(t._1, t._2)
         }
         sendQueue.clear()
-        notifyAll()
+        terminateLock.notifyAll()
         Debug.info(this + ": handshake completed")
     }
   }
@@ -167,36 +167,36 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
           // same logic as in bootstrapClient()
           if (!handshakeState.get.isDone) {
-            synchronized {
-              if (isTerminated) return
+            terminateLock.synchronized {
+              if (terminateInitiated) return
               status = ConnectionStatus.Handshaking
               sendNextMessage()
             }
           } else 
-            synchronized {
-              if (isTerminated) return
+            terminateLock.synchronized {
+              if (terminateInitiated) return
               status = ConnectionStatus.Established 
             }
         } catch {
           case e: InstantiationException =>
             Debug.error(this + ": could not instantiate class: " + e.getMessage)
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
           case e: ClassNotFoundException =>
             Debug.error(this + ": could not find class: " + e.getMessage)
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
           case e: ClassCastException =>
             Debug.error(this + ": could not cast class to Serializer: " + e.getMessage)
             Debug.doError { e.printStackTrace }
-            terminate()
+            terminateBottom()
         }
       } else if (isHandshaking) {
         val msg = nextJavaMessage()
         Debug.info(this + ": receive() - nextJavaMessage(): " + msg)
         handshakeState.get.handleNextMessage(msg)
-        synchronized { 
-          if (isTerminated) return
+        terminateLock.synchronized { 
+          if (terminateInitiated) return
           sendNextMessage()
         }
       } else if (isEstablished) {
@@ -208,7 +208,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   }
 
   private def serialize(msg: AnyRef) = serializer match {
-    case Some(s) => (s.serializeMetaData(msg).getOrElse(Array[Byte]()), s.serialize(msg))
+    case Some(s) => (s.serializeMetaData(msg).getOrElse(new Array[Byte](0)), s.serialize(msg))
     case None =>
       throw new IllegalStateException("Cannot serialize message, no serializer agreed upon")
   }
@@ -221,7 +221,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   private val sendQueue = new Queue[Serializer => AnyRef]
 
   def send(msg: Serializer => AnyRef) {
-    synchronized {
+    terminateLock.synchronized {
       status match {
         case ConnectionStatus.Terminated =>
           throw new IllegalStateException("Cannot send on terminated channel")
