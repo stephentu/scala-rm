@@ -96,6 +96,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
   private val messageQueue = new Queue[Array[Byte]]
 
+  private val primitiveSerializer = new PrimitiveSerializer
+
   // bootstrap in CTOR
   if (isServer)
     bootstrapServer()
@@ -128,25 +130,28 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     status = ConnectionStatus.WaitingForSerializer
   }
 
-  // assumes lock on this is held
+  // assumes lock on terminateLock is held (except in the bootstrap phase)
   private def sendNextMessage() {
     assert(isHandshaking)
     handshakeState.get.nextHandshakeMessage() match {
       case Some(msg) =>
-        Debug.info(this + ": nextHandshakeMessage: " + msg)
-        val data = serializer.get.javaSerialize(msg.asInstanceOf[AnyRef])
-        byteConn.send(data)
+        Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
+        val meta = primitiveSerializer.serializeMetaData(msg.asInstanceOf[AnyRef])
+        val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
+        byteConn.send(meta.get, data)
       case None =>
         // done
         status = ConnectionStatus.Established
-        sendQueue.foreach { f =>
-          val msg = f(serializer.get)
-          Debug.info(this + ": serializing " + msg + " from sendQueue")
-          val t = serialize(msg)
-          byteConn.send(t._1, t._2)
+        if (!sendQueue.isEmpty) {
+          sendQueue.foreach { f =>
+            val msg = f(serializer.get)
+            Debug.info(this + ": serializing " + msg + " from sendQueue")
+            val t = serialize(msg)
+            byteConn.send(t._1, t._2)
+          }
+          sendQueue.clear()
+          terminateLock.notifyAll()
         }
-        sendQueue.clear()
-        terminateLock.notifyAll()
         Debug.info(this + ": handshake completed")
     }
   }
@@ -192,8 +197,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
             terminateBottom()
         }
       } else if (isHandshaking) {
-        val msg = nextJavaMessage()
-        Debug.info(this + ": receive() - nextJavaMessage(): " + msg)
+        val msg = nextPrimitiveMessage()
+        Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
         handshakeState.get.handleNextMessage(msg)
         terminateLock.synchronized { 
           if (terminateInitiated) return
@@ -239,9 +244,9 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   }
 
   private def hasNextAction = status match {
-    case ConnectionStatus.WaitingForSerializer | ConnectionStatus.Handshaking =>
+    case ConnectionStatus.WaitingForSerializer =>
       hasSimpleMessage
-    case ConnectionStatus.Established =>
+    case ConnectionStatus.Handshaking | ConnectionStatus.Established =>
       hasSerializerMessage
     case _ => false
   }
@@ -261,9 +266,10 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     (meta, data)
   }
 
-  private def nextJavaMessage() = {
-    assert(hasSimpleMessage)
-    serializer.get.javaDeserialize(nextMessage())
+  private def nextPrimitiveMessage() = {
+    assert(hasSerializerMessage)
+    val (meta, data) = nextMessageTuple()
+    primitiveSerializer.deserialize(Some(meta), data)
   }
 
   private def nextSerializerMessage() = {

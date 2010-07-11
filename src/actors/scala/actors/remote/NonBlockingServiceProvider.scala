@@ -260,18 +260,12 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
       val messageQueue = new Queue[Array[Byte]]
 
-      private def getInt(bytes: Array[Byte]): Int = {
-        // big endian
-        (bytes(0).toInt & 0xFF) << 24 | 
-        (bytes(1).toInt & 0xFF) << 16 | 
-        (bytes(2).toInt & 0xFF) << 8  |
-        (bytes(3).toInt & 0xFF)
-      }
 
       // returns true iff either EOF was reached, or an exception
       // occured during read
       def doRead(chan: SocketChannel): Boolean = {
         import scala.math.min
+        import BitUtils._
 
         readBuffer.clear()
 
@@ -307,7 +301,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
             // this message is done
             if (bytesSoFar == messageSize) 
               if (isReadingSize)
-                startReadingMessage(getInt(currentArray))
+                startReadingMessage(bytesToInt(currentArray))
               else {
                 messageQueue += currentArray
                 startReadingSize()

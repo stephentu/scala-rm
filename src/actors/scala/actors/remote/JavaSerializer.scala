@@ -43,29 +43,16 @@ case object Resolved
 /**
  *  @author Philipp Haller
  */
-class JavaSerializer(cl: ClassLoader) extends Serializer {
+class JavaSerializer(cl: ClassLoader) extends IdResolvingSerializer {
   def this() = this(null)
 
-  override def initialState: Option[Any] = Some(SendID)
+  override def uniqueId = 1679081588L
 
-  override def nextHandshakeMessage = {
-    case SendID   => (ExpectID, Some(uniqueId))
-    case Resolved => (Resolved, None)
-  }
+  override def serializeMetaData(message: AnyRef): Option[Array[Byte]] = None
 
-  override def handleHandshakeMessage = {
-    case (ExpectID, MyUniqueId) => Resolved
-  }
+  override def serialize(o: AnyRef): Array[Byte] = javaSerialize(o)
 
-  private val MyUniqueId = uniqueId
-
-  def uniqueId = 1679081588L
-
-  def serializeMetaData(message: AnyRef): Option[Array[Byte]] = None
-
-  def serialize(o: AnyRef): Array[Byte] = javaSerialize(o)
-
-  def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
+  override def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
     if (cl eq null) javaDeserialize(bytes)
     else {
       // use custom class loader in this case
@@ -73,6 +60,20 @@ class JavaSerializer(cl: ClassLoader) extends Serializer {
       val in  = new CustomObjectInputStream(bis, cl)
       in.readObject()
     }
+  }
+
+  private def javaSerialize(o: AnyRef): Array[Byte] = {
+    val bos = new ByteArrayOutputStream()
+    val out = new ObjectOutputStream(bos)
+    out.writeObject(o)
+    out.flush()
+    bos.toByteArray()
+  }
+
+  private def javaDeserialize(bytes: Array[Byte]): AnyRef = {
+    val bis = new ByteArrayInputStream(bytes)
+    val in  = new ObjectInputStream(bis)
+    in.readObject()
   }
 
 }

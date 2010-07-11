@@ -58,7 +58,6 @@ class BlockingServiceProvider extends ServiceProvider {
     override def send(data: Array[Byte]) {
       terminateLock.synchronized {
         ensureAlive()
-        assert(data.length > 0)
         try {
           send0(data)
           dataout.flush()
@@ -74,7 +73,6 @@ class BlockingServiceProvider extends ServiceProvider {
     override def send(data0: Array[Byte], data1: Array[Byte]) {
       terminateLock.synchronized {
         ensureAlive()
-        assert(data0.length > 0 && data1.length > 0)
         try {
           send0(data0)
           send0(data1)
