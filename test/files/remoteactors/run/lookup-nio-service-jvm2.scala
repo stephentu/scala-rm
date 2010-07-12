@@ -7,7 +7,7 @@ import scala.tools.partest.FileSync._
 
 object FirstClient extends Actor {
   def act() {
-    val service = select(Node("127.0.0.1", 9100), 'lookupService, serviceFactory = NioServiceFactory)
+    val service = select(Node("127.0.0.1", 9100), 'lookupService, serviceMode = ServiceMode.NonBlocking)
     val requests = List("foo", "cat", "baz")
     requests.foreach(req => {
       service ! GetRequest(req)
@@ -19,7 +19,8 @@ object FirstClient extends Actor {
       }
     })
     // signal completion
-    writeFlag()
+    //writeFlag()
+    releaseResourcesInActor()
   }
 }
 
@@ -27,7 +28,7 @@ object Test2 {
   def main(args: Array[String]) {
     Debug.level = 0
     println("Starting first client...")
-    waitFor(0)
+    //waitFor(0)
     FirstClient.start
   }
 }

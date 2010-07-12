@@ -9,13 +9,14 @@ case class AMessage(msg: String)
 
 object A extends Actor {
   def act() {
-    alive(9106, serviceFactory = NioServiceFactory)
+    alive(9106, ServiceMode.NonBlocking)
     register('actorA, self)
     println("Actor A started...")
     react {
       case AMessage(m) => 
         println("received: " + m)
         sender ! AMessage("Right back at you!")
+        RemoteActor.releaseResourcesInActor()
     }
   }
 }
@@ -25,6 +26,6 @@ object Test1 {
     Debug.level = 0
     println("Starting actor A...")
     A.start
-    FileSync.writeFlag()
+    //FileSync.writeFlag()
   }
 }

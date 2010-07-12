@@ -225,6 +225,13 @@ object RemoteActor {
     netKernel.terminateTop()
   }
 
+  def releaseResourcesInActor() {
+    val th = new Thread {
+      override def run() = netKernel.terminateTop()
+    }
+    th.start()
+  }
+
 }
 
 

@@ -13,16 +13,20 @@ object Test1 {
   def startEchoServer(sym: Symbol) = 
     actor {
       val idStr = "<server: >"
-      alive(9501, serviceFactory = NioServiceFactory)
+      alive(9501, ServiceMode.NonBlocking)
       register(sym, self)
       //println("echo server: started")
       var num = 0
-      loopWhile(num < 3) {
-        react {
-          case Query(msg) =>
-            num += 1
-            println(idStr + ": received message")
-            sender ! Resp(sym.toString, msg) 
+      loopWhile(num <= 3) {
+        if (num < 3) {
+          react {
+            case Query(msg) =>
+              num += 1
+              println(idStr + ": received message")
+              sender ! Resp(sym.toString, msg) 
+          }
+        } else {
+          releaseResourcesInActor()
         }
       }
     }
@@ -30,7 +34,7 @@ object Test1 {
   def main(args: Array[String]) {
     Debug.level = 0
     (1 to 3).foreach(i => startEchoServer(Symbol("server" + i)))
-    writeFlag()
+    //writeFlag()
   }
 }
 

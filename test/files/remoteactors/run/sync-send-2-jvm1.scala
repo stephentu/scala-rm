@@ -13,7 +13,7 @@ object Test1 {
     actor {
       alive(9107)
       register('test1, self)
-      writeFlag()
+      //writeFlag()
       var msgCount = 0
       while (msgCount < 3) {
         receive {
@@ -25,6 +25,7 @@ object Test1 {
         }
       }
       println("Test1 Done")
+      releaseResourcesInActor()
     }
   }
 }

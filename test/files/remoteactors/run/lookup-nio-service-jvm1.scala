@@ -15,13 +15,14 @@ object LookupService extends Actor {
       "cat" -> "dog",
       "java" -> "scala")
   def act() {
-    alive(9100, serviceFactory = NioServiceFactory)
+    alive(9100, ServiceMode.NonBlocking)
     register('lookupService, self)
     loop {
       react {
         case r @ GetRequest(req) =>
           sender ! GetResponse(r, lookupTable.get(req))
         case StopService() =>
+          releaseResourcesInActor()
           exit()
       }
     }
@@ -33,6 +34,6 @@ object Test1 {
     Debug.level = 0
     println("Starting lookup service...")
     LookupService.start
-    writeFlag()
+    //writeFlag()
   }
 }

@@ -13,13 +13,14 @@ object Test1 {
     actor {
       alive(9108)
       register('test1, self)
-      writeFlag()
+      //writeFlag()
       receive {
         case Msg(m) =>
           println("received " + m)
           sender ! Msg("test1 to test2 [1]")
       }
       println("Test1 Done")
+      releaseResourcesInActor()
     }
   }
 }
