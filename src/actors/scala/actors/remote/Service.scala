@@ -196,6 +196,8 @@ trait MessageConnection extends Connection {
 
   def send(msg: AnyRef) { send { _: Serializer => msg } }
 
+  def activeSerializer: Serializer
+
 }
 
 trait ServiceProvider extends HasServiceMode with CanTerminate {

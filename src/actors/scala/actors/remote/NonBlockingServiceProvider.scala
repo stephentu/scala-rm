@@ -343,9 +343,16 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
       private val so = socketChannel.socket
 
-      // TODO: for correctness, will need to wait until the socket channel is
-      // connected before allowing the following two values to be computed
-      override lazy val remoteNode = Node(so.getInetAddress.getHostName,  so.getPort) 
+      // for correctness, will need to wait until the socket channel is
+      // connected before allowing the following two values to be computed.
+      // that is why we wait here
+      override lazy val remoteNode = {
+        socketChannel.synchronized {
+          while (!socketChannel.isConnected) socketChannel.wait()
+          Node(so.getInetAddress.getHostName,so.getPort) 
+        }
+      }
+
       override lazy val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
 
       private val messageState = new MessageState
@@ -480,6 +487,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
         try { 
 
           socketChannel.finishConnect()
+
+          socketChannel.synchronized { socketChannel.notifyAll() }
 
           // check write queue. if it is not empty and we're not in write mode,
           // put us in write mode. otherwise, put us in read mode

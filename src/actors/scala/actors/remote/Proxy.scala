@@ -10,23 +10,36 @@
 package scala.actors
 package remote
 
+import java.io.ObjectInputStream
+
 import scala.collection.mutable.HashMap
 
 /**
  * @author Philipp Haller
  */
 @serializable
-private[remote] class Proxy(val conn: MessageConnection, name: Symbol, @transient var kernel: NetKernel) 
+private[remote] class Proxy(val remoteNode: Node, 
+                            val mode: ServiceMode.Value, 
+                            val serializerClz: String,
+                            @transient var conn: MessageConnection, 
+                            val name: Symbol,
+                            @transient var kernel: NetKernel) 
   extends AbstractActor {
 
   @transient
   private[remote] var del: Actor = null
   startDelegate()
 
-  private def startDelegate() {
+  private[remote] def startDelegate() {
     Debug.info(this + ": New delegate actor created")
     del = new DelegateActor(this, conn, name, kernel)
     del.start()
+  }
+
+  private def readObject(in: ObjectInputStream) {
+    in.defaultReadObject()
+    kernel = RemoteActor.netKernel
+    kernel.startupProxy(this)
   }
 
   def !(msg: Any): Unit =
@@ -62,7 +75,7 @@ private[remote] class Proxy(val conn: MessageConnection, name: Symbol, @transien
   def exit(from: AbstractActor, reason: AnyRef): Unit =
     del ! Apply0(new ExitFun(reason))
 
-  override def toString = "<" + name + "@" + conn.remoteNode + ">"
+  override def toString = "<" + name + "@" + remoteNode + ">"
 }
 
 @serializable
@@ -93,6 +106,11 @@ class ExitFun(reason: AnyRef) extends Function2[AbstractActor, Proxy, Unit] {
 }
 
 private[remote] case class Apply0(rfun: Function2[AbstractActor, Proxy, Unit])
+
+@serializable
+private[remote] class DelegateChannel(proxy: Proxy) extends Channel[Any] {
+  override val receiver = proxy.del
+}
 
 /**
  * @author Philipp Haller
@@ -145,7 +163,7 @@ private[remote] class DelegateActor(creator: Proxy, conn: MessageConnection, nam
                   Debug.info(this + ": creating new reply channel for session: " + session)
 
                   // create a new reply channel...
-                  val replyCh = new Channel[Any](this)
+                  val replyCh = new DelegateChannel(creator)
                   // ...that maps to session
                   sessionMap += Pair(replyCh, session)
                   // local send

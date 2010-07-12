@@ -82,6 +82,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   }
   override def mode = byteConn.mode
 
+  override def activeSerializer = serializer.get
+
   override def toString = "<DefaultMessageConnection using: " + byteConn + ">" 
     
   private var _status: ConnectionStatus.Value = _ 

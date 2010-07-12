@@ -47,7 +47,7 @@ object RemoteActor {
   /**
    * Backing net kernel
    */
-  private val netKernel = new NetKernel
+  private[remote] val netKernel = new NetKernel
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -226,10 +226,7 @@ object RemoteActor {
   }
 
   def releaseResourcesInActor() {
-    val th = new Thread {
-      override def run() = netKernel.terminateTop()
-    }
-    th.start()
+    newThread { netKernel.terminateTop() }
   }
 
 }

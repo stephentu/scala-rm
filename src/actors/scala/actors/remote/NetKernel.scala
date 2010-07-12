@@ -107,7 +107,7 @@ private[remote] class NetKernel extends CanTerminate {
   }
 
   private def createProxy(conn: MessageConnection, sym: Symbol): Proxy = {
-    val p = new Proxy(conn, sym, this)
+    val p = new Proxy(conn.remoteNode, conn.mode, conn.activeSerializer.getClass.getName, conn, sym, this)
     proxies += Pair((conn, sym), p)
     p
   }
@@ -185,6 +185,27 @@ private[remote] class NetKernel extends CanTerminate {
         case None              => createProxy(conn, senderName)
       }
     }
+
+  private[remote] def startupProxy(proxy: Proxy) {
+    // TODO: catch exceptions here
+    val serializer = Class.forName(proxy.serializerClz).newInstance().asInstanceOf[Serializer]
+    val messageConn = connect(proxy.remoteNode, serializer, proxy.mode)
+    proxies.synchronized {
+      proxies.get((messageConn, proxy.name)) match {
+        case Some(curProxy) =>
+          // this machine has seen this proxy before, so point the delegate
+          // accordingly
+          proxy.conn = messageConn
+          proxy.del = curProxy.del
+        case None =>
+          // this machine hasn't seen this proxy yet, so make this the actual
+          // proxy
+          proxy.conn = messageConn
+          proxy.startDelegate() 
+          proxies += ((messageConn, proxy.name)) -> proxy
+      }
+    }
+  }
 
   private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef): Unit = synchronized {
     msg match {
