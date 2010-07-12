@@ -11,6 +11,7 @@ package scala.actors
 package remote
 
 import scala.collection.mutable.{HashMap, HashSet}
+import java.util.concurrent.CountDownLatch
 
 case class NamedSend(senderLoc: Locator, 
                      receiverLoc: Locator, 
@@ -30,7 +31,7 @@ case class Locator(node: Node, name: Symbol)
  * @version 0.9.17
  * @author Philipp Haller
  */
-private[remote] class NetKernel {
+private[remote] class NetKernel extends CanTerminate {
 
   private val service = new StandardService
 
@@ -51,7 +52,7 @@ private[remote] class NetKernel {
   private val names = new HashMap[OutputChannel[Any], Symbol]
 
   @throws(classOf[NameAlreadyRegisteredException])
-  def register(name: Symbol, a: OutputChannel[Any]): Unit = synchronized {
+  def register(name: Symbol, a: OutputChannel[Any]): Unit = actors.synchronized {
     actors.get(name) match {
       case Some(actor) =>
         if (a != actor)
@@ -67,19 +68,21 @@ private[remote] class NetKernel {
   /**
    * Errors silently if a mapping did not previously exist
    */
-  def unregister(a: OutputChannel[Any]): Unit = synchronized {
+  def unregister(a: OutputChannel[Any]): Unit = actors.synchronized {
     names -= a
     actors.retain((_,v) => v != a)
   }
 
-  def getOrCreateName(from: OutputChannel[Any]) = names.get(from) match {
-    case None =>
-      val freshName = FreshNameCreator.newName("remotesender")
-      Debug.info("Made freshName for output channel: " + from)
-      register(freshName, from)
-      freshName
-    case Some(name) =>
-      name
+  def getOrCreateName(from: OutputChannel[Any]) = actors.synchronized { 
+    names.get(from) match {
+      case None =>
+        val freshName = FreshNameCreator.newName("remotesender")
+        Debug.info("Made freshName for output channel: " + from)
+        register(freshName, from)
+        freshName
+      case Some(name) =>
+        name
+    }
   }
 
   def send(conn: MessageConnection, name: Symbol, msg: AnyRef): Unit =
@@ -157,8 +160,23 @@ private[remote] class NetKernel {
     }
   }
 
-  def listenerOn(port: Int): Option[Listener] = listeners.synchronized { listenersByPort.get(port) }
-  def activeListeners: List[Listener] = listeners.synchronized { listeners.valuesIterator.toList }
+  def unlisten(port: Int) {
+    Debug.info(this + ": unlisten() - port " + port)
+    listeners.synchronized {
+      listenersByPort.get(port) match {
+        case Some(listener) =>
+          proxies.synchronized {
+            val waitFor = proxies.values.filter { p => 
+              p.conn.localNode.port == port && p.del.getState != Actor.State.Terminated 
+            }
+            waitForProxies(waitFor.toSeq)
+          }
+          listener.terminateTop()
+        case None =>
+          Debug.info(this + ": unlisten() - port " + port + " is not being listened on")
+      }
+    }
+  }
 
   def getOrCreateProxy(conn: MessageConnection, senderName: Symbol): Proxy =
     proxies.synchronized {
@@ -172,14 +190,16 @@ private[remote] class NetKernel {
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)
-        actors.get(receiverLoc.name) match {
-          case Some(a) =>
-            val senderProxy = getOrCreateProxy(conn, senderLoc.name)
-            senderProxy.send(LocalApply0(rfun, a.asInstanceOf[AbstractActor]), null)
+        actors.synchronized {
+          actors.get(receiverLoc.name) match {
+            case Some(a) =>
+              val senderProxy = getOrCreateProxy(conn, senderLoc.name)
+              senderProxy.send(LocalApply0(rfun, a.asInstanceOf[AbstractActor]), null)
 
-          case None =>
-            // message is lost
-            Debug.info(this+": lost message")
+            case None =>
+              // message is lost
+              Debug.info(this+": lost message")
+          }
         }
 
       case cmd@NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
@@ -203,55 +223,62 @@ private[remote] class NetKernel {
           unregister(a)
         }
 
-        actors.get(receiverLoc.name) match {
-          case Some(a) =>
-            if (a.isInstanceOf[Actor] && 
-                a.asInstanceOf[Actor].getState == Actor.State.Terminated) removeOrphan(a)
-            else                                                          sendToProxy(a)
-          case None =>
-            // message is lost
-            Debug.info(this+": lost message")
+        actors.synchronized {
+          actors.get(receiverLoc.name) match {
+            case Some(a) =>
+              if (a.isInstanceOf[Actor] && 
+                  a.asInstanceOf[Actor].getState == Actor.State.Terminated) removeOrphan(a)
+              else                                                          sendToProxy(a)
+            case None =>
+              // message is lost
+              Debug.info(this+": lost message")
+          }
         }
     }
   }
 
-  def terminate() {
-
-    import scala.actors.Actor._
-
-    // TODO: can a new proxy be created while terminate is running?
-
-    // find all running proxies delegates
-    val (runningProxies, numProxies) = proxies.synchronized {
-      (proxies.values.filter(_.del.getState != Actor.State.Terminated).toList, proxies.values.size)
-    }
-    val runningDelegates = runningProxies map (_.del)
-
-    Debug.info(this + ": runningProxies: " + runningProxies)
-    Debug.info(this + ": runningDelegates: " + runningDelegates)
-    Debug.info(this + ": delegate states: " + runningDelegates.map(_.getState))
-
-    Debug.info(this + ": terminate(): waiting for (" + 
-        runningProxies.size + "/" + numProxies + ") to terminate")
-
-    var i = 0
-    val finishActor = actor {
-      loopWhile(i <= runningProxies.size) {
-        if (i < runningProxies.size)
-          react { case Terminate => i += 1 }
-        else {
-          Debug.info(this + ": terminating service")
-          service.terminateTop()
-          exit()
-        }
-      }
-    }
-
-    // register termination handlers on all delegates so we know when
-    // all the delegates are actually finished terminating
-    runningDelegates.foreach(_.onTerminate { finishActor.send(Terminate, null) })
-
+  private def waitForProxies(proxies: Seq[Proxy]) {
+    Debug.info(this + ": waitForProxies - waiting for " + proxies)
+    val len = proxies.length
+    val delegates = proxies map { _.del }
+    val latch = new CountDownLatch(len)
+    // register termination handlers on all delegates 
+    delegates.foreach(_.onTerminate { latch.countDown() })
     // tell all proxies to terminate
-    runningProxies foreach { _.send(Terminate, null) }
+    proxies foreach { _.send(Terminate, null) }
+    Debug.info(this + ": waiting on latch")
+    // wait on latch
+    latch.await()
+    Debug.info(this + ": woke up from latch")
+  }
+
+  override def doTerminateImpl(isBottom: Boolean) {
+    Debug.info(this + ": doTerminateImpl()")
+    // wait for all proxies to finish
+    proxies.synchronized { 
+      val waitFor = proxies.values.filter { _.del.getState != Actor.State.Terminated } 
+      waitForProxies(waitFor.toSeq)
+    }
+
+    // terminate all connections
+    connectionCache.synchronized {
+      connectionCache.valuesIterator.foreach { _.terminateTop() }
+      connectionCache.clear()
+    }
+
+    // terminate all listeners
+    listeners.synchronized {
+      listeners.valuesIterator.foreach { _.terminateTop() }
+      listeners.clear()
+    }
+    
+    // clear all name mappings
+    actors.synchronized {
+      actors.clear()
+      names.clear()
+    }
+
+    // terminate the service
+    service.terminateTop()
   }
 }

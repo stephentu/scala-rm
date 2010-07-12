@@ -22,7 +22,8 @@ private[actors] class Logger(tag: String) {
   def level = lev
   def level_= (lev: Int) = { this.lev = lev }
 
-  private val tagString = if (tag == "") "" else " ["+tag+"]"
+  //private val tagString = if (tag == "") "" else " ["+tag+"]"
+  private def tagString = " [" + Thread.currentThread.getName + "]"
 
   def info(s: => String) =
     if (lev > 2) System.out.println("Info" + tagString + ": " + s)

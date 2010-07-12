@@ -16,7 +16,7 @@ import scala.collection.mutable.HashMap
  * @author Philipp Haller
  */
 @serializable
-private[remote] class Proxy(conn: MessageConnection, name: Symbol, @transient var kernel: NetKernel) 
+private[remote] class Proxy(val conn: MessageConnection, name: Symbol, @transient var kernel: NetKernel) 
   extends AbstractActor {
 
   @transient

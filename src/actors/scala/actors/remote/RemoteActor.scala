@@ -41,7 +41,8 @@ import scala.collection.mutable.{ HashMap, HashSet }
  */
 object RemoteActor {
 
-  private val actorsByPort = new HashMap[Int, HashSet[Actor]]
+  private val portToActors = new HashMap[Int, HashSet[Actor]]
+  private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
   /**
    * Backing net kernel
@@ -72,43 +73,96 @@ object RemoteActor {
    * <code>port</code>.
    */
   @throws(classOf[InconsistentServiceException])
-  def alive(port: Int, serviceMode: ServiceMode.Value = ServiceMode.Blocking): Unit = actorsByPort.synchronized {
+  def alive(port: Int, serviceMode: ServiceMode.Value = ServiceMode.Blocking): Unit = portToActors.synchronized {
     // listen if necessary
     listenOnPort(port, serviceMode)
 
     // now register the actor
     val thisActor = Actor.self
-    val registrations = actorsByPort.get(port) match {
+
+    portToActors.get(port) match {
       case Some(set) => 
         set += thisActor
       case None =>
         val set = new HashSet[Actor]
         set += thisActor
-        actorsByPort += port -> set 
+        portToActors += port -> set 
+    }
+
+    actorToPorts.get(thisActor) match {
+      case Some(set) =>
+        set += port
+      case None =>
+        val set = new HashSet[Int]
+        set += port
+        actorToPorts += thisActor -> set
     }
 
     // termination handler
     thisActor onTerminate {
       Debug.info("alive actor " + thisActor + " terminated")
       // Unregister actor from kernel
-      netKernel.unregister(thisActor)
+      unregister(thisActor)
 
-      actorsByPort.synchronized {
-        val portsToTerminate = actorsByPort flatMap { case (port, set) => 
-          set -= thisActor
-          if (set.isEmpty) List()
-          else List(port)
+      // we only worry about garbage collecting for un-used listeners. we
+      // don't bother to garbage collect for un-used connections
+      portToActors.synchronized { // prevents new connections
+        // get all the ports this actor was listening on...
+        val candidatePorts = actorToPorts.remove(thisActor) match {
+          case Some(ports) => 
+            ports
+          case None => 
+            Debug.error("Could not find " + thisActor + " in actorToPorts")
+            new HashSet[Int]()
         }
-        portsToTerminate.map(p => (p, netKernel.listenerOn(p))).foreach {
-          case (_, Some(listener)) => listener.terminateTop()
-          case (p, None) => actorsByPort -= p
+
+        // ... now for each of these candidates, remove this actor
+        // from the set and terminate if the set becomes empty
+        candidatePorts.foreach(p => portToActors.get(p) match {
+          case Some(actors) =>
+            actors -= thisActor
+            if (actors.isEmpty) {
+              portToActors -= p
+              tryShutdown(p) // try to shutdown in a different thread
+                             // this is because blocking in a
+                             // ForkJoinScheduler worker is bad (causes
+                             // starvation)
+            }
+          case None => tryShutdown(p) 
+        })
+
+      }
+    }
+  }
+
+  private def tryShutdown(port: Int) {
+    newThread {
+      portToActors.synchronized {
+        portToActors.get(port) match {
+          case Some(actors) =>
+            // ignore request - this is a potential race condition to check
+            // for, in the case where tryShutdown(p) is called, then a call to
+            // alive(p) is made, then this thread executes. 
+          case None =>
+            netKernel.unlisten(port)
         }
       }
     }
   }
 
+  private def newThread(f: => Unit) {
+    val t = new Thread {
+      override def run() = f
+    }
+    t.start()
+  }
+
   def register(name: Symbol, actor: Actor) {
     netKernel.register(name, actor)
+  }
+
+  def unregister(actor: Actor) {
+    netKernel.unregister(actor)
   }
 
   private def listenOnPort(port: Int, mode: ServiceMode.Value) { 
@@ -163,8 +217,12 @@ object RemoteActor {
   @throws(classOf[InconsistentServiceException])
   def select(node: Node, sym: Symbol, 
              serializer: Serializer = defaultSerializer,
-             serviceMode: ServiceMode.Value = ServiceMode.Blocking): AbstractActor = synchronized {
+             serviceMode: ServiceMode.Value = ServiceMode.Blocking): AbstractActor = {
     netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym)
+  }
+
+  def releaseResources() {
+    netKernel.terminateTop()
   }
 
 }
@@ -178,7 +236,7 @@ object RemoteActor {
  *
  * @author Philipp Haller
  */
-case class Node(address: String, port: Int) {
+case class Node(val address: String, val port: Int) {
   import java.net.{ InetAddress, InetSocketAddress }
 
   /**
@@ -190,11 +248,10 @@ case class Node(address: String, port: Int) {
    * Returns the canonical representation of this form, resolving the
    * address into canonical form (as determined by the Java API)
    */
-  def canonicalForm: Node = {
-    val a = InetAddress.getByName(address)
-    Node(a.getCanonicalHostName, port)
-  }
-  def isCanonical         = this == canonicalForm
+  def canonicalForm: Node =
+    Node(InetAddress.getByName(address).getCanonicalHostName, port)
+
+  def isCanonical = this == canonicalForm
 }
 
 case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
