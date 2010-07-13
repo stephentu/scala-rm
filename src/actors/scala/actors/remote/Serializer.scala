@@ -102,6 +102,10 @@ abstract class NonHandshakingSerializer extends Serializer {
   }
 }
 
+case object SendID
+case object ExpectID
+case object Resolved
+
 abstract class IdResolvingSerializer extends Serializer {
   override def initialState: Option[Any] = Some(SendID)
   override def nextHandshakeMessage = {
