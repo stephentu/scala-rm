@@ -263,6 +263,16 @@ trait Node {
   protected def newNode(a: String, p: Int): Node
 
   def isCanonical = this == canonicalForm
+
+  override def equals(o: Any) = o match {
+    case n: Node =>
+      n.address == this.address && n.port == this.port
+    case _ => 
+      false
+  }
+
+  override def hashCode = address.hashCode + port.hashCode
+
 }
 
 case class DefaultNodeImpl(override val address: String, override val port: Int) extends Node {

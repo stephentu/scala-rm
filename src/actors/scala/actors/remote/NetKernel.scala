@@ -48,6 +48,12 @@ object Locator {
 trait Locator {
   def node: Node
   def name: Symbol
+  override def equals(o: Any) = o match {
+    case l: Locator =>
+      l.node == this.node && l.name == this.name
+    case _ => false
+  }
+  override def hashCode = node.hashCode + name.hashCode
 }
 
 case class DefaultLocatorImpl(override val node: Node, override val name: Symbol) extends Locator
