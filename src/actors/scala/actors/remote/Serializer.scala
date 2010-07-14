@@ -88,6 +88,9 @@ abstract class Serializer {
    */
   override def hashCode = uniqueId.toInt
 
+  def newProxy(remoteNode: Node, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): Proxy =
+    new DefaultProxyImpl(remoteNode, mode, serializerClassName, name)
+
 }
 
 class NonHandshakingSerializerException extends Exception

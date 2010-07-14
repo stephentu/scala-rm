@@ -107,7 +107,13 @@ private[remote] class NetKernel extends CanTerminate {
   }
 
   private def createProxy(conn: MessageConnection, sym: Symbol): Proxy = {
-    val p = new Proxy(conn.remoteNode, conn.mode, conn.activeSerializer.getClass.getName, conn, sym, this)
+    // invariant: createProxy() is always called with a connection that has
+    // already created an activeSerializer (not necessarily that the handshake
+    // is complete though)
+    val p = conn.activeSerializer.newProxy(conn.remoteNode, conn.mode, conn.activeSerializer.getClass.getName, sym)
+    val delegate = p.newDelegate(conn)
+    delegate.start()
+    p.del = delegate
     proxies += Pair((conn, sym), p)
     p
   }
@@ -118,6 +124,7 @@ private[remote] class NetKernel extends CanTerminate {
 
   private val connectionCache = new HashMap[(Node, Serializer, ServiceMode.Value), MessageConnection]
 
+  // TODO: guard connect with terminateLock
   def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection =
     connect0(node.canonicalForm, serializer, serviceMode)
 
@@ -139,6 +146,7 @@ private[remote] class NetKernel extends CanTerminate {
   private val listeners = new HashMap[(Int, ServiceMode.Value), Listener]
   private val listenersByPort = new HashMap[Int, Listener]
 
+  // TODO: guard listen with terminateLock
   def listen(port: Int, serviceMode: ServiceMode.Value): Listener = listeners.synchronized {
     listeners.get((port, serviceMode)) match {
       case Some(listener) => listener
@@ -165,12 +173,12 @@ private[remote] class NetKernel extends CanTerminate {
     listeners.synchronized {
       listenersByPort.get(port) match {
         case Some(listener) =>
-          proxies.synchronized {
-            val waitFor = proxies.values.filter { p => 
-              p.conn.localNode.port == port && p.del.getState != Actor.State.Terminated 
-            }
-            waitForProxies(waitFor.toSeq)
+          val waitFor = proxies.synchronized {
+            proxies.values.filter { p => 
+              p.del.conn.localNode.port == port && p.del.getState != Actor.State.Terminated 
+            } toSeq
           }
+          waitForProxies(waitFor)
           listener.terminateTop()
         case None =>
           Debug.info(this + ": unlisten() - port " + port + " is not being listened on")
@@ -186,22 +194,23 @@ private[remote] class NetKernel extends CanTerminate {
       }
     }
 
-  private[remote] def startupProxy(proxy: Proxy) {
+  // TODO: guard with terminateLock
+  private[remote] def setupProxy(proxy: Proxy) {
     // TODO: catch exceptions here
-    val serializer = Class.forName(proxy.serializerClz).newInstance().asInstanceOf[Serializer]
+    val serializer = Class.forName(proxy.serializerClassName).newInstance().asInstanceOf[Serializer]
     val messageConn = connect(proxy.remoteNode, serializer, proxy.mode)
     proxies.synchronized {
       proxies.get((messageConn, proxy.name)) match {
         case Some(curProxy) =>
           // this machine has seen this proxy before, so point the delegate
           // accordingly
-          proxy.conn = messageConn
           proxy.del = curProxy.del
         case None =>
           // this machine hasn't seen this proxy yet, so make this the actual
           // proxy
-          proxy.conn = messageConn
-          proxy.startDelegate() 
+          val delegate = proxy.newDelegate(messageConn)
+          delegate.start()
+          proxy.del = delegate
           proxies += ((messageConn, proxy.name)) -> proxy
       }
     }
@@ -258,47 +267,57 @@ private[remote] class NetKernel extends CanTerminate {
     }
   }
 
+  private val waitProxyLock = new Object
+
   private def waitForProxies(proxies: Seq[Proxy]) {
-    Debug.info(this + ": waitForProxies - waiting for " + proxies)
-    val len = proxies.length
-    val delegates = proxies map { _.del }
-    val latch = new CountDownLatch(len)
-    // register termination handlers on all delegates 
-    delegates.foreach(_.onTerminate { latch.countDown() })
-    // tell all proxies to terminate
-    proxies foreach { _.send(Terminate, null) }
-    Debug.info(this + ": waiting on latch")
-    // wait on latch
-    latch.await()
-    Debug.info(this + ": woke up from latch")
+    waitProxyLock.synchronized {
+      Debug.info(this + ": waitForProxies - waiting for " + proxies)
+      val delegates = proxies.filter(_.del.getState != Actor.State.Terminated).map({ _.del }).distinct // > 1 proxy can map to the same delegate
+      val len = delegates.length
+      val latch = new CountDownLatch(len)
+      // register termination handlers on all delegates 
+      delegates.foreach(_.onTerminate { latch.countDown() })
+      // tell all delegate to terminate
+      delegates.foreach { _.send(Terminate, null) }
+      Debug.info(this + ": waiting on latch")
+      // wait on latch
+      latch.await()
+      Debug.info(this + ": woke up from latch")
+    }
   }
 
   override def doTerminateImpl(isBottom: Boolean) {
     Debug.info(this + ": doTerminateImpl()")
-    // wait for all proxies to finish
-    proxies.synchronized { 
-      val waitFor = proxies.values.filter { _.del.getState != Actor.State.Terminated } 
-      waitForProxies(waitFor.toSeq)
-    }
 
+    Debug.info(this + ": kill all the remaining alive delegates first")
+    // wait for all proxies to finish
+    val waitFor = proxies.synchronized { 
+      proxies.values.filter({ _.del.getState != Actor.State.Terminated }).toSeq
+    }
+    waitForProxies(waitFor)
+
+    Debug.info(this + ": try to gracefully shut down all the remaining connections")
     // terminate all connections
     connectionCache.synchronized {
       connectionCache.valuesIterator.foreach { _.terminateTop() }
       connectionCache.clear()
     }
 
+    Debug.info(this + ": try to gracefully shut down remaining listeners")
     // terminate all listeners
     listeners.synchronized {
       listeners.valuesIterator.foreach { _.terminateTop() }
       listeners.clear()
     }
     
+    Debug.info(this + ": unregister all actors")
     // clear all name mappings
     actors.synchronized {
       actors.clear()
       names.clear()
     }
 
+    Debug.info(this + ": now kill service threads")
     // terminate the service
     service.terminateTop()
   }

@@ -14,7 +14,7 @@ package remote
 import java.io.{ ByteArrayOutputStream,IOException }
 import java.net.{ InetAddress, InetSocketAddress, Socket }
 import java.nio.ByteBuffer
-import java.nio.channels.{ SelectionKey, Selector, 
+import java.nio.channels.{ ClosedSelectorException, SelectionKey, Selector, 
                            ServerSocketChannel, SocketChannel }
 import java.nio.channels.spi.{ AbstractSelectableChannel, SelectorProvider }
 
@@ -601,6 +601,9 @@ class NonBlockingServiceProvider extends ServiceProvider {
               Debug.error(this + ": Invalid key found: " + key)
           }
         } catch {
+          case e: ClosedSelectorException =>
+            Debug.info(this + ": selector closed")
+            terminateBottom()
           case e: Exception =>
             Debug.error(this + " caught exception in select loop: " + e.getMessage)
             Debug.doError { e.printStackTrace }

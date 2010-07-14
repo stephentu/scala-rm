@@ -10,37 +10,41 @@
 package scala.actors
 package remote
 
-import java.io.ObjectInputStream
-
 import scala.collection.mutable.HashMap
 
 /**
- * @author Philipp Haller
+ * Proxy is a trait so that users of other serialization frameworks can define
+ * their own implementation of the members, and pass proxy handles in messages
+ * transparently.
  */
-@serializable
-private[remote] class Proxy(val remoteNode: Node, 
-                            val mode: ServiceMode.Value, 
-                            val serializerClz: String,
-                            @transient var conn: MessageConnection, 
-                            val name: Symbol,
-                            @transient var kernel: NetKernel) 
-  extends AbstractActor {
+trait Proxy extends AbstractActor {
+  def remoteNode: Node
+  def mode: ServiceMode.Value
+  def serializerClassName: String
+  def name: Symbol
 
   @transient
-  private[remote] var del: Actor = null
-  startDelegate()
+  private[this] var _del: DelegateActor = _
 
-  private[remote] def startDelegate() {
-    Debug.info(this + ": New delegate actor created")
-    del = new DelegateActor(this, conn, name, kernel)
-    del.start()
+  /**
+   * Used by createProxy() in NetKernel to set the delegate actor accordingly.
+   */
+  private[remote] def del_=(delegate: DelegateActor) {
+    synchronized {
+      if (_del ne null) throw new IllegalStateException("Delegate is already set for: " + this)
+      _del = delegate
+    }
   }
 
-  private def readObject(in: ObjectInputStream) {
-    in.defaultReadObject()
-    kernel = RemoteActor.netKernel
-    kernel.startupProxy(this)
+  private[remote] def del: DelegateActor = synchronized {
+    if (_del eq null) RemoteActor.netKernel.setupProxy(this) // this happens when a serializer instantiates
+                                                             // a Proxy object (from a message for instance)
+    assert(_del ne null)
+    _del
   }
+
+  private[remote] def newDelegate(conn: MessageConnection): DelegateActor =
+    new DelegateActor(this, conn, name, RemoteActor.netKernel) 
 
   def !(msg: Any): Unit =
     del ! msg
@@ -76,6 +80,44 @@ private[remote] class Proxy(val remoteNode: Node,
     del ! Apply0(new ExitFun(reason))
 
   override def toString = "<" + name + "@" + remoteNode + ">"
+
+} 
+
+import java.io.{ ObjectInputStream, ObjectOutputStream }
+
+/**
+ * Note: This class defines readObject and writeObject because flagging
+ * the _del field in the Proxy trait is not sufficient to prevent
+ * Java serialization from trying to serialize _del when it's not null.
+ * Therefore, we do it manually.
+ *
+ * TODO: fix this if possible
+ */
+@serializable
+class DefaultProxyImpl(var _remoteNode: Node,
+                       var _mode: ServiceMode.Value,
+                       var _serializerClassName: String,
+                       var _name: Symbol) extends Proxy {
+  
+  override def remoteNode = _remoteNode
+  override def mode = _mode
+  override def serializerClassName = _serializerClassName
+  override def name = _name
+
+  private def writeObject(out: ObjectOutputStream) {
+    out.writeObject(_remoteNode)
+    out.writeObject(_mode)
+    out.writeObject(_serializerClassName)
+    out.writeObject(_name)
+  }
+
+  private def readObject(in: ObjectInputStream) {
+    _remoteNode = in.readObject().asInstanceOf[Node]
+    _mode = in.readObject().asInstanceOf[ServiceMode.Value]
+    _serializerClassName = in.readObject().asInstanceOf[String]
+    _name = in.readObject().asInstanceOf[Symbol]
+  }
+
 }
 
 @serializable
@@ -115,7 +157,7 @@ private[remote] class DelegateChannel(proxy: Proxy) extends Channel[Any] {
 /**
  * @author Philipp Haller
  */
-private[remote] class DelegateActor(creator: Proxy, conn: MessageConnection, name: Symbol, kernel: NetKernel) extends Actor {
+private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection, name: Symbol, kernel: NetKernel) extends Actor {
   var channelMap = new HashMap[Symbol, OutputChannel[Any]]
   var sessionMap = new HashMap[OutputChannel[Any], Symbol]
 

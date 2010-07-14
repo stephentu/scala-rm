@@ -104,6 +104,10 @@ object RemoteActor {
       // Unregister actor from kernel
       unregister(thisActor)
 
+      /*  
+       *  TODO: this causes deadlocks - move all connection/listener garbage
+       *  collection to a separate collection task instead (which runs like
+       *  every N minutes) 
       // we only worry about garbage collecting for un-used listeners. we
       // don't bother to garbage collect for un-used connections
       portToActors.synchronized { // prevents new connections
@@ -132,6 +136,8 @@ object RemoteActor {
         })
 
       }
+      */
+
     }
   }
 
