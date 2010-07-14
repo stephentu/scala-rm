@@ -13,11 +13,26 @@ package remote
 import scala.collection.mutable.{HashMap, HashSet}
 import java.util.concurrent.CountDownLatch
 
-case class NamedSend(senderLoc: Locator, 
-                     receiverLoc: Locator, 
-                     metaData: Array[Byte], 
-                     data: Array[Byte], 
-                     session: Symbol)
+object NamedSend {
+  def apply(senderLoc: Locator, receiverLoc: Locator, metaData: Array[Byte], data: Array[Byte], session: Symbol): NamedSend =
+    DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
+  def unapply(n: NamedSend): Option[(Locator, Locator, Array[Byte], Array[Byte], Symbol)] =
+    Some((n.senderLoc, n.receiverLoc, n.metaData, n.data, n.session))
+}
+
+trait NamedSend {
+  def senderLoc: Locator
+  def receiverLoc: Locator
+  def metaData: Array[Byte]
+  def data: Array[Byte]
+  def session: Symbol
+}
+
+case class DefaultNamedSendImpl(override val senderLoc: Locator, 
+                                override val receiverLoc: Locator, 
+                                override val metaData: Array[Byte], 
+                                override val data: Array[Byte], 
+                                override val session: Symbol) extends NamedSend
 
 case class RemoteApply0(senderLoc: Locator, receiverLoc: Locator, rfun: Function2[AbstractActor, Proxy, Unit])
 case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractActor)
@@ -25,7 +40,17 @@ case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractA
 case class  SendTo(a: OutputChannel[Any], msg: Any, session: Symbol)
 case object Terminate
 
-case class Locator(node: Node, name: Symbol)
+object Locator {
+  def apply(node: Node, name: Symbol): Locator = DefaultLocatorImpl(node, name)
+  def unapply(l: Locator): Option[(Node, Symbol)] = Some((l.node, l.name))
+}
+
+trait Locator {
+  def node: Node
+  def name: Symbol
+}
+
+case class DefaultLocatorImpl(override val node: Node, override val name: Symbol) extends Locator
 
 /**
  * @version 0.9.17
@@ -44,7 +69,12 @@ private[remote] class NetKernel extends CanTerminate {
         case None       => null
       }
       val bytes = serializer.serialize(msg)
-      NamedSend(senderLoc, receiverLoc, metadata, bytes, session)
+      // deep copy everything into serializer form
+      val _senderLocNode = serializer.newNode(senderLoc.node.address, senderLoc.node.port)
+      val _receiverLocNode = serializer.newNode(receiverLoc.node.address, receiverLoc.node.port)
+      val _senderLoc = serializer.newLocator(_senderLocNode, senderLoc.name)
+      val _receiverLoc = serializer.newLocator(_receiverLocNode, receiverLoc.name)
+      serializer.newNamedSend(_senderLoc, _receiverLoc, metadata, bytes, session)
     }
   }
 
@@ -110,7 +140,9 @@ private[remote] class NetKernel extends CanTerminate {
     // invariant: createProxy() is always called with a connection that has
     // already created an activeSerializer (not necessarily that the handshake
     // is complete though)
-    val p = conn.activeSerializer.newProxy(conn.remoteNode, conn.mode, conn.activeSerializer.getClass.getName, sym)
+    val serializer = conn.activeSerializer
+    val _remoteNode = serializer.newNode(conn.remoteNode.address, conn.remoteNode.port)
+    val p = serializer.newProxy(_remoteNode, conn.mode, serializer.getClass.getName, sym)
     val delegate = p.newDelegate(conn)
     delegate.start()
     p.del = delegate

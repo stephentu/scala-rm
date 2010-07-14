@@ -39,7 +39,11 @@ extends ObjectInputStream(in) {
 /**
  *  @author Philipp Haller
  */
-class JavaSerializer(cl: ClassLoader) extends IdResolvingSerializer {
+class JavaSerializer(cl: ClassLoader) 
+  extends Serializer 
+  with    IdResolvingSerializer
+  with    DefaultEnvelopeMessageCreator {
+
   def this() = this(null)
 
   override def uniqueId = 1679081588L

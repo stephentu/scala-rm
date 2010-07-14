@@ -237,17 +237,16 @@ object RemoteActor {
 
 }
 
+object Node {
+  def apply(address: String, port: Int): Node = DefaultNodeImpl(address, port)
+  def unapply(n: Node): Option[(String, Int)] = Some((n.address, n.port))
+}
 
-/**
- * This class represents a machine node on a TCP network.
- *
- * @param address the host name, or <code>null</code> for the loopback address.
- * @param port    the port number.
- *
- * @author Philipp Haller
- */
-case class Node(val address: String, val port: Int) {
+trait Node {
   import java.net.{ InetAddress, InetSocketAddress }
+
+  def address: String
+  def port: Int
 
   /**
    * Returns an InetSocketAddress representation of this Node
@@ -258,10 +257,16 @@ case class Node(val address: String, val port: Int) {
    * Returns the canonical representation of this form, resolving the
    * address into canonical form (as determined by the Java API)
    */
-  def canonicalForm: Node =
-    Node(InetAddress.getByName(address).getCanonicalHostName, port)
+  def canonicalForm =
+    newNode(InetAddress.getByName(address).getCanonicalHostName, port)
+
+  protected def newNode(a: String, p: Int): Node
 
   def isCanonical = this == canonicalForm
+}
+
+case class DefaultNodeImpl(override val address: String, override val port: Int) extends Node {
+  override def newNode(a: String, p: Int) = DefaultNodeImpl(a, p)
 }
 
 case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 

@@ -26,7 +26,10 @@ object PrimitiveSerializer {
 
 class NonPrimitiveClassException(clz: Class[_]) extends Exception
 
-class PrimitiveSerializer extends NonHandshakingSerializer {
+class PrimitiveSerializer 
+  extends Serializer 
+  with    NonHandshakingSerializer
+  with    DefaultEnvelopeMessageCreator {
 
   import PrimitiveSerializer._
 

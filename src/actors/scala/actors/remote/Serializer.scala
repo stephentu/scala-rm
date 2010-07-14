@@ -88,19 +88,49 @@ abstract class Serializer {
    */
   override def hashCode = uniqueId.toInt
 
-  def newProxy(remoteNode: Node, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): Proxy =
+  type MyNode <: Node
+  type MyNamedSend <: NamedSend
+  type MyLocator <: Locator
+  type MyProxy <: Proxy
+
+  def newNode(address: String, port: Int): MyNode
+
+  def newNamedSend(senderLoc: MyLocator, receiverLoc: MyLocator, metaData: Array[Byte], data: Array[Byte], session: Symbol): MyNamedSend
+
+  def newLocator(node: MyNode, name: Symbol): MyLocator
+
+  def newProxy(remoteNode: MyNode, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): MyProxy
+
+}
+
+trait DefaultEnvelopeMessageCreator { this: Serializer =>
+
+  override type MyNode = DefaultNodeImpl
+  override type MyNamedSend = DefaultNamedSendImpl
+  override type MyLocator = DefaultLocatorImpl
+  override type MyProxy = DefaultProxyImpl
+
+  override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
+
+  override def newNamedSend(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, metaData: Array[Byte], data: Array[Byte], session: Symbol): DefaultNamedSendImpl =
+    DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
+
+  override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =
+    DefaultLocatorImpl(node, name)
+
+  override def newProxy(remoteNode: DefaultNodeImpl, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): DefaultProxyImpl =
     new DefaultProxyImpl(remoteNode, mode, serializerClassName, name)
 
 }
 
 class NonHandshakingSerializerException extends Exception
 
-abstract class NonHandshakingSerializer extends Serializer {
+trait NonHandshakingSerializer { this: Serializer =>
   override def initialState = None
-  override def nextHandshakeMessage = {
+  override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case _ => throw new NonHandshakingSerializerException
   }
-  override def handleHandshakeMessage = {
+  override def handleHandshakeMessage: PartialFunction[(Any, Any), Any] = {
     case _ => throw new NonHandshakingSerializerException
   }
 }
@@ -109,13 +139,13 @@ case object SendID
 case object ExpectID
 case object Resolved
 
-abstract class IdResolvingSerializer extends Serializer {
+trait IdResolvingSerializer { this: Serializer =>
   override def initialState: Option[Any] = Some(SendID)
-  override def nextHandshakeMessage = {
+  override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case SendID   => (ExpectID, Some(uniqueId))
     case Resolved => (Resolved, None)
   }
-  override def handleHandshakeMessage = {
+  override def handleHandshakeMessage: PartialFunction[(Any, Any), Any] = {
     case (ExpectID, MyUniqueId) => Resolved
   }
   private val MyUniqueId = uniqueId
