@@ -21,11 +21,11 @@ environments.
 All Android examples have been run successfully on the virtual Android device
 "2.2_128M_HVGA" configured as follows: 2.2 target, 128M SD card and HVGA skin
 (for more details see the documentation page
-$ANDROID_HOME/docs/guide/developing/tools/avd.html).
+$ANDROID_SDK_ROOT/docs/guide/developing/tools/avd.html).
 
 NB. The file INSTALL.txt gives VERY USEFUL informations about the small
 development framework (directories "bin/" and "configs/") included in this
-software distribution; in particular it permits to greatly improve the build
+software distribution; in particular it permits to greatly reduce the build
 time of Android applications written in Scala.
 
 
@@ -37,7 +37,7 @@ free software distributions (tested versions and download sites are given in
 parenthesis) :
 
 1) Sun Java SDK 1.6 or newer (1.6.0_20 , www.sun.com/java/jdk/)
-2) Scala SDK 2.7.5 or newer  (2.8.0_RC6, www.scala-lang.org/downloads/)
+2) Scala SDK 2.7.5 or newer  (2.8.0_RC7, www.scala-lang.org/downloads/)
 3) Android SDK 1.5 or newer  (2.2      , developer.android.com/sdk/)
 4) Apache Ant 1.7.0 or newer (1.8.1    , ant.apache.org/)
 5) ProGuard 4.4 or newer     (4.5      , www.proguard.com/)
@@ -52,26 +52,26 @@ Project Structure
 
 The project structure of an Android application follows the directory layout
 prescribed by the Android system (for more details see the documentation page
-$ANDROID_HOME/docs/guide/developing/other-ide.html#CreatingAProject).
+$ANDROID_SDK_ROOT/docs/guide/developing/other-ide.html#CreatingAProject).
 
 In particular:
 
 * The "AndroidManifest.xml" file contains essential information the Android
   system needs to run the application's code (for more details see the docu-
-  mentation page $ANDROID_HOME/docs/guide/topics/manifest/manifest-intro.html)
+  mentation page $ANDROID_SDK_ROOT/docs/guide/topics/manifest/manifest-intro.html)
 
 * The "build.properties" file defines customizable Ant properties for the
   Android build system; in our case we need to define at least the following
   properties (please adapt the respective values to your own environment):
 
   Unix:                                Windows:
-     sdk.dir=/opt/android-sdk-linux_86    sdk.dir=c:/Progra~1/android-sdk-win32
+     sdk.dir=/opt/android-sdk-linux_86    sdk.dir=c:/Progra~1/android-sdk-windows
      scala.dir=/opt/scala                 scala.dir=c:/Progra~1/Scala
      proguard.dir=/opt/proguard           proguard.dir=c:/Progra~1/ProGuard
 
 * The "default.properties" file defines the default API level of an Android
   (for more details see the documentation page
-  $ANDROID_HOME/docs/guide/appendix/api-levels.html).
+  $ANDROID_SDK_ROOT/docs/guide/appendix/api-levels.html).
 
 * The "build.xml" Ant build script defines targets such as "clean", "install"
   and "uninstall" and has been slightly modified to handle also Scala source
@@ -82,7 +82,7 @@ In particular:
 
     <!-- Converts this project's .class files into .dex files -->
     <target name="-dex" depends="compile, scala-compile, scala-shrink">
-        <dex-helper />
+        <scala-dex-helper />
     </target>
 
 * The "build-scala.xml" Ant build script defines the targets "scala-compile"
