@@ -557,6 +557,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
     }
 
     def finishAccept(clientSocketChannel: SocketChannel, receiveCallback: BytesReceiveCallback) = {
+      clientSocketChannel.socket.setTcpNoDelay(true) // disable nagle's algorithm
       clientSocketChannel.configureBlocking(false)
       val conn = new NonBlockingServiceConnection(clientSocketChannel, receiveCallback)
       addOperation(new RegisterChannel(clientSocketChannel, SelectionKey.OP_READ, Some(conn)))
@@ -645,6 +646,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       ensureAlive()
       Debug.info(this + ": connect called to: " + node)
       val clientSocket = SocketChannel.open
+      clientSocket.socket.setTcpNoDelay(true)
       clientSocket.configureBlocking(false)
       val connected = clientSocket.connect(new InetSocketAddress(node.address, node.port))
       val interestOp = if (connected) SelectionKey.OP_READ else SelectionKey.OP_CONNECT

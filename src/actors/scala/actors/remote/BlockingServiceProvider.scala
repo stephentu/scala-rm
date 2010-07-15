@@ -13,7 +13,7 @@ package remote
 
 
 import java.io.{ DataInputStream, DataOutputStream, IOException }
-import java.net.{ InetAddress, ServerSocket, Socket, UnknownHostException }
+import java.net.{ InetSocketAddress, ServerSocket, Socket, UnknownHostException }
 import java.util.concurrent.Executors
 
 import scala.collection.mutable.HashMap
@@ -133,6 +133,7 @@ class BlockingServiceProvider extends ServiceProvider {
       try {
         while (!terminated) {
           val client = serverSocket.accept()
+          client.setTcpNoDelay(true)
           val conn = new BlockingServiceWorker(client, receiveCallback)
           executor.execute(conn)
           receiveConnection(conn)
@@ -162,7 +163,9 @@ class BlockingServiceProvider extends ServiceProvider {
 
   override def connect(node: Node, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
     ensureAlive()
-    val socket = new Socket(node.address, node.port)
+    val socket = new Socket
+    socket.setTcpNoDelay(true)
+    socket.connect(new InetSocketAddress(node.address, node.port))
     val worker = new BlockingServiceWorker(socket, receiveCallback)
     executor.execute(worker)
     worker
