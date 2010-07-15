@@ -64,7 +64,7 @@ object RemoteActor {
    * serialization of objects. Not a val, so we can capture changes made
    * to the classloader instance
    */
-  def defaultSerializer: Serializer = new JavaSerializer(cl)
+  def defaultSerializer = new JavaSerializer(cl)
 
 
 
@@ -212,7 +212,7 @@ object RemoteActor {
     }
   }
 
-  private def connect(node: Node, serializer: Serializer, mode: ServiceMode.Value): MessageConnection =
+  private def connect(node: Node, serializer: Serializer[Proxy], mode: ServiceMode.Value): MessageConnection =
     netKernel.connect(node, serializer, mode)
 
   /**
@@ -221,11 +221,10 @@ object RemoteActor {
    */
   @throws(classOf[InconsistentSerializerException])
   @throws(classOf[InconsistentServiceException])
-  def select(node: Node, sym: Symbol, 
-             serializer: Serializer = defaultSerializer,
-             serviceMode: ServiceMode.Value = ServiceMode.Blocking): AbstractActor = {
-    netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym)
-  }
+  def select[T <: Proxy](node: Node, sym: Symbol, 
+             serializer: Serializer[T] = defaultSerializer,
+             serviceMode: ServiceMode.Value = ServiceMode.Blocking): T =
+    netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym).asInstanceOf[T]
 
   def releaseResources() {
     netKernel.terminateTop()
@@ -279,7 +278,7 @@ case class DefaultNodeImpl(override val address: String, override val port: Int)
   override def newNode(a: String, p: Int) = DefaultNodeImpl(a, p)
 }
 
-case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
+case class InconsistentSerializerException(expected: Serializer[Proxy], actual: Serializer[Proxy]) 
   extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
 case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 

@@ -19,7 +19,7 @@ object ConnectionStatus extends Enumeration {
       Terminated = Value
 }
 
-class HandshakeState(serializer: Serializer) {
+class HandshakeState(serializer: Serializer[_]) {
   private var curState = serializer.initialState.getOrElse(null)
   private var done     = serializer.initialState.isEmpty
 
@@ -62,7 +62,7 @@ class HandshakeState(serializer: Serializer) {
 }
 
 class DefaultMessageConnection(byteConn: ByteConnection, 
-                               var serializer: Option[Serializer],
+                               var serializer: Option[Serializer[Proxy]],
                                override val receiveCallback: MessageReceiveCallback,
                                isServer: Boolean)
   extends MessageConnection {
@@ -168,7 +168,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         try {
           val clzName = new String(nextMessage())
           Debug.info(this + ": going to create serializer of clz " + clzName)
-          val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer]
+          val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer[Proxy]]
           serializer = Some(_serializer)
           handshakeState = Some(new HandshakeState(_serializer))
 
@@ -225,9 +225,9 @@ class DefaultMessageConnection(byteConn: ByteConnection,
    * the time send() was called (due to things like not finishing handshake
    * yet, etc)
    */
-  private val sendQueue = new Queue[Serializer => AnyRef]
+  private val sendQueue = new Queue[Serializer[Proxy] => AnyRef]
 
-  def send(msg: Serializer => AnyRef) {
+  def send(msg: Serializer[Proxy] => AnyRef) {
     terminateLock.synchronized {
       status match {
         case ConnectionStatus.Terminated =>
@@ -295,7 +295,7 @@ class StandardService extends Service {
   }
 
   override def connect(node: Node, 
-                       serializer: Serializer, 
+                       serializer: Serializer[Proxy], 
                        mode: ServiceMode.Value, 
                        recvCallback: MessageReceiveCallback): MessageConnection = {
     val byteConn = serviceProviderFor0(mode).connect(node, recvCall0)

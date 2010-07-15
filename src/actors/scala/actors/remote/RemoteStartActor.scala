@@ -36,16 +36,16 @@ private[scala] object RemoteStartActor extends Actor {
         defaultPort
     }
 
-  private def newSerializer: Serializer = newSerializer(serializerClass)
+  private def newSerializer: Serializer[Proxy] = newSerializer(serializerClass)
 
-  private def newSerializer(serializerClass: String): Serializer = 
+  private def newSerializer(serializerClass: String): Serializer[Proxy] = 
     try {
       if (serializerClass eq null)
         RemoteActor.defaultSerializer
-      else if (!classOf[Serializer].isAssignableFrom(Class.forName(serializerClass))) 
+      else if (!classOf[Serializer[Proxy]].isAssignableFrom(Class.forName(serializerClass))) 
         RemoteActor.defaultSerializer
       else
-        Class.forName(serializerClass).asInstanceOf[Class[Serializer]].newInstance
+        Class.forName(serializerClass).asInstanceOf[Class[Serializer[Proxy]]].newInstance
     } catch {
       case e =>
         Debug.error("Could not initialize serializer: " + serializerClass + ". Using default instead")

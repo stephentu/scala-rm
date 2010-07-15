@@ -69,7 +69,7 @@ private[remote] class NetKernel extends CanTerminate {
   import java.io.IOException
 
   def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Symbol) {
-    conn.send { serializer: Serializer =>
+    conn.send { serializer: Serializer[_ <: Proxy] =>
       val metadata = serializer.serializeMetaData(msg) match {
         case Some(data) => data
         case None       => null
@@ -146,7 +146,7 @@ private[remote] class NetKernel extends CanTerminate {
     // invariant: createProxy() is always called with a connection that has
     // already created an activeSerializer (not necessarily that the handshake
     // is complete though)
-    val serializer = conn.activeSerializer
+    val serializer = conn.activeSerializer.asInstanceOf[Serializer[Proxy]]
     val _remoteNode = serializer.newNode(conn.remoteNode.address, conn.remoteNode.port)
     val p = serializer.newProxy(_remoteNode, conn.mode, serializer.getClass.getName, sym)
     val delegate = p.newDelegate(conn)
@@ -160,13 +160,13 @@ private[remote] class NetKernel extends CanTerminate {
 
   private val processMsgFunc = processMsg _
 
-  private val connectionCache = new HashMap[(Node, Serializer, ServiceMode.Value), MessageConnection]
+  private val connectionCache = new HashMap[(Node, Serializer[Proxy], ServiceMode.Value), MessageConnection]
 
   // TODO: guard connect with terminateLock
-  def connect(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection =
+  def connect(node: Node, serializer: Serializer[Proxy], serviceMode: ServiceMode.Value): MessageConnection =
     connect0(node.canonicalForm, serializer, serviceMode)
 
-  private def connect0(node: Node, serializer: Serializer, serviceMode: ServiceMode.Value): MessageConnection = connectionCache.synchronized {
+  private def connect0(node: Node, serializer: Serializer[Proxy], serviceMode: ServiceMode.Value): MessageConnection = connectionCache.synchronized {
     connectionCache.get((node, serializer, serviceMode)) match {
       case Some(conn) => conn
       case None =>
@@ -235,7 +235,7 @@ private[remote] class NetKernel extends CanTerminate {
   // TODO: guard with terminateLock
   private[remote] def setupProxy(proxy: Proxy) {
     // TODO: catch exceptions here
-    val serializer = Class.forName(proxy.serializerClassName).newInstance().asInstanceOf[Serializer]
+    val serializer = Class.forName(proxy.serializerClassName).newInstance().asInstanceOf[Serializer[Proxy]]
     val messageConn = connect(proxy.remoteNode, serializer, proxy.mode)
     proxies.synchronized {
       proxies.get((messageConn, proxy.name)) match {
@@ -254,7 +254,7 @@ private[remote] class NetKernel extends CanTerminate {
     }
   }
 
-  private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef): Unit = synchronized {
+  private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef): Unit = synchronized {
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)

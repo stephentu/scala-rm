@@ -16,7 +16,7 @@ class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
 }
 
-abstract class Serializer {
+abstract class Serializer[+T <: Proxy] {
 
   // Handshake management 
 
@@ -78,8 +78,8 @@ abstract class Serializer {
    * Default equality method for serializers. Looks simply at the uniqueId field 
    */
   override def equals(o: Any): Boolean = o match {
-    case s: Serializer => uniqueId == s.uniqueId
-    case _             => false
+    case s: Serializer[Proxy] => uniqueId == s.uniqueId
+    case _                    => false
   }
 
   /**
@@ -91,7 +91,6 @@ abstract class Serializer {
   type MyNode <: Node
   type MyNamedSend <: NamedSend
   type MyLocator <: Locator
-  type MyProxy <: Proxy
 
   def newNode(address: String, port: Int): MyNode
 
@@ -99,16 +98,19 @@ abstract class Serializer {
 
   def newLocator(node: MyNode, name: Symbol): MyLocator
 
-  def newProxy(remoteNode: MyNode, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): MyProxy
+  def newProxy(remoteNode: MyNode, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): T 
 
 }
 
-trait DefaultEnvelopeMessageCreator { this: Serializer =>
+trait DefaultProxyCreator { this: Serializer[DefaultProxyImpl] =>
+  override def newProxy(remoteNode: MyNode, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): DefaultProxyImpl =
+    new DefaultProxyImpl(remoteNode, mode, serializerClassName, name)
+}
 
+trait DefaultEnvelopeMessageCreator { this: Serializer[_ <: Proxy] =>
   override type MyNode = DefaultNodeImpl
   override type MyNamedSend = DefaultNamedSendImpl
   override type MyLocator = DefaultLocatorImpl
-  override type MyProxy = DefaultProxyImpl
 
   override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
 
@@ -117,15 +119,11 @@ trait DefaultEnvelopeMessageCreator { this: Serializer =>
 
   override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =
     DefaultLocatorImpl(node, name)
-
-  override def newProxy(remoteNode: DefaultNodeImpl, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): DefaultProxyImpl =
-    new DefaultProxyImpl(remoteNode, mode, serializerClassName, name)
-
 }
 
 class NonHandshakingSerializerException extends Exception
 
-trait NonHandshakingSerializer { this: Serializer =>
+trait NonHandshakingSerializer { this: Serializer[_ <: Proxy] =>
   override def initialState = None
   override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case _ => throw new NonHandshakingSerializerException
@@ -139,7 +137,7 @@ case object SendID
 case object ExpectID
 case object Resolved
 
-trait IdResolvingSerializer { this: Serializer =>
+trait IdResolvingSerializer { this: Serializer[_ <: Proxy] =>
   override def initialState: Option[Any] = Some(SendID)
   override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case SendID   => (ExpectID, Some(uniqueId))

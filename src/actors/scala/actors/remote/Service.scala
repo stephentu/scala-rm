@@ -182,7 +182,7 @@ trait MessageConnection extends Connection {
 
   protected val receiveCallback: MessageReceiveCallback
 
-  protected def receiveMessage(s: Serializer, message: AnyRef) {
+  protected def receiveMessage(s: Serializer[Proxy], message: AnyRef) {
     try {
       receiveCallback(this, s, message)
     } catch {
@@ -192,11 +192,11 @@ trait MessageConnection extends Connection {
     }
   }
 
-  def send(f: Serializer => AnyRef): Unit 
+  def send(f: Serializer[Proxy] => AnyRef): Unit 
 
-  def send(msg: AnyRef) { send { _: Serializer => msg } }
+  def send(msg: AnyRef) { send { _: Serializer[Proxy] => msg } }
 
-  def activeSerializer: Serializer
+  def activeSerializer: Serializer[Proxy]
 
 }
 
@@ -260,7 +260,7 @@ abstract class Service extends CanTerminate {
   }
 
   def connect(node: Node, 
-              serializer: Serializer, 
+              serializer: Serializer[Proxy], 
               mode: ServiceMode.Value,
               recvCallback: MessageReceiveCallback): MessageConnection
 
