@@ -189,7 +189,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
         try {
           socket.keyFor(selector).interestOps(op)
-          Debug.info(this + ": done!")
+          //Debug.info(this + ": done!")
         } catch {
           case e: CancelledKeyException =>
             Debug.error(this + ": tried to set interestOps for " + socket + " to " + enumerateSet(op) + ", but key was cancelled already")
@@ -204,7 +204,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       override def invoke() {
         // TODO: catch exceptions
         socket.register(selector, op, attachment.getOrElse(null)) 
-        Debug.info(this + ": done!")
+        //Debug.info(this + ": done!")
       }
       override def toString = "<RegisterChannel: " + socket + " with " + enumerateSet(op) + ">"
     }
@@ -243,7 +243,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
     private def addOperation(op: Operation) {
       if (!operationQueue.offer(op))
         throw new RuntimeException("Could not offer operation to queue")
-      Debug.info(this + ": " + op + " added and calling wakeup()")
+      //Debug.info(this + ": " + op + " added and calling wakeup()")
       selector.wakeup()
     }
 
@@ -353,7 +353,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         }
       }
 
-      override lazy val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
+      override lazy val localNode = Node(so.getLocalAddress.getHostName, so.getLocalPort)
 
       private val messageState = new MessageState
 
@@ -392,7 +392,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         socketChannel.close()
       }
 
-      private val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE)
+      private val WriteChangeOp = new ChangeInterestOp(socketChannel, SelectionKey.OP_WRITE | SelectionKey.OP_READ) /** Accept both WRITEs and READs */
 
       override def send(bytes: Array[Byte]) {
         terminateLock.synchronized {
@@ -453,21 +453,26 @@ class NonBlockingServiceProvider extends ServiceProvider {
               SendBufPool.release(curEntry)
               //Debug.info(this + ": doWrite() - finished, so dequeuing - queue length is now " + unfinishedWriteQueue.size)
             }
-            if (bytesWritten == 0 && !finished) {
+            if (bytesWritten == 0) {
+              assert(!finished)
               socketFull = true
               //Debug.info(this + ": doWrite() - socket is full")
             }
           }
 
+
           terminateLock.synchronized {
             if (unfinishedWriteQueue.isEmpty && writeQueue.isEmpty) {
               // back to reading
-              Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
+              //Debug.info(this + ": doWrite() - setting " + key.channel + " back to OP_READ interest")
+              assert(isWriting)
               isWriting = false
-              key.interestOps(SelectionKey.OP_READ)
+              key.interestOps(SelectionKey.OP_READ) /** Go back to only handling READs */
               if (shouldNotify) 
                 terminateLock.notifyAll()
-            }
+            } //else {
+              //Debug.info(this + ": doWrite() - writing not finished. writeQueue len = " + writeQueue.size + ", unfinishedWriteQueue len = " + unfinishedWriteQueue.length)
+              //}
           }
         } catch {
           case e: IOException => 
@@ -495,9 +500,9 @@ class NonBlockingServiceProvider extends ServiceProvider {
           terminateLock.synchronized {
             if (!writeQueue.isEmpty && !isWriting) {
               isWriting = true
-              key.interestOps(SelectionKey.OP_WRITE)
+              key.interestOps(SelectionKey.OP_WRITE | SelectionKey.OP_READ) /** Handle both WRITEs and READs */
             } else 
-              key.interestOps(SelectionKey.OP_READ)
+              key.interestOps(SelectionKey.OP_READ) /** Just READ for now */
           }
 
         } catch {
@@ -590,14 +595,14 @@ class NonBlockingServiceProvider extends ServiceProvider {
             val key = selectedKeys.next()
             selectedKeys.remove()
             if (key.isValid)
-              if (key.isAcceptable)
+              if (key.isAcceptable) // mutually exclusive
                 processAccept(key)
-              else if (key.isConnectable)
+              else if (key.isConnectable) // mutually exclusive
                 processConnect(key)
-              else if (key.isWritable)
-                processWrite(key)
-              else if (key.isReadable)
-                processRead(key)
+              else { // can do both reads and writes at the same time
+                if (key.isWritable) processWrite(key) // do writes first
+                if (key.isReadable) processRead(key)  // then do reads
+              }
             else
               Debug.error(this + ": Invalid key found: " + key)
           }

@@ -210,6 +210,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         val nextMsg = nextSerializerMessage()
         Debug.info(this + ": calling receiveMessage with " + nextMsg)
         receiveMessage(serializer.get, nextMsg)
+      } else {
+        Debug.error(this + ": hasNextAction returned true but no action can be taken")
       }
     }
   }
