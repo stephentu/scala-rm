@@ -113,7 +113,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     assert(serializer.isDefined)
 
     // send class name of serializer to remote side
-    Debug.info(this + ": sending serializer name: " + serializer.get.getClass.getName)
+    //Debug.info(this + ": sending serializer name: " + serializer.get.getClass.getName)
     byteConn.send(serializer.get.getClass.getName.getBytes)
 
     if (!handshakeState.get.isDone) {
@@ -137,7 +137,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     assert(isHandshaking)
     handshakeState.get.nextHandshakeMessage() match {
       case Some(msg) =>
-        Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
+        //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
         val meta = primitiveSerializer.serializeMetaData(msg.asInstanceOf[AnyRef])
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
         byteConn.send(meta.get, data)
@@ -147,7 +147,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         if (!sendQueue.isEmpty) {
           sendQueue.foreach { f =>
             val msg = f(serializer.get)
-            Debug.info(this + ": serializing " + msg + " from sendQueue")
+            //Debug.info(this + ": serializing " + msg + " from sendQueue")
             val t = serialize(msg)
             byteConn.send(t._1, t._2)
           }
@@ -161,13 +161,13 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   def receive(bytes: Array[Byte]) {
     assert(status ne null)
 
-    Debug.info(this + ": received " + bytes.length + " bytes")
+    //Debug.info(this + ": received " + bytes.length + " bytes")
     messageQueue += bytes
     while (hasNextAction) {
       if (isWaitingForSerializer) {
         try {
           val clzName = new String(nextMessage())
-          Debug.info(this + ": going to create serializer of clz " + clzName)
+          //Debug.info(this + ": going to create serializer of clz " + clzName)
           val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer[Proxy]]
           serializer = Some(_serializer)
           handshakeState = Some(new HandshakeState(_serializer))
@@ -200,7 +200,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         }
       } else if (isHandshaking) {
         val msg = nextPrimitiveMessage()
-        Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
+        //Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
         handshakeState.get.handleNextMessage(msg)
         terminateLock.synchronized { 
           if (terminateInitiated) return
@@ -208,7 +208,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         }
       } else if (isEstablished) {
         val nextMsg = nextSerializerMessage()
-        Debug.info(this + ": calling receiveMessage with " + nextMsg)
+        //Debug.info(this + ": calling receiveMessage with " + nextMsg)
         receiveMessage(serializer.get, nextMsg)
       } else {
         Debug.error(this + ": hasNextAction returned true but no action can be taken")
@@ -235,12 +235,12 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         case ConnectionStatus.Terminated =>
           throw new IllegalStateException("Cannot send on terminated channel")
         case ConnectionStatus.WaitingForSerializer | ConnectionStatus.Handshaking =>
-          Debug.info(this + ": send() - queuing up msg")
+          //Debug.info(this + ": send() - queuing up msg")
           sendQueue += msg // queue it up
         case ConnectionStatus.Established =>
           // call send immediately
           val m = msg(serializer.get)
-          Debug.info(this + ": send() - serializing message: " + m)
+          //Debug.info(this + ": send() - serializing message: " + m)
           val t = serialize(m)
           byteConn.send(t._1, t._2)
       }

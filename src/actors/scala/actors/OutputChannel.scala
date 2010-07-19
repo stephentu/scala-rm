@@ -46,4 +46,23 @@ trait OutputChannel[-Msg] {
    * Returns the <code>Actor</code> that is receiving from this $actor.
    */
   def receiver: Actor
+
+
+  /**
+   * Contains the channel name of this $actor
+   */
+  private[this] var _channelName: Option[Symbol] = None
+
+  /**
+   * Returns the channel name of this $actor
+   */
+  private[actors] def channelName: Option[Symbol] = _channelName
+
+  /**
+   * Sets the channel name of this $actor. Silently clobbers any existing name
+   *
+   * @param newName the channel name to set this $actor to
+   */
+  private[actors] def channelName_=(newName: Option[Symbol]) { _channelName = newName }
+
 }

@@ -98,47 +98,47 @@ object RemoteActor {
         actorToPorts += thisActor -> set
     }
 
-    // termination handler
-    thisActor onTerminate {
-      Debug.info("alive actor " + thisActor + " terminated")
-      // Unregister actor from kernel
-      unregister(thisActor)
+    //// termination handler
+    //thisActor onTerminate {
+    //  Debug.info("alive actor " + thisActor + " terminated")
+    //  // Unregister actor from kernel
+    //  unregister(thisActor)
 
-      /*  
-       *  TODO: this causes deadlocks - move all connection/listener garbage
-       *  collection to a separate collection task instead (which runs like
-       *  every N minutes) 
-      // we only worry about garbage collecting for un-used listeners. we
-      // don't bother to garbage collect for un-used connections
-      portToActors.synchronized { // prevents new connections
-        // get all the ports this actor was listening on...
-        val candidatePorts = actorToPorts.remove(thisActor) match {
-          case Some(ports) => 
-            ports
-          case None => 
-            Debug.error("Could not find " + thisActor + " in actorToPorts")
-            new HashSet[Int]()
-        }
+    //  /*  
+    //   *  TODO: this causes deadlocks - move all connection/listener garbage
+    //   *  collection to a separate collection task instead (which runs like
+    //   *  every N minutes) 
+    //  // we only worry about garbage collecting for un-used listeners. we
+    //  // don't bother to garbage collect for un-used connections
+    //  portToActors.synchronized { // prevents new connections
+    //    // get all the ports this actor was listening on...
+    //    val candidatePorts = actorToPorts.remove(thisActor) match {
+    //      case Some(ports) => 
+    //        ports
+    //      case None => 
+    //        Debug.error("Could not find " + thisActor + " in actorToPorts")
+    //        new HashSet[Int]()
+    //    }
 
-        // ... now for each of these candidates, remove this actor
-        // from the set and terminate if the set becomes empty
-        candidatePorts.foreach(p => portToActors.get(p) match {
-          case Some(actors) =>
-            actors -= thisActor
-            if (actors.isEmpty) {
-              portToActors -= p
-              tryShutdown(p) // try to shutdown in a different thread
-                             // this is because blocking in a
-                             // ForkJoinScheduler worker is bad (causes
-                             // starvation)
-            }
-          case None => tryShutdown(p) 
-        })
+    //    // ... now for each of these candidates, remove this actor
+    //    // from the set and terminate if the set becomes empty
+    //    candidatePorts.foreach(p => portToActors.get(p) match {
+    //      case Some(actors) =>
+    //        actors -= thisActor
+    //        if (actors.isEmpty) {
+    //          portToActors -= p
+    //          tryShutdown(p) // try to shutdown in a different thread
+    //                         // this is because blocking in a
+    //                         // ForkJoinScheduler worker is bad (causes
+    //                         // starvation)
+    //        }
+    //      case None => tryShutdown(p) 
+    //    })
 
-      }
-      */
+    //  }
+    //  */
 
-    }
+    //}
   }
 
   private def tryShutdown(port: Int) {
@@ -165,6 +165,7 @@ object RemoteActor {
 
   def register(name: Symbol, actor: Actor) {
     netKernel.register(name, actor)
+    actor onTerminate { netKernel.unregister(actor) }
   }
 
   def unregister(actor: Actor) {

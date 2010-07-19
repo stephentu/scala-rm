@@ -11,6 +11,8 @@ package scala.actors
 package remote
 
 import scala.collection.mutable.{HashMap, HashSet}
+
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 
 object NamedSend {
@@ -69,11 +71,8 @@ private[remote] class NetKernel extends CanTerminate {
   import java.io.IOException
 
   def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Symbol) {
-    conn.send { serializer: Serializer[_ <: Proxy] =>
-      val metadata = serializer.serializeMetaData(msg) match {
-        case Some(data) => data
-        case None       => null
-      }
+    conn.send { serializer: Serializer[Proxy] =>
+      val metadata = serializer.serializeMetaData(msg).getOrElse(null)
       val bytes = serializer.serialize(msg)
       // deep copy everything into serializer form
       val _senderLocNode = serializer.newNode(senderLoc.node.address, senderLoc.node.port)
@@ -84,41 +83,31 @@ private[remote] class NetKernel extends CanTerminate {
     }
   }
 
-  private val actors = new HashMap[Symbol, OutputChannel[Any]]
-  private val names = new HashMap[OutputChannel[Any], Symbol]
+  private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
 
   @throws(classOf[NameAlreadyRegisteredException])
-  def register(name: Symbol, a: OutputChannel[Any]): Unit = actors.synchronized {
-    actors.get(name) match {
-      case Some(actor) =>
-        if (a != actor)
-          // trying to clobber the name of another actor
-          throw NameAlreadyRegisteredException(name, actor)
-        Debug.warning("registering " + name + " to channel " + a)
-      case None        =>
-        actors += Pair(name, a)
-        names  += Pair(a, name)
+  def register(name: Symbol, a: OutputChannel[Any]) {
+    val existing = actors.putIfAbsent(name, a)
+    if (existing ne null) {
+      if (existing != a)
+        throw NameAlreadyRegisteredException(name, existing)
+      Debug.warning("re-registering " + name + " to channel " + a)
     }
+    a.channelName = Some(name)
   }
 
-  /**
-   * Errors silently if a mapping did not previously exist
-   */
-  def unregister(a: OutputChannel[Any]): Unit = actors.synchronized {
-    names -= a
-    actors.retain((_,v) => v != a)
+  def unregister(a: OutputChannel[Any]) {
+    a.channelName.foreach(name => actors.remove(name)) 
+    a.channelName = None
   }
 
-  def getOrCreateName(from: OutputChannel[Any]) = actors.synchronized { 
-    names.get(from) match {
-      case None =>
-        val freshName = FreshNameCreator.newName("remotesender")
-        Debug.info("Made freshName for output channel: " + from)
-        register(freshName, from)
-        freshName
-      case Some(name) =>
-        name
-    }
+  def getOrCreateName(from: OutputChannel[Any]) = from.channelName match {
+    case Some(name) => name
+    case None => 
+      Debug.info(this + ": creating new name for output channel " + from)
+      val newName = FreshNameCreator.newName("remotesender")
+      register(newName, from)
+      newName
   }
 
   def send(conn: MessageConnection, name: Symbol, msg: AnyRef): Unit =
@@ -258,18 +247,14 @@ private[remote] class NetKernel extends CanTerminate {
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)
-        actors.synchronized {
-          actors.get(receiverLoc.name) match {
-            case Some(a) =>
-              val senderProxy = getOrCreateProxy(conn, senderLoc.name)
-              senderProxy.send(LocalApply0(rfun, a.asInstanceOf[AbstractActor]), null)
-
-            case None =>
-              // message is lost
-              Debug.info(this+": lost message")
-          }
+        val a = actors.get(receiverLoc.name)
+        if (a eq null) {
+          // message is lost
+          Debug.info(this+": lost message")
+        } else {
+          val senderProxy = getOrCreateProxy(conn, senderLoc.name)
+          senderProxy.send(LocalApply0(rfun, a.asInstanceOf[AbstractActor]), null)
         }
-
       case cmd@NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
         Debug.info(this+": processing "+cmd)
 
@@ -291,17 +276,17 @@ private[remote] class NetKernel extends CanTerminate {
           unregister(a)
         }
 
-        actors.synchronized {
-          actors.get(receiverLoc.name) match {
-            case Some(a) =>
-              if (a.isInstanceOf[Actor] && 
-                  a.asInstanceOf[Actor].getState == Actor.State.Terminated) removeOrphan(a)
-              else                                                          sendToProxy(a)
-            case None =>
-              // message is lost
-              Debug.info(this+": lost message")
-          }
+        val a = actors.get(receiverLoc.name)
+        if (a eq null) {
+          // message is lost
+          Debug.info(this+": lost message")
+        } else {
+          if (a.isInstanceOf[Actor] && a.asInstanceOf[Actor].getState == Actor.State.Terminated) 
+            removeOrphan(a)
+          else 
+            sendToProxy(a)
         }
+
     }
   }
 
@@ -350,10 +335,7 @@ private[remote] class NetKernel extends CanTerminate {
     
     Debug.info(this + ": unregister all actors")
     // clear all name mappings
-    actors.synchronized {
-      actors.clear()
-      names.clear()
-    }
+    actors.clear()
 
     Debug.info(this + ": now kill service threads")
     // terminate the service
