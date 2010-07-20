@@ -19,8 +19,7 @@ import java.nio.channels.{ ClosedSelectorException, SelectionKey, Selector,
 import java.nio.channels.spi.{ AbstractSelectableChannel, SelectorProvider }
 
 import java.util.{ Comparator, PriorityQueue }
-import java.util.concurrent.{ ConcurrentLinkedQueue, ConcurrentHashMap, Executors,
-                              LinkedBlockingQueue }
+import java.util.concurrent.{ ConcurrentLinkedQueue, ConcurrentHashMap, Executors }
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
@@ -56,10 +55,9 @@ object InterestOpUtil {
 }
 
 object NonBlockingServiceProvider {
-  val NumReadLoops       = Runtime.getRuntime.availableProcessors * 2
-  val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 2
-  val NumListenerLoops   = Runtime.getRuntime.availableProcessors
-  val ReadBufSize        = 8192
+  val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 4
+  val NumListenerLoops = Runtime.getRuntime.availableProcessors
+  val ReadBufSize = 8192
 }
 
 class VaryingSizeByteBufferPool {
@@ -131,18 +129,12 @@ class NonBlockingServiceProvider extends ServiceProvider {
     listenerLoops(idx)
   }
 
-  private def readLoopFor(socketChannel: SocketChannel) =
-    readLoops(socketChannel.hashCode % readLoops.length)
-
-  private val readExecutor = Executors.newCachedThreadPool()
   private val connExecutor = Executors.newCachedThreadPool()
   private val listenerExecutor = Executors.newCachedThreadPool()
 
-  private val readLoops = new Array[ReadLoop](NumReadLoops) 
   private val connLoops = new Array[SelectorLoop](NumConnectionLoops) 
   private val listenerLoops = new Array[SelectorLoop](NumListenerLoops) 
 
-  initializeReadLoops()
   initializeSelectLoops()
 
   private def initializeSelectLoops() {
@@ -162,39 +154,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
     }
   }
 
-  private def initializeReadLoops() {
-    var idx = 0
-    while (idx < readLoops.length) {
-      val readLoop = new ReadLoop(idx)
-      readExecutor.execute(readLoop)
-      readLoops(idx) = readLoop
-      idx += 1
-    }
-  }
-
   private val connLoopIdx = new AtomicInteger
   private val listenerLoopIdx = new AtomicInteger
-
-  class ReadLoop(id: Int) 
-    extends Runnable
-    with    CanTerminate {
-    private val tasks = new LinkedBlockingQueue[Runnable]
-    override def run() {
-      while (!terminateInitiated) {
-        val nextTask = tasks.take()
-        try {
-          nextTask.run()
-        } catch {
-          case e: Exception =>
-            Debug.error(this + ": caught exception " + e.getMessage)
-            Debug.doError { e.printStackTrace() }
-        }
-      }
-    }
-    def offerTask(r: Runnable) { tasks.offer(r) }
-    override def doTerminateImpl(isBottom: Boolean) { }
-    override def toString = "<ReadLoop " + id + ">"
-  }
 
   class SelectorLoop(id: Int, isConn: Boolean) 
     extends Runnable
@@ -394,10 +355,6 @@ class NonBlockingServiceProvider extends ServiceProvider {
         override val receiveCallback: BytesReceiveCallback)
       extends ByteConnection {
 
-      class ReadLoopTask(msg: Array[Byte]) extends Runnable {
-        override def run() { receiveBytes(msg) }
-      }
-
       protected val so = socketChannel.socket
 
       override lazy val localNode = Node(so.getLocalAddress.getHostName, so.getLocalPort)
@@ -466,11 +423,10 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
       def doRead(key: SelectionKey) {
         val shouldTerminate = messageState.doRead(socketChannel)
-        val readLoop = readLoopFor(socketChannel)
 
         while (messageState.hasMessage) {
           val nextMsg = messageState.nextMessage
-          readLoop.offerTask(new ReadLoopTask(nextMsg))
+          receiveBytes(nextMsg)
         }
 
         if (shouldTerminate) 
