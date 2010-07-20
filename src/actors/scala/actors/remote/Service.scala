@@ -26,87 +26,11 @@ trait HasServiceMode {
   def mode: ServiceMode.Value
 }
 
-/**
- * Can only be terminated once
- */
-trait CanTerminate {
-
-  final def terminateTop() { doTerminate(false) }
-
-  final def terminateBottom() { doTerminate(true) }
-
-  protected final var preTerminate: Option[() => Unit] = None
-  final def beforeTerminate(f: => Unit) {
-    terminateLock.synchronized {
-      if (!terminateInitiated) {
-        assert(!terminateCompleted)
-        preTerminate match {
-          case Some(_) =>
-            Debug.warning(this + ": beforeTerminate() - terminate sequence already registered - replacing")
-            preTerminate = Some(() => f)
-          case None =>
-            preTerminate = Some(() => f)
-        }
-      } else 
-        Debug.info(this + ": beforeTerminate() - terminate sequence already started")
-    }
-  }
-
-  protected final var postTerminate: Option[() => Unit] = None
-  final def afterTerminate(f: => Unit) {
-    terminateLock.synchronized {
-      if (!terminateInitiated) {
-        assert(!terminateCompleted)
-        postTerminate match {
-          case Some(_) =>
-            Debug.warning(this + ": afterTerminate() - terminate sequence already registered - replacing")
-            postTerminate = Some(() => f)
-          case None =>
-            postTerminate = Some(() => f)
-        }
-      } else 
-        Debug.info(this + ": afterTerminate() - terminate sequence already started")
-    }
-  }
-
-  // assumes terminateLock already acquired
-  protected final def doTerminate(isBottom: Boolean) {
-    terminateLock.synchronized {
-      if (!terminateInitiated) {
-        assert(!terminateCompleted)
-        preTerminate match {
-          case Some(f) => f()
-          case None =>
-        }
-        terminateInitiated = true
-        doTerminateImpl(isBottom)
-        terminateCompleted = true
-        postTerminate match {
-          case Some(f) => f()
-          case None =>
-        }
-      }
-    }
-  }
-
-  /**
-   * Guaranteed to only execute once. TerminateLock is acquired when
-   * doTerminateImpl() executes
-   */
-  protected def doTerminateImpl(isBottom: Boolean): Unit
-
-  protected final val terminateLock = new Object
-
-  protected final var terminateInitiated = false
-  protected final var terminateCompleted = false
-
-  final def hasTerminateStarted = terminateLock.synchronized { terminateInitiated }
-  final def hasTerminateFinished = terminateLock.synchronized { terminateCompleted }
-}
-
 trait Listener 
   extends HasServiceMode 
   with    CanTerminate {
+
+  def port: Int
 
   protected val connectionCallback: ConnectionCallback
 
@@ -119,8 +43,6 @@ trait Listener
         Debug.doError { e.printStackTrace }
     }
   }
-
-  def port: Int
 }
 
 trait Connection 
@@ -137,7 +59,8 @@ trait Connection
    */
   def localNode: Node
 
-  private var _attachment: Option[AnyRef] = None
+  // TODO: use syncvar here
+  @volatile private var _attachment: Option[AnyRef] = None
   private val attachLock = new Object
 
   def attach(attachment: AnyRef) {
@@ -160,6 +83,10 @@ trait Connection
 
 trait ByteConnection extends Connection {
 
+  def send(data: Array[Byte]): Unit
+
+  def send(data0: Array[Byte], data1: Array[Byte]): Unit
+
   protected val receiveCallback: BytesReceiveCallback
 
   protected def receiveBytes(bytes: Array[Byte]) {
@@ -172,13 +99,15 @@ trait ByteConnection extends Connection {
     }
   }
 
-  def send(data: Array[Byte]): Unit
-
-  def send(data0: Array[Byte], data1: Array[Byte]): Unit
-
 }
 
 trait MessageConnection extends Connection {
+
+  def send(f: Serializer[Proxy] => AnyRef): Unit 
+
+  def send(msg: AnyRef) { send { _: Serializer[Proxy] => msg } }
+
+  def activeSerializer: Serializer[Proxy]
 
   protected val receiveCallback: MessageReceiveCallback
 
@@ -191,12 +120,6 @@ trait MessageConnection extends Connection {
         Debug.doError { e.printStackTrace }
     }
   }
-
-  def send(f: Serializer[Proxy] => AnyRef): Unit 
-
-  def send(msg: AnyRef) { send { _: Serializer[Proxy] => msg } }
-
-  def activeSerializer: Serializer[Proxy]
 
 }
 
