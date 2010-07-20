@@ -336,22 +336,26 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
     }
 
-    class NonBlockingServiceConnection(
+    class InitiatedNonBlockingServiceConnection(
+        override val remoteNode: Node,
+        socketChannel: SocketChannel,
+        receiveCallback: BytesReceiveCallback)
+      extends NonBlockingServiceConnection(socketChannel, receiveCallback)
+
+    class ReceivedNonBlockingServiceConnection(
+        socketChannel: SocketChannel,
+        receiveCallback: BytesReceiveCallback)
+      extends NonBlockingServiceConnection(socketChannel, receiveCallback) {
+
+      override lazy val remoteNode = Node(so.getInetAddress.getHostName, so.getPort) 
+    }
+
+    abstract class NonBlockingServiceConnection(
         socketChannel: SocketChannel,
         override val receiveCallback: BytesReceiveCallback)
       extends ByteConnection {
 
-      private val so = socketChannel.socket
-
-      // for correctness, will need to wait until the socket channel is
-      // connected before allowing the following two values to be computed.
-      // that is why we wait here
-      override lazy val remoteNode = {
-        socketChannel.synchronized {
-          while (!socketChannel.isConnected) socketChannel.wait()
-          Node(so.getInetAddress.getHostName,so.getPort) 
-        }
-      }
+      protected val so = socketChannel.socket
 
       override lazy val localNode = Node(so.getLocalAddress.getHostName, so.getLocalPort)
 
@@ -493,8 +497,6 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
           socketChannel.finishConnect()
 
-          socketChannel.synchronized { socketChannel.notifyAll() }
-
           // check write queue. if it is not empty and we're not in write mode,
           // put us in write mode. otherwise, put us in read mode
           terminateLock.synchronized {
@@ -564,7 +566,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
     def finishAccept(clientSocketChannel: SocketChannel, receiveCallback: BytesReceiveCallback) = {
       clientSocketChannel.socket.setTcpNoDelay(true) // disable nagle's algorithm
       clientSocketChannel.configureBlocking(false)
-      val conn = new NonBlockingServiceConnection(clientSocketChannel, receiveCallback)
+      val conn = new ReceivedNonBlockingServiceConnection(clientSocketChannel, receiveCallback)
       addOperation(new RegisterChannel(clientSocketChannel, SelectionKey.OP_READ, Some(conn)))
       conn
     }
@@ -647,6 +649,9 @@ class NonBlockingServiceProvider extends ServiceProvider {
       if (terminateInitiated) throw new ProviderAlreadyClosedException 
     }
 
+    /**
+     * Node already in canonical form
+     */
     def connect(node: Node, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
       ensureAlive()
       Debug.info(this + ": connect called to: " + node)
@@ -655,7 +660,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       clientSocket.configureBlocking(false)
       val connected = clientSocket.connect(new InetSocketAddress(node.address, node.port))
       val interestOp = if (connected) SelectionKey.OP_READ else SelectionKey.OP_CONNECT
-      val conn = new NonBlockingServiceConnection(clientSocket, receiveCallback)
+      val conn = new InitiatedNonBlockingServiceConnection(node, clientSocket, receiveCallback)
       addOperation(new RegisterChannel(clientSocket, interestOp, Some(conn)))
       conn
     }
