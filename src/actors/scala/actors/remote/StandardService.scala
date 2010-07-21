@@ -12,11 +12,11 @@ package remote
 
 import scala.collection.mutable.{ HashMap, Queue }
 
-object ConnectionStatus extends Enumeration {
-  val WaitingForSerializer,
-      Handshaking, 
-      Established, 
-      Terminated = Value
+object ConnectionStatus {
+  val WaitingForSerializer = 0x1
+  val Handshaking          = 0x2
+  val Established          = 0x3
+  val Terminated           = 0x4
 }
 
 class HandshakeState(serializer: Serializer[_]) {
@@ -67,8 +67,11 @@ class DefaultMessageConnection(byteConn: ByteConnection,
                                isServer: Boolean)
   extends MessageConnection {
 
-  override def localNode = byteConn.localNode
+  import ConnectionStatus._
+
+  override def localNode  = byteConn.localNode
   override def remoteNode = byteConn.remoteNode
+
   override def doTerminateImpl(isBottom: Boolean) {
     if (!isBottom && !sendQueue.isEmpty) {
       Debug.info(this + ": waiting 5 seconds for sendQueue to drain")
@@ -78,26 +81,33 @@ class DefaultMessageConnection(byteConn: ByteConnection,
       byteConn.terminateBottom()
     else
       byteConn.terminateTop()
-    status = ConnectionStatus.Terminated
+    status = Terminated
   }
+
   override def mode = byteConn.mode
-
   override def activeSerializer = serializer.get
-
   override def toString = "<DefaultMessageConnection using: " + byteConn + ">" 
     
-  private var _status: ConnectionStatus.Value = _ 
+  @volatile private var _status = 0
   def status = _status
-  private def status_=(newStatus: ConnectionStatus.Value) { _status = newStatus }
+  private def status_=(newStatus: Int) { _status = newStatus }
 
   private var handshakeState: Option[HandshakeState] = serializer.map(new HandshakeState(_))
 
-  def isWaitingForSerializer = status == ConnectionStatus.WaitingForSerializer
-  def isHandshaking = status == ConnectionStatus.Handshaking
-  def isEstablished = status == ConnectionStatus.Established
+  def isWaitingForSerializer = status == WaitingForSerializer
+  def isHandshaking          = status == Handshaking
+  def isEstablished          = status == Established
 
+  /**
+   * Messages which we have received, for processing
+   */
   private val messageQueue = new Queue[Array[Byte]]
-
+  /**
+   * Messages which need to be sent out (in order), but could not have been at
+   * the time send() was called (due to things like not finishing handshake
+   * yet, etc)
+   */
+  private val sendQueue = new Queue[Serializer[Proxy] => AnyRef]
   private val primitiveSerializer = new PrimitiveSerializer
 
   // bootstrap in CTOR
@@ -106,7 +116,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   else
     bootstrapClient()
 
-  assert(status ne null)
+  assert(status != 0)
 
   private def bootstrapClient() {
     // clients start out with a serializer defined
@@ -118,18 +128,18 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
     if (!handshakeState.get.isDone) {
       // if serializer requires handshake, place in handshake mode...
-      status = ConnectionStatus.Handshaking
+      status = Handshaking
       // ... and send the first message from this end
       sendNextMessage()
     } else 
       // otherwise, in established mode (ready to send messages)
-      status = ConnectionStatus.Established 
+      status = Established 
   }
 
   private def bootstrapServer() {
     // servers start out with no serializer defined
     assert(!serializer.isDefined)
-    status = ConnectionStatus.WaitingForSerializer
+    status = WaitingForSerializer
   }
 
   // assumes lock on terminateLock is held (except in the bootstrap phase)
@@ -143,7 +153,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         byteConn.send(meta.get, data)
       case None =>
         // done
-        status = ConnectionStatus.Established
+        status = Established
         if (!sendQueue.isEmpty) {
           sendQueue.foreach { f =>
             val msg = f(serializer.get)
@@ -159,7 +169,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   }
 
   def receive(bytes: Array[Byte]) {
-    assert(status ne null)
+    assert(status != 0)
 
     //Debug.info(this + ": received " + bytes.length + " bytes")
     messageQueue += bytes
@@ -176,13 +186,13 @@ class DefaultMessageConnection(byteConn: ByteConnection,
           if (!handshakeState.get.isDone) {
             terminateLock.synchronized {
               if (terminateInitiated) return
-              status = ConnectionStatus.Handshaking
+              status = Handshaking
               sendNextMessage()
             }
           } else 
             terminateLock.synchronized {
               if (terminateInitiated) return
-              status = ConnectionStatus.Established 
+              status = Established 
             }
         } catch {
           case e: InstantiationException =>
@@ -216,46 +226,50 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     }
   }
 
+  private val EmptyArray = new Array[Byte](0)
+
   private def serialize(msg: AnyRef) = serializer match {
-    case Some(s) => (s.serializeMetaData(msg).getOrElse(new Array[Byte](0)), s.serialize(msg))
+    case Some(s) => (s.serializeMetaData(msg).getOrElse(EmptyArray), s.serialize(msg))
     case None =>
       throw new IllegalStateException("Cannot serialize message, no serializer agreed upon")
   }
 
-  /**
-   * Messages which need to be sent out (in order), but could not have been at
-   * the time send() was called (due to things like not finishing handshake
-   * yet, etc)
-   */
-  private val sendQueue = new Queue[Serializer[Proxy] => AnyRef]
+
 
   def send(msg: Serializer[Proxy] => AnyRef) {
-    terminateLock.synchronized {
-      status match {
-        case ConnectionStatus.Terminated =>
-          throw new IllegalStateException("Cannot send on terminated channel")
-        case ConnectionStatus.WaitingForSerializer | ConnectionStatus.Handshaking =>
-          //Debug.info(this + ": send() - queuing up msg")
-          sendQueue += msg // queue it up
-        case ConnectionStatus.Established =>
-          // call send immediately
-          val m = msg(serializer.get)
-          //Debug.info(this + ": send() - serializing message: " + m)
-          val t = serialize(m)
-          byteConn.send(t._1, t._2)
+    ensureAlive()
+    if (isWaitingForSerializer || isHandshaking) {
+      val repeat = withoutTermination {
+        status match {
+          case Terminated =>
+            throw new IllegalStateException("Cannot send on terminated channel")
+          case WaitingForSerializer | Handshaking =>
+            //Debug.info(this + ": send() - queuing up msg")
+            sendQueue += msg // queue it up
+            false // no need to repeat
+          case Established =>
+            // we connected somewhere in between checking and grabbing
+            // termination lock. we don't want to queue it up then. try again
+            true
+        }
       }
+      if (repeat) send(msg)
+    } else {
+      // call send immediately
+      val m = msg(serializer.get)
+      //Debug.info(this + ": send() - serializing message: " + m)
+      val t = serialize(m)
+      byteConn.send(t._1, t._2)
     }
   }
 
   private def hasNextAction = status match {
-    case ConnectionStatus.WaitingForSerializer =>
-      hasSimpleMessage
-    case ConnectionStatus.Handshaking | ConnectionStatus.Established =>
-      hasSerializerMessage
+    case WaitingForSerializer => hasSimpleMessage
+    case Handshaking | Established => hasSerializerMessage
     case _ => false
   }
 
-  private def hasSimpleMessage = !messageQueue.isEmpty
+  private def hasSimpleMessage = messageQueue.size > 0
   private def hasSerializerMessage = messageQueue.size >= 2
 
   private def nextMessage() = {

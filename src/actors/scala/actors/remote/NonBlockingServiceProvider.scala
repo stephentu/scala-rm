@@ -593,7 +593,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         try {
           processOperationQueue()
           //Debug.info(this + ": calling select()")
-          val selected = selector.select() /** TODO: consider using select(long) alternative */
+          val selected = selector.select(5000) /** TODO: consider using select(long) alternative */
           //Debug.info(this + ": woke up from select() with " + selected + " keys selected")
           val selectedKeys = selector.selectedKeys.iterator
           while (selectedKeys.hasNext) {
