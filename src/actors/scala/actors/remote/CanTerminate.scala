@@ -18,7 +18,7 @@ trait CanTerminate {
   final def terminateTop()    { doTerminate(false) }
   final def terminateBottom() { doTerminate(true)  }
 
-  @volatile protected final var preTerminate: Option[() => Unit] = None
+  @volatile protected var preTerminate: Option[() => Unit] = None
   final def beforeTerminate(f: => Unit) {
     withoutTermination {
       if (!terminateCompleted) {
@@ -29,7 +29,7 @@ trait CanTerminate {
     }
   }
 
-  @volatile protected final var postTerminate: Option[() => Unit] = None
+  @volatile protected var postTerminate: Option[() => Unit] = None
   final def afterTerminate(f: => Unit) {
     withoutTermination {
       if (!terminateCompleted) {
@@ -40,7 +40,7 @@ trait CanTerminate {
     }
   }
 
-  protected final def withoutTermination(f: => Unit) { terminateLock.synchronized { f } }
+  protected final def withoutTermination[T](f: => T) = terminateLock.synchronized { f }
 
   protected final def doTerminate(isBottom: Boolean) {
     terminateLock.synchronized {
@@ -54,6 +54,12 @@ trait CanTerminate {
     }
   }
 
+  protected def ensureAlive() {
+    if (terminateInitiated) throw newAlreadyTerminatedException()
+  }
+
+  protected def newAlreadyTerminatedException(): Exception = new RuntimeException("Already terminated")
+
   /**
    * Guaranteed to only execute once. TerminateLock is acquired when
    * doTerminateImpl() executes
@@ -62,8 +68,8 @@ trait CanTerminate {
 
   protected final val terminateLock = new Object
 
-  @volatile protected final var terminateInitiated = false
-  @volatile protected final var terminateCompleted = false
+  @volatile protected var terminateInitiated = false
+  @volatile protected var terminateCompleted = false
 
   /** Returns true if a termination has been initiated (but before any pre
    * handlers have run)  */
