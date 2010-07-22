@@ -423,7 +423,13 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
       private def setWriteMode() {
         val success = isWriting.compareAndSet(false, true)
-        if (success) addOperation(WriteChangeOp) 
+        if (success) {
+          //Debug.info(this + "setWriteMode(): adding op")
+          addOperation(WriteChangeOp) 
+        } 
+        //else {
+        //  Debug.info(this + "setWriteMode(): CAS failed")
+        //}
       }
 
       override def send(bytes: Array[Byte]) {
@@ -445,6 +451,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
       }
 
       def doWrite(key: SelectionKey) {
+        //Debug.info(this + ": doWrite on channel: " + socketChannel)
+        //Debug.info(this + ": this channel is interested in: " + InterestOpUtil.enumerateSet(key.interestOps))
         assert(isWriting.get)
         try {
           var continue = true
@@ -471,6 +479,11 @@ class NonBlockingServiceProvider extends ServiceProvider {
                */
               if (writeQueue.peek eq null)
                 key.interestOps(SelectionKey.OP_READ) /** Go back to only handling READs */
+              else
+                // A thread snuck in sometime between peek() and set(), so
+                // this means we need to handle writes again. So we set
+                // isWriting back to true
+                isWriting.set(true)
             } else {
               val bytesWritten = nextWrite.doWrite(socketChannel)
               if (nextWrite.isFinished) {
@@ -505,10 +518,17 @@ class NonBlockingServiceProvider extends ServiceProvider {
           // otherwise, put us in read mode
           if (writeQueue.peek ne null) {
             val success = isWriting.compareAndSet(false, true)
-            if (success)
+            if (success) {
+              //Debug.info(this + ":on doConnectFinish(): setting to RW")
               key.interestOps(SelectionKey.OP_WRITE | SelectionKey.OP_READ) /** Handle both WRITEs and READs */
+            } 
+            //else {
+            //  Debug.info(this + ":on doConnectFinish(): not doing anything. interest set is: ")
+            //  Debug.info("set: " + InterestOpUtil.enumerateSet(key.interestOps))
+            //}
           } else {
             key.interestOps(SelectionKey.OP_READ) /** Just READ for now */
+            //Debug.info(this + ":on doConnectFinish(): setting to R")
           }
 
         } catch {
@@ -593,7 +613,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         try {
           processOperationQueue()
           //Debug.info(this + ": calling select()")
-          val selected = selector.select(5000) /** TODO: consider using select(long) alternative */
+          val selected = selector.select() /** TODO: consider using select(long) alternative */
           //Debug.info(this + ": woke up from select() with " + selected + " keys selected")
           val selectedKeys = selector.selectedKeys.iterator
           while (selectedKeys.hasNext) {
