@@ -188,7 +188,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         import java.nio.channels.CancelledKeyException
         try {
           socket.keyFor(selector).interestOps(op)
-          //Debug.info(this + ": done!")
+          //Debug.error(this + ": done!")
         } catch {
           case e: CancelledKeyException =>
             Debug.error(this + ": tried to set interestOps for " + socket + " to " + enumerateSet(op) + ", but key was cancelled already")
@@ -203,7 +203,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       override def invoke() {
         // TODO: catch exceptions
         socket.register(selector, op, attachment.getOrElse(null)) 
-        //Debug.info(this + ": done!")
+        //Debug.error(this + ": done!")
       }
       override def toString = "<RegisterChannel: " + socket + " with " + enumerateSet(op) + ">"
     }
@@ -424,23 +424,27 @@ class NonBlockingServiceProvider extends ServiceProvider {
       private def setWriteMode() {
         val success = isWriting.compareAndSet(false, true)
         if (success) {
-          //Debug.info(this + "setWriteMode(): adding op")
+          //Debug.error(this + "setWriteMode(): adding WriteChangeOp to queue")
           addOperation(WriteChangeOp) 
         } 
         //else {
-        //  Debug.info(this + "setWriteMode(): CAS failed")
+        //  Debug.error(this + "setWriteMode(): CAS failed - doing nothing")
         //}
       }
 
       override def send(bytes: Array[Byte]) {
+        //Debug.error(this + ": send(a0)")
         ensureAlive()
         writeQueue.offer(new WriteLoopTask1(bytes))
+        //Debug.error(this + ": send(a0) - offered")
         if (socketChannel.isConnected) setWriteMode()
       }
 
       override def send(bytes0: Array[Byte], bytes1: Array[Byte]) {
+        //Debug.error(this + ": send(a0, a1)")
         ensureAlive()
         writeQueue.offer(new WriteLoopTask2(bytes0, bytes1))
+        //Debug.error(this + ": send(a0, a1) - offered")
         if (socketChannel.isConnected) setWriteMode()
       }
 
@@ -451,9 +455,25 @@ class NonBlockingServiceProvider extends ServiceProvider {
       }
 
       def doWrite(key: SelectionKey) {
-        //Debug.info(this + ": doWrite on channel: " + socketChannel)
-        //Debug.info(this + ": this channel is interested in: " + InterestOpUtil.enumerateSet(key.interestOps))
-        assert(isWriting.get)
+        //Debug.error(this + ": doWrite on channel: " + socketChannel)
+        //Debug.error(this + ": this channel is interested in: " + InterestOpUtil.enumerateSet(key.interestOps))
+        //Debug.error(this + ": isWriting: " + isWriting.get)
+
+        //assert(isWriting.get) /* Incorrect assumption */
+        /**
+         * Note: it is very possible that doWrite() is executed when isWriting
+         * is false (in other words, the commented out assertion above is
+         * wrong!). This is because setWriteMode() is not atomic. In the time
+         * after the CAS and before offering to the op queue, isWriting can be
+         * set to false again by the code below. In other words, the op queue
+         * is always lagging behind the isWriting state, and since this loop
+         * below greedily consumes writes, it is possible that it consumes
+         * more writes in one cycle than it is supposed to. This is a race we will simply
+         * ignore; the penalty is that we spin an extra few cycles in
+         * doWrite(). This is (probably) more preferable than having to grab a
+         * lock every time we want to do a send
+         */
+
         try {
           var continue = true
           while (continue) {
@@ -462,6 +482,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
               // queue is empty
               continue = false
               isWriting.set(false)
+              //Debug.error(this + ": doWrite - isWriting set to false")
               /**
                * There is a race condition here!
                * When we enter the nextWrite eq null branch, isWriting still
@@ -477,13 +498,17 @@ class NonBlockingServiceProvider extends ServiceProvider {
                * read any entries given by offer() immediately after offer()
                * returns
                */
-              if (writeQueue.peek eq null)
+              if (writeQueue.peek eq null) {
+                //Debug.error(this + ": doWrite - OP_READ interest set - FLAG")
                 key.interestOps(SelectionKey.OP_READ) /** Go back to only handling READs */
-              else
+                assert(key.interestOps == SelectionKey.OP_READ)
+              } else {
                 // A thread snuck in sometime between peek() and set(), so
                 // this means we need to handle writes again. So we set
                 // isWriting back to true
                 isWriting.set(true)
+                //Debug.error(this + ": doWrite - isWriting set back to true, because writeQueue.peek ne null")
+              }
             } else {
               val bytesWritten = nextWrite.doWrite(socketChannel)
               if (nextWrite.isFinished) {
@@ -519,16 +544,16 @@ class NonBlockingServiceProvider extends ServiceProvider {
           if (writeQueue.peek ne null) {
             val success = isWriting.compareAndSet(false, true)
             if (success) {
-              //Debug.info(this + ":on doConnectFinish(): setting to RW")
+              //Debug.error(this + ": doConnectFinish(): setting to RW")
               key.interestOps(SelectionKey.OP_WRITE | SelectionKey.OP_READ) /** Handle both WRITEs and READs */
             } 
             //else {
-            //  Debug.info(this + ":on doConnectFinish(): not doing anything. interest set is: ")
-            //  Debug.info("set: " + InterestOpUtil.enumerateSet(key.interestOps))
+            //  Debug.error(this + ":on doConnectFinish(): not doing anything. interest set is: ")
+            //  Debug.error("set: " + InterestOpUtil.enumerateSet(key.interestOps))
             //}
           } else {
+            //Debug.error(this + ": doConnectFinish(): setting to R")
             key.interestOps(SelectionKey.OP_READ) /** Just READ for now */
-            //Debug.info(this + ":on doConnectFinish(): setting to R")
           }
 
         } catch {
