@@ -106,7 +106,7 @@ abstract class Serializer[+T <: Proxy] {
 
   def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): MyRemoteStartInvokeAndListen
 
-  private[remote] def intercept(m: AnyRef): AnyRef = m match {
+  protected def intercept(m: AnyRef): AnyRef = m match {
     case RemoteStartInvoke(actorClass) => 
       newRemoteStartInvoke(actorClass)
     case RemoteStartInvokeAndListen(actorClass, port, name, mode) =>
@@ -134,6 +134,17 @@ trait DefaultEnvelopeMessageCreator { this: Serializer[_ <: Proxy] =>
 
   override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =
     DefaultLocatorImpl(node, name)
+}
+
+trait DefaultControllerMessageCreator { this: Serializer[_ <: Proxy] =>
+  override type MyRemoteStartInvoke = DefaultRemoteStartInvokeImpl
+  override type MyRemoteStartInvokeAndListen = DefaultRemoteStartInvokeAndListenImpl
+
+  override def newRemoteStartInvoke(actorClass: String): DefaultRemoteStartInvokeImpl = 
+    DefaultRemoteStartInvokeImpl(actorClass)
+
+  override def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): DefaultRemoteStartInvokeAndListenImpl =
+    DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name, mode)
 }
 
 class NonHandshakingSerializerException extends Exception

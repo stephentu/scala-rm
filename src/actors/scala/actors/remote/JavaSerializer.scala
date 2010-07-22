@@ -43,6 +43,7 @@ class JavaSerializer(cl: ClassLoader)
   extends Serializer[DefaultProxyImpl] 
   with    IdResolvingSerializer
   with    DefaultEnvelopeMessageCreator
+  with    DefaultControllerMessageCreator
   with    DefaultProxyCreator {
 
   def this() = this(null)

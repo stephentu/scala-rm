@@ -176,7 +176,7 @@ object RemoteActor {
     netKernel.listen(port, mode) 
   }
 
-  ControllerActor.start() // start controller actor automatically when RemoteActor is loaded
+  object controller extends ControllerActor 
 
   def remoteStart[A <: Actor, T <: Proxy](node: Node, actorClass: Class[A],
                               sym: Symbol = 'ControllerActor,
@@ -205,7 +205,7 @@ object RemoteActor {
     netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym).asInstanceOf[T]
 
   def releaseResources() {
-    ControllerActor ! Terminate
+    controller ! Terminate
     netKernel.terminateTop()
   }
 

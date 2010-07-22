@@ -61,7 +61,7 @@ trait RemoteStartResult {
 
 case class DefaultRemoteStartResultImpl(override val errorMessage: Option[String]) extends RemoteStartResult
 
-private[remote] object ControllerActor extends Actor {
+private[remote] class ControllerActor extends Actor {
 
   private def getProperty(prop: String): Option[String] = System.getProperty(prop) match {
     case null => None
@@ -99,6 +99,7 @@ private[remote] object ControllerActor extends Actor {
   private def newActor(actorClass: String): Actor =
     Class.forName(actorClass).asInstanceOf[Class[Actor]].newInstance
 
+  start() // ctor starts
   def act {
     alive(getPort, getMode)
     register('ControllerActor, self)

@@ -30,6 +30,7 @@ class PrimitiveSerializer
   extends Serializer[DefaultProxyImpl] 
   with    NonHandshakingSerializer
   with    DefaultEnvelopeMessageCreator 
+  with    DefaultControllerMessageCreator
   with    DefaultProxyCreator {
 
   import PrimitiveSerializer._
