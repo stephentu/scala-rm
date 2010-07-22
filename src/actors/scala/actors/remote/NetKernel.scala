@@ -72,8 +72,9 @@ private[remote] class NetKernel extends CanTerminate {
 
   def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Symbol) {
     conn.send { serializer: Serializer[Proxy] =>
-      val metadata = serializer.serializeMetaData(msg).getOrElse(null)
-      val bytes = serializer.serialize(msg)
+      val wireMsg = serializer.intercept(msg)
+      val metadata = serializer.serializeMetaData(wireMsg).getOrElse(null)
+      val bytes = serializer.serialize(wireMsg)
       // deep copy everything into serializer form
       val _senderLocNode = serializer.newNode(senderLoc.node.address, senderLoc.node.port)
       val _receiverLocNode = serializer.newNode(receiverLoc.node.address, receiverLoc.node.port)

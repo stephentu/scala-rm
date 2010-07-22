@@ -176,40 +176,17 @@ object RemoteActor {
     netKernel.listen(port, mode) 
   }
 
-  //def remoteStart[A <: Actor, S <: Serializer](node: Node, 
-  //                                             serializer: Serializer,
-  //                                             actorClass: Class[A], 
-  //                                             port: Int, 
-  //                                             name: Symbol,
-  //                                             serviceFactory: Option[ServiceFactory],
-  //                                             serializerClass: Option[Class[S]]) {
-  //  remoteStart(node, serializer, actorClass.getName, port, name, serviceFactory, serializerClass.map(_.getName))
-  //} 
+  ControllerActor.start() // start controller actor automatically when RemoteActor is loaded
 
-  //def remoteStart(node: Node,
-  //                serializer: Serializer,
-  //                actorClass: String, 
-  //                port: Int, 
-  //                name: Symbol,
-  //                serviceFactory: Option[ServiceFactory],
-  //                serializerClass: Option[String]) {
-  //  val remoteActor = select(node, 'remoteStartActor, serializer)
-  //  remoteActor ! RemoteStart(actorClass, port, name, serviceFactory, serializerClass)
-  //}
-
-  private var remoteListenerStarted = false
-
-  def startListeners(): Unit = synchronized {
-    if (!remoteListenerStarted) {
-      RemoteStartActor.start
-      remoteListenerStarted = true
-    }
-  }
-
-  def stopListeners(): Unit = synchronized {
-    if (remoteListenerStarted) {
-      RemoteStartActor.send(Terminate, null)
-      remoteListenerStarted = false
+  def remoteStart[A <: Actor, T <: Proxy](node: Node, actorClass: Class[A],
+                              sym: Symbol = 'ControllerActor,
+                              serializer: Serializer[T] = defaultSerializer,
+                              serviceMode: ServiceMode.Value = ServiceMode.Blocking) {
+    val remoteController = select(node, sym, serializer, serviceMode)
+    remoteController !? RemoteStartInvoke(actorClass.getName) match {
+      case RemoteStartResult(None) => // success, do nothing
+      case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
+      case _ => throw new RuntimeException("Failed")
     }
   }
 
@@ -228,11 +205,12 @@ object RemoteActor {
     netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym).asInstanceOf[T]
 
   def releaseResources() {
+    ControllerActor ! Terminate
     netKernel.terminateTop()
   }
 
   def releaseResourcesInActor() {
-    newThread { netKernel.terminateTop() }
+    newThread { releaseResources() }
   }
 
 }
