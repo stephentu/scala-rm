@@ -12,8 +12,8 @@ package remote
 
 import scala.collection.mutable.{HashMap, HashSet}
 
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch }
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 object NamedSend {
   def apply(senderLoc: Locator, receiverLoc: Locator, metaData: Array[Byte], data: Array[Byte], session: Symbol): NamedSend =
@@ -146,6 +146,8 @@ private[remote] class NetKernel extends CanTerminate {
     p
   }
 
+  private val rwl = new ReentrantReadWriteLock
+
   private val proxies = new HashMap[(MessageConnection, Symbol), Proxy]
 
   private val processMsgFunc = processMsg _
@@ -214,13 +216,33 @@ private[remote] class NetKernel extends CanTerminate {
     }
   }
 
-  def getOrCreateProxy(conn: MessageConnection, senderName: Symbol): Proxy =
-    proxies.synchronized {
-      proxies.get((conn, senderName)) match {
+  def getOrCreateProxy(conn: MessageConnection, senderName: Symbol): Proxy = {
+    rwl.readLock.lock() // grab readLock first
+    var releaseRead = true
+    val key = (conn, senderName)
+    try {
+      proxies.get(key) match {
         case Some(senderProxy) => senderProxy
-        case None              => createProxy(conn, senderName)
+        case None =>
+          rwl.readLock.unlock() // have to release readLock first...
+          releaseRead = false   // (don't bother to release readLock later)
+          rwl.writeLock.lock()  // ...then acquire writeLock
+          try {
+            proxies.get(key) match { // then check again for a proxy
+              case Some(senderProxy) => senderProxy // one exists, don't bother creating
+              case None =>
+                // writeLock acquired, and still no proxy exists. create it
+                // (holding the writeLock)
+                createProxy(conn, senderName)
+            }
+          } finally {
+            rwl.writeLock.unlock()
+          }
       }
+    } finally {
+      if (releaseRead) rwl.readLock.unlock()
     }
+  }
 
   // TODO: guard with terminateLock
   private[remote] def setupProxy(proxy: Proxy) {
@@ -244,7 +266,7 @@ private[remote] class NetKernel extends CanTerminate {
     }
   }
 
-  private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef): Unit = synchronized {
+  private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef) {
     msg match {
       case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)

@@ -106,7 +106,7 @@ abstract class Serializer[+T <: Proxy] {
 
   def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): MyRemoteStartInvokeAndListen
 
-  protected def intercept(m: AnyRef): AnyRef = m match {
+  def intercept(m: AnyRef): AnyRef = m match {
     case RemoteStartInvoke(actorClass) => 
       newRemoteStartInvoke(actorClass)
     case RemoteStartInvokeAndListen(actorClass, port, name, mode) =>
