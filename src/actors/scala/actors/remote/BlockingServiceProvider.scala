@@ -114,7 +114,7 @@ class BlockingServiceProvider extends ServiceProvider {
   }
 
   class BlockingServiceListener(
-      override val port: Int, 
+			serverPort: Int,
       override val connectionCallback: ConnectionCallback,
       receiveCallback: BytesReceiveCallback)
     extends Runnable
@@ -125,7 +125,9 @@ class BlockingServiceProvider extends ServiceProvider {
     @volatile
     private var terminated = false
 
-    private val serverSocket = new ServerSocket(port)
+    private val serverSocket = new ServerSocket(serverPort)
+
+		override def port = serverSocket.getLocalPort
 
     override def run() {
       try {

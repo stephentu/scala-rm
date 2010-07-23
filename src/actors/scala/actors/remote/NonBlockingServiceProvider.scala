@@ -719,7 +719,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
         val serverSocketChannel = ServerSocketChannel.open
         serverSocketChannel.configureBlocking(false)
         serverSocketChannel.socket.bind(new InetSocketAddress(port))
-        val listener = new NonBlockingServiceListener(port, serverSocketChannel, connectionCallback, receiveCallback)
+        val listener = new NonBlockingServiceListener(serverSocketChannel.socket.getLocalPort, 
+						serverSocketChannel, connectionCallback, receiveCallback)
         addOperation(new RegisterChannel(serverSocketChannel, SelectionKey.OP_ACCEPT, Some(listener)))    
         listener
       }

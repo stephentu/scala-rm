@@ -61,13 +61,12 @@ trait RemoteStartResult {
 
 case class DefaultRemoteStartResultImpl(override val errorMessage: Option[String]) extends RemoteStartResult
 
-private[remote] class ControllerActor extends Actor {
+private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
 
   private def getProperty(prop: String): Option[String] = System.getProperty(prop) match {
     case null => None
     case e    => Some(e)
   }
-
 
   private def port: Option[String] = getProperty("scala.actors.remote.controller.port")
   private def mode: Option[String] = getProperty("scala.actors.remote.controller.mode")
@@ -101,8 +100,11 @@ private[remote] class ControllerActor extends Actor {
 
   start() // ctor starts
   def act {
-    alive(getPort, getMode)
-    register('ControllerActor, self)
+		val cfg = new DefaultConfiguration {
+			override def aliveMode = getMode
+		}
+    alive(getPort)(cfg)
+    register(thisSym, self)
     Debug.info(this + ": started")
     loop {
       react {
@@ -110,7 +112,10 @@ private[remote] class ControllerActor extends Actor {
           /** Assume actor class does not set itself up, and we need to register it */
           val errorMessage = 
             try {
-              alive(port, mode)
+							val cfg = new DefaultConfiguration {
+								override def aliveMode = mode
+							}
+              alive(port)(cfg)
               val actor = newActor(actorClass)
               register(name, actor) 
               actor.start()

@@ -186,14 +186,15 @@ private[remote] class NetKernel extends CanTerminate {
           throw InconsistentServiceException(serviceMode, listenersByPort(port).mode)
 
         val listener = service.listen(port, serviceMode, processMsgFunc)
+				val realPort = listener.port
         listener beforeTerminate {
           listeners.synchronized {
-            listeners -= ((port, serviceMode))
-            listenersByPort -= port
+            listeners -= ((realPort, serviceMode))
+            listenersByPort -= realPort
           }
         }
-        listeners += ((port, serviceMode)) -> listener
-        listenersByPort += port -> listener
+        listeners += ((realPort, serviceMode)) -> listener
+        listenersByPort += realPort -> listener
         listener
     }
   }

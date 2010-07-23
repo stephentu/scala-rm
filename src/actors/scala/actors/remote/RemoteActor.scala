@@ -13,6 +13,8 @@ package remote
 
 import scala.collection.mutable.{ HashMap, HashSet }
 
+import java.net.{ InetAddress, InetSocketAddress }
+
 /**
  *  This object provides methods for creating, registering, and
  *  selecting remotely accessible actors.
@@ -38,10 +40,25 @@ import scala.collection.mutable.{ HashMap, HashSet }
  *  }}}
  *
  * @author Philipp Haller
+ * @author Stephen Tu
  */
 object RemoteActor {
 
+  /**
+   * Remote name used for the singleton Controller actor
+   */
+  private final val ControllerSymbol = Symbol("$$ControllerActor$$")
+
+  /**
+   * Maps each port to a set of actors which are listening on it.
+   * Guarded by `portToActors` lock
+   */
   private val portToActors = new HashMap[Int, HashSet[Actor]]
+
+  /**
+   * Maps each actor a the set of ports which it is listening on
+   * (inverted index of `portToActors`). Guarded by `portToActors` lock
+   */
   private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
   /**
@@ -59,86 +76,49 @@ object RemoteActor {
   def classLoader: ClassLoader = cl
   def classLoader_=(x: ClassLoader) { cl = x }
 
-  /**
-   * Default serializer instance, using Java serialization to implement
-   * serialization of objects. Not a val, so we can capture changes made
-   * to the classloader instance
-   */
-  def defaultSerializer = new JavaSerializer(cl)
+  @volatile private var explicitlyTerminate = true
+  def setExplicitTermination(isExplicit: Boolean) {
+    explicitlyTerminate = isExplicit
+  }
 
+  def alive(port: Int, actor: Actor)(implicit cfg: Configuration[_]) {
+    portToActors.synchronized {
+      // listen if necessary
+      val listener = listenOnPort(port, cfg.aliveMode)
+      val realPort = listener.port
 
+      // now register the actor
+      val thisActor = actor 
+
+      portToActors.get(realPort) match {
+        case Some(set) => 
+          set += thisActor
+        case None =>
+          val set = new HashSet[Actor]
+          set += thisActor
+          portToActors += realPort -> set 
+      }
+
+      actorToPorts.get(thisActor) match {
+        case Some(set) =>
+          set += realPort
+        case None =>
+          val set = new HashSet[Int]
+          set += realPort
+          actorToPorts += thisActor -> set
+      }
+
+      thisActor onTerminate { actorTerminated(thisActor) }
+    }
+  }
 
   /**
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>.
    */
   @throws(classOf[InconsistentServiceException])
-  def alive(port: Int, serviceMode: ServiceMode.Value = ServiceMode.Blocking): Unit = portToActors.synchronized {
-    // listen if necessary
-    listenOnPort(port, serviceMode)
-
-    // now register the actor
-    val thisActor = Actor.self
-
-    portToActors.get(port) match {
-      case Some(set) => 
-        set += thisActor
-      case None =>
-        val set = new HashSet[Actor]
-        set += thisActor
-        portToActors += port -> set 
-    }
-
-    actorToPorts.get(thisActor) match {
-      case Some(set) =>
-        set += port
-      case None =>
-        val set = new HashSet[Int]
-        set += port
-        actorToPorts += thisActor -> set
-    }
-
-    //// termination handler
-    //thisActor onTerminate {
-    //  Debug.info("alive actor " + thisActor + " terminated")
-    //  // Unregister actor from kernel
-    //  unregister(thisActor)
-
-    //  /*  
-    //   *  TODO: this causes deadlocks - move all connection/listener garbage
-    //   *  collection to a separate collection task instead (which runs like
-    //   *  every N minutes) 
-    //  // we only worry about garbage collecting for un-used listeners. we
-    //  // don't bother to garbage collect for un-used connections
-    //  portToActors.synchronized { // prevents new connections
-    //    // get all the ports this actor was listening on...
-    //    val candidatePorts = actorToPorts.remove(thisActor) match {
-    //      case Some(ports) => 
-    //        ports
-    //      case None => 
-    //        Debug.error("Could not find " + thisActor + " in actorToPorts")
-    //        new HashSet[Int]()
-    //    }
-
-    //    // ... now for each of these candidates, remove this actor
-    //    // from the set and terminate if the set becomes empty
-    //    candidatePorts.foreach(p => portToActors.get(p) match {
-    //      case Some(actors) =>
-    //        actors -= thisActor
-    //        if (actors.isEmpty) {
-    //          portToActors -= p
-    //          tryShutdown(p) // try to shutdown in a different thread
-    //                         // this is because blocking in a
-    //                         // ForkJoinScheduler worker is bad (causes
-    //                         // starvation)
-    //        }
-    //      case None => tryShutdown(p) 
-    //    })
-
-    //  }
-    //  */
-
-    //}
+  def alive(port: Int)(implicit cfg: Configuration[_]) {
+    alive(port, Actor.self)
   }
 
   private def tryShutdown(port: Int) {
@@ -163,31 +143,121 @@ object RemoteActor {
     t.start()
   }
 
+  private def actorTerminated(actor: Actor) {
+    Debug.info("actorTerminated(): alive actor " + actor + " terminated")
+    unregister(actor)
+      //// termination handler
+      //thisActor onTerminate {
+      //  Debug.info("alive actor " + thisActor + " terminated")
+      //  // Unregister actor from kernel
+      //  unregister(thisActor)
+
+      //  /*  
+      //   *  TODO: this causes deadlocks - move all connection/listener garbage
+      //   *  collection to a separate collection task instead (which runs like
+      //   *  every N minutes) 
+      //  // we only worry about garbage collecting for un-used listeners. we
+      //  // don't bother to garbage collect for un-used connections
+      //  portToActors.synchronized { // prevents new connections
+      //    // get all the ports this actor was listening on...
+      //    val candidatePorts = actorToPorts.remove(thisActor) match {
+      //      case Some(ports) => 
+      //        ports
+      //      case None => 
+      //        Debug.error("Could not find " + thisActor + " in actorToPorts")
+      //        new HashSet[Int]()
+      //    }
+
+      //    // ... now for each of these candidates, remove this actor
+      //    // from the set and terminate if the set becomes empty
+      //    candidatePorts.foreach(p => portToActors.get(p) match {
+      //      case Some(actors) =>
+      //        actors -= thisActor
+      //        if (actors.isEmpty) {
+      //          portToActors -= p
+      //          tryShutdown(p) // try to shutdown in a different thread
+      //                         // this is because blocking in a
+      //                         // ForkJoinScheduler worker is bad (causes
+      //                         // starvation)
+      //        }
+      //      case None => tryShutdown(p) 
+      //    })
+
+      //  }
+      //  */
+
+      //}
+  }
+
   def register(name: Symbol, actor: Actor) {
     netKernel.register(name, actor)
-    actor onTerminate { netKernel.unregister(actor) }
+    actor onTerminate { actorTerminated(actor) }
   }
 
   def unregister(actor: Actor) {
     netKernel.unregister(actor)
   }
 
-  private def listenOnPort(port: Int, mode: ServiceMode.Value) { 
+  private def listenOnPort(port: Int, mode: ServiceMode.Value) =
     netKernel.listen(port, mode) 
+
+  object controller extends ControllerActor(ControllerSymbol)
+
+  def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
+    remoteStart(node, m.erasure.asInstanceOf[Class[A]])
   }
 
-  object controller extends ControllerActor 
-
-  def remoteStart[A <: Actor, T <: Proxy](node: Node, actorClass: Class[A],
-                              sym: Symbol = 'ControllerActor,
-                              serializer: Serializer[T] = defaultSerializer,
-                              serviceMode: ServiceMode.Value = ServiceMode.Blocking) {
-    val remoteController = select(node, sym, serializer, serviceMode)
+  def remoteStart[A <: Actor](node: Node, actorClass: Class[A])(implicit cfg: Configuration[Proxy]) {
+    val remoteController = select(node, ControllerSymbol)
     remoteController !? RemoteStartInvoke(actorClass.getName) match {
       case RemoteStartResult(None) => // success, do nothing
       case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
       case _ => throw new RuntimeException("Failed")
     }
+  }
+
+  def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration[P]): P =
+    remoteStartAndListen(node, m.erasure.asInstanceOf[Class[A]], port, name)
+
+  def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, actorClass: Class[A], port: Int, name: Symbol)(implicit cfg: Configuration[P]): P = {
+    remoteStart(node, actorClass)
+    select(Node(node.address, node.port), name)
+  }
+
+  def remoteSelf[P <: Proxy](implicit cfg: Configuration[P]): P = {
+    val thisActor = Actor.self
+    val serializer = cfg.newSerializer()
+
+    // need to establish a port for this actor to listen on, so that the proxy
+    // returned by remoteSelf makes sense (as in, you can connect to it)
+    val port = portToActors.synchronized {
+
+      // check actorToPorts first to see if this actor is already alive
+      actorToPorts.get(thisActor).flatMap(_.headOption).getOrElse({
+
+        // oops, this actor isn't alive anywhere. in this case, pick a random
+        // port (by scanning portToActors)
+        portToActors.headOption.map(_._1).getOrElse({
+
+          // no ports are actually listening. so pick a random one now (by
+          // listening with 0 as the port)
+          val listener = listenOnPort(0, cfg.aliveMode)
+          val realPort = listener.port
+
+          // now call alive, so that thisActor gets mapped to the new port
+          alive(realPort, thisActor)
+
+          // return realPort
+          realPort
+        })
+      })
+    }
+
+    val remoteNode        = serializer.newNode(Node.localhost, port)
+    val remoteConnectMode = cfg.selectMode
+    val clzName           = serializer.getClass.getName
+    val remoteName        = netKernel.getOrCreateName(Actor.self) // auto-registers name if a new one is created
+    serializer.newProxy(remoteNode, remoteConnectMode, clzName, remoteName)
   }
 
   private def connect(node: Node, serializer: Serializer[Proxy], mode: ServiceMode.Value): MessageConnection =
@@ -199,10 +269,8 @@ object RemoteActor {
    */
   @throws(classOf[InconsistentSerializerException])
   @throws(classOf[InconsistentServiceException])
-  def select[T <: Proxy](node: Node, sym: Symbol, 
-             serializer: Serializer[T] = defaultSerializer,
-             serviceMode: ServiceMode.Value = ServiceMode.Blocking): T =
-    netKernel.getOrCreateProxy(connect(node, serializer, serviceMode), sym).asInstanceOf[T]
+  def select[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P =
+    netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
 
   def releaseResources() {
     controller ! Terminate
@@ -216,12 +284,13 @@ object RemoteActor {
 }
 
 object Node {
+  val localhost = InetAddress.getLocalHost.getCanonicalHostName
   def apply(address: String, port: Int): Node = DefaultNodeImpl(address, port)
+  def apply(port: Int): Node = apply(localhost, port)
   def unapply(n: Node): Option[(String, Int)] = Some((n.address, n.port))
 }
 
 trait Node {
-  import java.net.{ InetAddress, InetSocketAddress }
 
   def address: String
   def port: Int
