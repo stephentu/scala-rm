@@ -400,8 +400,10 @@ class NonBlockingServiceProvider extends ServiceProvider {
       override def mode = ServiceMode.NonBlocking
 
       override def doTerminateImpl(isBottom: Boolean) {
+        Debug.info(this + ": doTerminateImpl(" + isBottom + ")")
         if (!isBottom) { // if the terminate is from bottom, dont try to drain writeQueue b/c connection is already bad
           // poll the writeQueue until it is empty, only trying up to 1000 times
+          Debug.info(this + ": attempting to drain writeQueue")
           var continue = true
           var numTries = 0
           while (continue) {
@@ -410,6 +412,10 @@ class NonBlockingServiceProvider extends ServiceProvider {
             continue = (nextWrite ne null) && numTries < 1000
             if (continue) Thread.sleep(500)
           }
+          if (writeQueue.peek ne null)
+            Debug.info(this + ": writeQueue is not empty")
+          else 
+            Debug.info(this + ": successfully drained writeQueue")
         }
 
         // cancel the key
@@ -575,7 +581,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
     class NonBlockingServiceListener(
         override val port: Int, 
         serverSocketChannel: ServerSocketChannel,
-        override val connectionCallback: ConnectionCallback,
+        override val connectionCallback: ConnectionCallback[ByteConnection],
         receiveCallback: BytesReceiveCallback)
       extends Listener {
 
@@ -588,7 +594,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         val serverSocketChannel = key.channel.asInstanceOf[ServerSocketChannel]
         val clientSocketChannel = serverSocketChannel.accept()
         val conn = nextConnectionLoop().finishAccept(clientSocketChannel, receiveCallback)
-        conn.afterTerminate {
+        conn.afterTerminate { isBottom =>
           childConnections.remove(conn)
         }
         childConnections.put(conn, DUMMY_VALUE)
@@ -597,14 +603,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
       override def doTerminateImpl(isBottom: Boolean) {
         Debug.info(this + ": doTerminateImpl() called")
-        val enum = childConnections.keys
-        while (enum.hasMoreElements) {
-          val conn = enum.nextElement()
-          if (isBottom)
-            conn.terminateBottom()
-          else
-            conn.terminateTop()
-        }
+        import scala.collection.JavaConversions._
+        childConnections.keys.foreach(_.doTerminate(isBottom))
         serverSocketChannel.close()
       }
 
@@ -637,9 +637,16 @@ class NonBlockingServiceProvider extends ServiceProvider {
       while (!terminated) {
         try {
           processOperationQueue()
+
           //Debug.info(this + ": calling select()")
           val selected = selector.select() /** TODO: consider using select(long) alternative */
           //Debug.info(this + ": woke up from select() with " + selected + " keys selected")
+
+          /**
+           * The idiomatic Java iterator construct is used here to save an
+           * implicit conversion for each iteration. This is a tight loop, so
+           * saving (several) object allocations can make a difference.
+           */
           val selectedKeys = selector.selectedKeys.iterator
           while (selectedKeys.hasNext) {
             val key = selectedKeys.next()
@@ -712,7 +719,9 @@ class NonBlockingServiceProvider extends ServiceProvider {
         conn
       }
 
-    def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) =
+    def listen(port: Int, 
+               connectionCallback: ConnectionCallback[ByteConnection], 
+               receiveCallback: BytesReceiveCallback) =
       withoutTermination {
         ensureAlive()
         Debug.info(this + ": listening on port: " + port)
@@ -737,9 +746,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
       Debug.info(this + ":terminate() - shutting down keys")
       val query = new QueryAllKeys
       addOperation(query) 
-      query.attachments.foreach { q =>
-        if (isBottom) q.terminateBottom() else q.terminateTop()
-      }
+      query.attachments.foreach(_.doTerminate(isBottom))
 
       // now shut the loop down
       terminated = true
@@ -753,19 +760,18 @@ class NonBlockingServiceProvider extends ServiceProvider {
     nextConnectionLoop().connect(node, receiveCallback)
   }
 
-  override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
+  override def listen(port: Int, 
+										  connectionCallback: ConnectionCallback[ByteConnection], 
+											receiveCallback: BytesReceiveCallback) = {
     nextListenerLoop().listen(port, connectionCallback, receiveCallback)
   }
 
   override def doTerminateImpl(isBottom: Boolean) {
     Debug.info(this + ": doTerminateImpl() - closing connLoops")
-    connLoops foreach { s =>
-      if (isBottom) s.terminateBottom() else s.terminateTop()
-    }
+    connLoops foreach { _.doTerminate(isBottom) }
+
     Debug.info(this + ": doTerminateImpl() - closing listenerLoops")
-    listenerLoops foreach { s =>
-      if (isBottom) s.terminateBottom() else s.terminateTop()
-    }
+    listenerLoops foreach { _.doTerminate(isBottom) } 
 
     Debug.info(this + ": doTerminateImpl() - closing executors")
     listenerExecutor.shutdownNow()

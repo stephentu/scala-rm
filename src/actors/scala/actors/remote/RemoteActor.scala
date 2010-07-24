@@ -201,7 +201,7 @@ object RemoteActor {
   private def listenOnPort(port: Int, mode: ServiceMode.Value) =
     netKernel.listen(port, mode) 
 
-  object controller extends ControllerActor(ControllerSymbol)
+  private val controller = new ControllerActor(ControllerSymbol)
 
   def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
     remoteStart(node, m.erasure.asInstanceOf[Class[A]])
@@ -273,7 +273,7 @@ object RemoteActor {
     netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
 
   def releaseResources() {
-    controller ! Terminate
+    //controller ! Terminate
     netKernel.terminateTop()
   }
 

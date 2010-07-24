@@ -18,38 +18,40 @@ trait CanTerminate {
   final def terminateTop()    { doTerminate(false) }
   final def terminateBottom() { doTerminate(true)  }
 
-  @volatile protected var preTerminate: Option[() => Unit] = None
-  final def beforeTerminate(f: => Unit) {
+  @volatile private[this] var preTerminate: Option[Boolean => Unit] = None
+  final def beforeTerminate(f: Boolean => Unit) {
     withoutTermination {
       if (!terminateCompleted) {
         if (preTerminate.isDefined)
           Debug.warning(this + ": beforeTerminate() - terminate sequence already registered - replacing")
-        preTerminate = Some(() => f)
+        preTerminate = Some(f)
       } else Debug.info(this + ": beforeTerminate() - already terminated")
     }
   }
 
-  @volatile protected var postTerminate: Option[() => Unit] = None
-  final def afterTerminate(f: => Unit) {
+  @volatile private[this] var postTerminate: Option[Boolean => Unit] = None
+  final def afterTerminate(f: Boolean => Unit) {
     withoutTermination {
       if (!terminateCompleted) {
         if (postTerminate.isDefined)
           Debug.warning(this + ": afterTerminate() - terminate sequence already registered - replacing")
-        postTerminate = Some(() => f)
+        postTerminate = Some(f)
       } else Debug.info(this + ": afterTerminate() - already terminated")
     }
   }
 
   protected final def withoutTermination[T](f: => T) = terminateLock.synchronized { f }
 
-  protected final def doTerminate(isBottom: Boolean) {
-    terminateLock.synchronized {
-      if (!terminateCompleted) {
-        terminateInitiated = true
-        preTerminate foreach { f => f() }
-        doTerminateImpl(isBottom)
-        postTerminate foreach { f => f() }
-        terminateCompleted = true
+  final def doTerminate(isBottom: Boolean) {
+    if (!terminateInitiated) { // check first w/o acquiring lock
+      terminateLock.synchronized {
+        if (!terminateInitiated) { // now check again
+          terminateInitiated = true
+          preTerminate foreach { f => f(isBottom) }
+          doTerminateImpl(isBottom)
+          postTerminate foreach { f => f(isBottom) }
+          terminateCompleted = true
+        }
       }
     }
   }

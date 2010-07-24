@@ -69,24 +69,25 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
   import ConnectionStatus._
 
+  // setup termination chain
+  byteConn.beforeTerminate { isBottom => doTerminate(isBottom) }
+
   override def localNode  = byteConn.localNode
   override def remoteNode = byteConn.remoteNode
 
   override def doTerminateImpl(isBottom: Boolean) {
+    Debug.info(this + ": doTerminateImpl(" + isBottom + ")")
     if (!isBottom && !sendQueue.isEmpty) {
       Debug.info(this + ": waiting 5 seconds for sendQueue to drain")
       terminateLock.wait(5000)
     }
-    if (isBottom)
-      byteConn.terminateBottom()
-    else
-      byteConn.terminateTop()
+    byteConn.doTerminate(isBottom)
     status = Terminated
   }
 
-  override def mode = byteConn.mode
+  override def mode             = byteConn.mode
   override def activeSerializer = serializer.get
-  override def toString = "<DefaultMessageConnection using: " + byteConn + ">" 
+  override def toString         = "<DefaultMessageConnection using: " + byteConn + ">"
     
   @volatile private var _status = 0
   def status = _status
@@ -320,12 +321,16 @@ class StandardService extends Service {
     msgConn
   }
 
-  override def listen(port: Int, mode: ServiceMode.Value, recvCallback: MessageReceiveCallback): Listener = {
-    val connectionCallback = (listener: Listener, byteConn: ByteConnection) => {
+  override def listen(port: Int, 
+                      mode: ServiceMode.Value, 
+                      connCallback: ConnectionCallback[MessageConnection], 
+                      recvCallback: MessageReceiveCallback): Listener = {
+    val byteConnCallback = (listener: Listener, byteConn: ByteConnection) => {
       val msgConn = new DefaultMessageConnection(byteConn, None, recvCallback, true)
       byteConn.attach(msgConn)
+			connCallback(listener, msgConn)	
     }
-    serviceProviderFor0(mode).listen(port, connectionCallback, recvCall0)
+    serviceProviderFor0(mode).listen(port, byteConnCallback, recvCall0)
   }
 
 }
