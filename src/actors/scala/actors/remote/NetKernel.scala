@@ -263,12 +263,10 @@ private[remote] class NetKernel extends CanTerminate {
     if (testProxy ne null) testProxy
     else {
       val newProxy  = createProxy(conn, senderName)
+      newProxy.del  = getDelegate(conn)
       val newProxy0 = proxies.putIfAbsent(senderName, newProxy)
       if (newProxy0 ne null) newProxy0 // newProxy0 came first, so use that one
-      else {
-        newProxy.del = getDelegate(conn)
-        newProxy
-      }
+      else                   newProxy
     }
   }
 
