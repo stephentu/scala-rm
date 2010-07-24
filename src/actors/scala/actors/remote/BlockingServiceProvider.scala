@@ -115,7 +115,7 @@ class BlockingServiceProvider extends ServiceProvider {
 
   class BlockingServiceListener(
       override val port: Int, 
-      override val connectionCallback: ConnectionCallback,
+      override val connectionCallback: ConnectionCallback[ByteConnection],
       receiveCallback: BytesReceiveCallback)
     extends Runnable
     with    Listener {
@@ -167,7 +167,9 @@ class BlockingServiceProvider extends ServiceProvider {
     worker
   }
 
-  override def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback) = {
+  override def listen(port: Int,
+										  connectionCallback: ConnectionCallback[ByteConnection], 
+											receiveCallback: BytesReceiveCallback) = {
     ensureAlive()
     val listener = new BlockingServiceListener(port, connectionCallback, receiveCallback)
     executor.execute(listener)

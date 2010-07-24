@@ -12,78 +12,114 @@ package remote
 
 import scala.collection.mutable.HashMap
 
+import java.io.{ ObjectInputStream, ObjectOutputStream }
+
+/**
+ * This is a message forwarded from a proxy to the connection's delegate
+ * The delegate uses this class to derive context in handling a message
+ */
+case class MFromProxy(proxy: Proxy, msg: Any)
+
 /**
  * Proxy is a trait so that users of other serialization frameworks can define
  * their own implementation of the members, and pass proxy handles in messages
  * transparently.
  */
 trait Proxy extends AbstractActor {
+
+  /**
+   * Target node of this proxy
+   */
   def remoteNode: Node
-  def mode: ServiceMode.Value
-  def serializerClassName: String
+
+  /**
+   * Name of the (remote) actor which is the target of this proxy
+   */
   def name: Symbol
 
+  /**
+   * Method of remote connection 
+   */
+  def mode: ServiceMode.Value
+  
+  /**
+   * Serializer class name used in this connection
+   */
+  def serializerClassName: String
+
+
   @transient
+  @volatile
   private[this] var _del: DelegateActor = _
 
   /**
-   * Used by createProxy() in NetKernel to set the delegate actor accordingly.
+   * Only to be used by NetKernel
    */
   private[remote] def del_=(delegate: DelegateActor) {
+    assert(delegate ne null)
     synchronized {
-      if (_del ne null) throw new IllegalStateException("Delegate is already set for: " + this)
+      if (_del ne null)
+        throw new IllegalStateException("cannot assign del more than once")
+      assert(delegate ne null)
+      assert(delegate.getState != Actor.State.New)
+      assert(delegate.getState != Actor.State.Terminated)
       _del = delegate
     }
   }
 
-  private[remote] def del: DelegateActor = synchronized {
-    if (_del eq null) RemoteActor.netKernel.setupProxy(this) // this happens when a serializer instantiates
-                                                             // a Proxy object (from a message for instance)
-    assert(_del ne null)
-    _del
-  }
+  private[remote] def del: DelegateActor = 
+    if (_del ne null) _del
+    else
+      synchronized {
+        if (_del eq null) { // check again
+          val newDel = RemoteActor.netKernel.delegateFor(this)
+          assert(newDel ne null)
+          assert(newDel.getState != Actor.State.New)
+          assert(newDel.getState != Actor.State.Terminated)
+          _del = newDel
+        }
+        _del
+      }
 
-  private[remote] def newDelegate(conn: MessageConnection): DelegateActor =
-    new DelegateActor(this, conn, name, RemoteActor.netKernel) 
+  @inline private def wrap(m: Any) = MFromProxy(this, m)
 
   def !(msg: Any): Unit =
-    del ! msg
+    del ! wrap(msg) 
 
   def send(msg: Any, replyCh: OutputChannel[Any]): Unit =
-    del.send(msg, replyCh)
+    del.send(wrap(msg), replyCh)
 
   def forward(msg: Any): Unit =
-    del.forward(msg)
+    del.forward(wrap(msg))
 
   def receiver: Actor =
     del
 
   def !?(msg: Any): Any =
-    del !? msg
+    del !? wrap(msg)
 
   def !?(msec: Long, msg: Any): Option[Any] =
-    del !? (msec, msg)
+    del !? (msec, wrap(msg))
 
   def !!(msg: Any): Future[Any] =
-    del !! msg
+    del !! wrap(msg)
 
   def !![A](msg: Any, f: PartialFunction[Any, A]): Future[A] =
-    del !! (msg, f)
+    del !! (wrap(msg), f)
 
   def linkTo(to: AbstractActor): Unit =
-    del ! Apply0(new LinkToFun)
+    del ! wrap(Apply0(to, new LinkToFun))
 
   def unlinkFrom(from: AbstractActor): Unit =
-    del ! Apply0(new UnlinkFromFun)
+    del ! wrap(Apply0(from, new UnlinkFromFun))
 
   def exit(from: AbstractActor, reason: AnyRef): Unit =
-    del ! Apply0(new ExitFun(reason))
+    del ! wrap(Apply0(from, new ExitFun(reason)))
 
   override def toString = "<" + name + "@" + remoteNode + ">"
 
 } 
 
-import java.io.{ ObjectInputStream, ObjectOutputStream }
 
 /**
  * Note: This class defines readObject and writeObject because flagging
@@ -99,10 +135,10 @@ class DefaultProxyImpl(var _remoteNode: Node,
                        var _serializerClassName: String,
                        var _name: Symbol) extends Proxy {
   
-  override def remoteNode = _remoteNode
-  override def mode = _mode
+  override def remoteNode          = _remoteNode
+  override def mode                = _mode
   override def serializerClassName = _serializerClassName
-  override def name = _name
+  override def name                = _name
 
   private def writeObject(out: ObjectOutputStream) {
     out.writeObject(_remoteNode)
@@ -112,10 +148,10 @@ class DefaultProxyImpl(var _remoteNode: Node,
   }
 
   private def readObject(in: ObjectInputStream) {
-    _remoteNode = in.readObject().asInstanceOf[Node]
-    _mode = in.readObject().asInstanceOf[ServiceMode.Value]
+    _remoteNode          = in.readObject().asInstanceOf[Node]
+    _mode                = in.readObject().asInstanceOf[ServiceMode.Value]
     _serializerClassName = in.readObject().asInstanceOf[String]
-    _name = in.readObject().asInstanceOf[Symbol]
+    _name                = in.readObject().asInstanceOf[Symbol]
   }
 
 }
@@ -147,19 +183,41 @@ class ExitFun(reason: AnyRef) extends Function2[AbstractActor, Proxy, Unit] {
     "<ExitFun>("+reason.toString+")"
 }
 
-private[remote] case class Apply0(rfun: Function2[AbstractActor, Proxy, Unit])
+private[remote] case class Apply0(actor: AbstractActor, rfun: Function2[AbstractActor, Proxy, Unit])
 
-@serializable
-private[remote] class DelegateChannel(proxy: Proxy) extends Channel[Any] {
-  override val receiver = proxy.del
+/**
+ * Because the implementation of Channel simply forwards message directly
+ * to the receiver, we have to manually override each of the methods to do a
+ * wrap
+ */
+private[remote] class ProxyChannel(proxy: Proxy) extends Channel[Any](proxy.del) {
+  @inline private def wrap(m: Any) = MFromProxy(proxy, m)
+  override def !(msg: Any) { 
+    super.!(wrap(proxy, msg))
+  }
+  override def send(msg: Any, replyTo: OutputChannel[Any]) {
+    super.send(wrap(proxy, msg), replyTo)
+  }
+  override def forward(msg: Any) {
+    super.forward(wrap(proxy, msg))
+  }
+  override def !?(msg: Any) =
+    super.!?(wrap(proxy, msg))
+  override def !?(msec: Long, msg: Any) =
+    super.!?(msec, wrap(proxy, msg))
+  override def !![A](msg: Any, f: PartialFunction[Any, A]) =
+    super.!!(wrap(proxy, msg), f)
 }
 
 /**
+ * Each MessageConnection instance will have its own DelegateActor
+ *
  * @author Philipp Haller
  */
-private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection, name: Symbol, kernel: NetKernel) extends Actor {
-  var channelMap = new HashMap[Symbol, OutputChannel[Any]]
-  var sessionMap = new HashMap[OutputChannel[Any], Symbol]
+private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) extends Actor {
+
+  private val channelMap = new HashMap[Symbol, OutputChannel[Any]]
+  private val sessionMap = new HashMap[OutputChannel[Any], Symbol]
 
   override def exceptionHandler: PartialFunction[Exception, Unit] = {
     case e: Exception =>
@@ -167,37 +225,25 @@ private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection,
       Debug.doError { e.printStackTrace }
   }
 
-  /** 
-   * Override linkTo and unlinkFrom so that linking to a delegate actor links
-   * to the remote side. note: a delegate actor is exposed to the user via 
-   * sender.receiver 
-   */
-  
-  override def linkTo(to: AbstractActor): Unit =
-    this ! Apply0(new LinkToFun)
-
-  override def unlinkFrom(from: AbstractActor): Unit =
-    this ! Apply0(new UnlinkFromFun)
-
   def act() {
     Actor.loop {
         react {
-          case cmd@Apply0(rfun) =>
+          case cmd @ MFromProxy(proxy, Apply0(actor, rfun)) =>
             Debug.info("cmd@Apply0: " + cmd)
-            kernel.remoteApply(conn, name, sender, rfun)
+            kernel.remoteApply(conn, proxy.name, actor, rfun)
 
-          case cmd@LocalApply0(rfun, target) =>
+          case cmd @ MFromProxy(proxy, LocalApply0(rfun, target)) =>
             Debug.info("cmd@LocalApply0: " + cmd)
-            Debug.info("target: " + target + ", creator: " + creator)
-            rfun(target, creator)
+            Debug.info("target: " + target + ", creator: " + proxy)
+            rfun(target, proxy)
 
           // Request from remote proxy.
           // `this` is local proxy.
-          case cmd@SendTo(out, msg, session) =>
+          case cmd @ MFromProxy(proxy, SendTo(out, msg, session)) =>
             Debug.info("cmd@SendTo: " + cmd)
             if (session.name == "nosession") {
               // local send
-              out.send(msg, creator) // use the proxy as the reply channel
+              out.send(msg, proxy) // use the proxy as the reply channel
             } else {
               // is this an active session?
               channelMap.get(session) match {
@@ -205,7 +251,7 @@ private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection,
                   Debug.info(this + ": creating new reply channel for session: " + session)
 
                   // create a new reply channel...
-                  val replyCh = new DelegateChannel(creator)
+                  val replyCh = new ProxyChannel(proxy)
                   // ...that maps to session
                   sessionMap += Pair(replyCh, session)
                   // local send
@@ -219,13 +265,13 @@ private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection,
               }
             }
 
-          case cmd@Terminate =>
-            Debug.info("cmd@Terminate: terminating delegate actor to node " + conn.remoteNode)
+          case cmd @ Terminate =>
+            Debug.info("cmd@Terminate: terminating delegate actor for connection " + conn)
             exit()
 
           // local proxy receives response to
           // reply channel
-          case ch ! resp =>
+          case ch ! MFromProxy(proxy, resp) =>
             Debug.info("ch ! resp")
             // lookup session ID
             sessionMap.get(ch) match {
@@ -234,14 +280,14 @@ private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection,
                 sessionMap -= ch
                 val msg = resp.asInstanceOf[AnyRef]
                 // send back response
-                kernel.forward(sender, conn, name, msg, sid)
+                kernel.forward(sender, conn, proxy.name, msg, sid)
 
               case None =>
                 Debug.info(this+": cannot find session for "+ch)
             }
 
           // remote proxy receives request
-          case msg: AnyRef =>
+          case MFromProxy(proxy, msg: AnyRef) =>
             Debug.info("msg: AnyRef = " + msg)
 
             // find out whether it's a synchronous send
@@ -249,20 +295,22 @@ private[remote] class DelegateActor(creator: Proxy, val conn: MessageConnection,
               if (sender.getClass.toString.contains("Channel")) { // how bout sender.isInstanceOf[Channel[_]] ?
                 Debug.info(this + ": sync send: sender: " + sender)
                 // create fresh session ID...
-                val fresh = FreshNameCreator.newName(conn.remoteNode+"@"+name)
+                val fresh = FreshNameCreator.newName(conn.remoteNode + "@" + proxy.name)
                 // ...that maps to reply channel
                 channelMap += Pair(fresh, sender)
                 Debug.info(this + ": mapped " + fresh + " -> " + sender)
                 fresh
               } else {
                 Debug.info(this + ": async send: sender: " + sender)
-                'nosession 
+                'nosession // TODO: use Option instead of some sentinel name
               }
 
-            kernel.forward(sender, conn, name, msg, sessionName)
+            kernel.forward(sender, conn, proxy.name, msg, sessionName)
+          case e =>
+            Debug.error("Unknown message for delegate: " + e)
         }
     }
   }
 
-  override def toString = "<DelegateActor for: " + creator + ">"
+  override def toString = "<DelegateActor for connection " + conn + ">"
 }

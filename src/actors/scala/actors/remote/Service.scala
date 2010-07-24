@@ -32,7 +32,7 @@ trait Listener
 
   def port: Int
 
-  protected val connectionCallback: ConnectionCallback
+  protected val connectionCallback: ConnectionCallback[ByteConnection]
 
   protected def receiveConnection(conn: ByteConnection) {
     try {
@@ -59,25 +59,43 @@ trait Connection
    */
   def localNode: Node
 
-  // TODO: use syncvar here
-  @volatile private var _attachment: Option[AnyRef] = None
+  @volatile private var _attachment: AnyRef = _ 
   private val attachLock = new Object
 
+  /**
+   * Can only attach once. Null attachments forbidden
+   */
   def attach(attachment: AnyRef) {
     assert(attachment ne null)
     attachLock.synchronized {
-      _attachment = Some(attachment)
+      if (_attachment ne null)
+        throw new IllegalStateException("Can only attach once")
+      _attachment = attachment
       attachLock.notifyAll()
     }
   }
 
-  def attachment_? = attachLock.synchronized { _attachment }
+  /**
+   * Returns the current attachment as an Option
+   */
+  def attachment_? : Option[AnyRef] = 
+    if (_attachment eq null) 
+      None 
+    else 
+      Some(_attachment) 
 
-  def attachment_! = attachLock.synchronized {
-    while (!_attachment.isDefined) attachLock.wait()
-    assert(_attachment.isDefined)
-    _attachment.get
-  }
+  /**
+   * Waits until attachment is set to something 
+   */
+  def attachment_! : AnyRef = 
+    if (_attachment ne null) 
+      _attachment 
+    else {
+      attachLock.synchronized {
+        while (_attachment eq null) attachLock.wait()
+        _attachment
+      }
+    }
 
 }
 
@@ -125,7 +143,9 @@ trait MessageConnection extends Connection {
 
 trait ServiceProvider extends HasServiceMode with CanTerminate {
   def connect(node: Node, receiveCallback: BytesReceiveCallback): ByteConnection
-  def listen(port: Int, connectionCallback: ConnectionCallback, receiveCallback: BytesReceiveCallback): Listener
+  def listen(port: Int, 
+						 connectionCallback: ConnectionCallback[ByteConnection], 
+						 receiveCallback: BytesReceiveCallback): Listener
 }
 
 trait EncodingHelpers {
@@ -187,7 +207,10 @@ abstract class Service extends CanTerminate {
               mode: ServiceMode.Value,
               recvCallback: MessageReceiveCallback): MessageConnection
 
-  def listen(port: Int, mode: ServiceMode.Value, recvCallback: MessageReceiveCallback): Listener
+  def listen(port: Int, 
+						 mode: ServiceMode.Value, 
+						 connCallback: ConnectionCallback[MessageConnection],
+						 recvCallback: MessageReceiveCallback): Listener
 
   override def doTerminateImpl(isBottom: Boolean) {
     assert(!isBottom)
