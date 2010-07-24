@@ -285,7 +285,9 @@ object RemoteActor {
 
 object Node {
   val localhost = InetAddress.getLocalHost.getCanonicalHostName
-  def apply(address: String, port: Int): Node = DefaultNodeImpl(address, port)
+  def apply(address: String, port: Int): Node = 
+    if (address eq null) DefaultNodeImpl(localhost, port)
+    else                 DefaultNodeImpl(address, port)
   def apply(port: Int): Node = apply(localhost, port)
   def unapply(n: Node): Option[(String, Int)] = Some((n.address, n.port))
 }

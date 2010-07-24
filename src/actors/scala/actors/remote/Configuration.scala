@@ -21,8 +21,27 @@ abstract class Configuration[+P <: Proxy] {
   def newSerializer(): Serializer[P]
 }
 
-class DefaultConfiguration extends Configuration[DefaultProxyImpl] {
-  override def aliveMode       = ServiceMode.Blocking
-  override def selectMode      = ServiceMode.Blocking
+class DefaultConfiguration 
+  extends HasJavaSerializer
+  with    HasBlockingAlive 
+  with    HasBlockingSelect
+
+abstract class HasJavaSerializer extends Configuration[DefaultProxyImpl] { 
   override def newSerializer() = new JavaSerializer(RemoteActor.classLoader)
+}
+
+trait HasBlockingAlive { this: Configuration[_] =>
+  override def aliveMode = ServiceMode.Blocking
+}
+
+trait HasBlockingSelect { this: Configuration[_] =>
+  override def selectMode = ServiceMode.Blocking
+}
+
+trait HasNonBlockingAlive { this: Configuration[_] =>
+  override def aliveMode = ServiceMode.NonBlocking
+}
+
+trait HasNonBlockingSelect { this: Configuration[_] =>
+  override def selectMode = ServiceMode.NonBlocking
 }
