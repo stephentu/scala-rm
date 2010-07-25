@@ -133,7 +133,7 @@ trait AbstractProxyWrapper { _: AbstractActor =>
  */
 class ProxyActor(proxy: Proxy) extends Actor {
   override def start() = { throw new RuntimeException("Should never call start() on a ProxyActor") }
-  override def act()     { throw new RuntimeException("Should never call run() on a ProxyActor")   }
+  override def act()     { throw new RuntimeException("Should never call act() on a ProxyActor")   }
 
   @inline private def wrap(m: Any): Any = MFromProxy(proxy, m)
 
@@ -283,11 +283,14 @@ private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) 
                 val replyCh = new ProxyChannel(proxy)
                 // ...that maps to session
                 sessionMap += Pair(replyCh, session)
+
+                Debug.info(this + ": sending msg " + msg + " to out: " + out)
                 // local send
                 out.send(msg, replyCh)
 
               // finishes request-reply cycle
               case Some(replyCh) =>
+                assert(proxy.name == Symbol("$$NoSender$$"))
                 Debug.info(this + ": finishing request-reply cycle for session: " + session + " on replyCh " + replyCh)
                 channelMap -= session
                 replyCh ! msg
@@ -307,14 +310,23 @@ private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) 
                 Debug.info(this + ": found session " + sid + " for channel " + ch)
                 sessionMap -= ch
                 val msg = resp.asInstanceOf[AnyRef]
-                // send back response
-                kernel.forward(sender, conn, proxy.name, msg, Some(sid))
+
+                Debug.info("sender: " + sender)
+                Debug.info("sender.receiver: " + sender.receiver)
+
+                // send back response - the sender (from) field is null here,
+                // because you cannot reply to a request-response cycle more
+                // than once.
+                kernel.forward(null, conn, proxy.name, msg, Some(sid))
 
               case None =>
                 Debug.info(this+": cannot find session for "+ch)
             }
 
-          // remote proxy receives request
+          // this case is when a proxy object had !, !!, !?, or send called,
+          // as in `proxy ! message`, where proxy is obtained from select() or
+          // `sender`. From our perspective, the `sender` variable determines
+          // which type of call it was
           case MFromProxy(proxy, msg: AnyRef) =>
             Debug.info("msg: AnyRef = " + msg)
             // find out whether it's a synchronous send
@@ -325,14 +337,17 @@ private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) 
               case _ =>                  /** Comes from !! and !? */
                 Debug.info(this + ": sync send: sender: " + sender)
                 // create fresh session ID...
-                val fresh = FreshNameCreator.newName(conn.remoteNode + "@" + proxy.name)
+                val fresh = FreshNameCreator.newName(conn.localNode.address + ":" + 
+                                                     conn.localNode.port)
                 // ...that maps to reply channel
                 channelMap += Pair(fresh, sender)
                 Debug.info(this + ": mapped " + fresh + " -> " + sender)
                 Some(fresh)
             }
 
-            kernel.forward(sender, conn, proxy.name, msg, sessionName)
+            Debug.info("sender.receiver: " + sender.receiver) 
+            Debug.info("proxy.name: " + proxy.name)
+            kernel.forward(sender.receiver, conn, proxy.name, msg, sessionName)
           case e =>
             Debug.error("Unknown message for delegate: " + e)
         }

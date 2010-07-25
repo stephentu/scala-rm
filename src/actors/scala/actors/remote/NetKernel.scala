@@ -121,17 +121,11 @@ private[remote] class NetKernel extends CanTerminate {
       newName
   }
 
-  def send(conn: MessageConnection, name: Symbol, msg: AnyRef): Unit =
-    send(conn, name, msg, None)
-
-  def send(conn: MessageConnection, name: Symbol, msg: AnyRef, session: Option[Symbol]) {
-    val senderLoc   = Locator(conn.localNode, getOrCreateName(Actor.self))
-    val receiverLoc = Locator(conn.remoteNode, name)
-    namedSend(conn, senderLoc, receiverLoc, msg, session)
-  }
-
   def forward(from: OutputChannel[Any], conn: MessageConnection, name: Symbol, msg: AnyRef, session: Option[Symbol]) {
-    val senderLoc   = Locator(conn.localNode, getOrCreateName(from))
+    val fromName = 
+      if (from eq null) Symbol("$$NoSender$$") // TODO: this is a hack for now
+      else              getOrCreateName(from)
+    val senderLoc   = Locator(conn.localNode,  fromName)
     val receiverLoc = Locator(conn.remoteNode, name)
     namedSend(conn, senderLoc, receiverLoc, msg, session)
   }
@@ -267,7 +261,10 @@ private[remote] class NetKernel extends CanTerminate {
       newProxy.del  = getDelegate(conn)
       val newProxy0 = proxies.putIfAbsent(senderName, newProxy)
       if (newProxy0 ne null) newProxy0 // newProxy0 came first, so use that one
-      else                   newProxy
+      else {
+        Debug.info(this + ": created new proxy: " + newProxy)
+        newProxy
+      }
     }
   }
 
