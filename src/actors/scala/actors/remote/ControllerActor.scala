@@ -35,7 +35,8 @@ object RemoteStartInvokeAndListen {
     Some((r.actorClass, r.port, r.name, r.mode))
 }
 
-trait RemoteStartInvokeAndListen extends RemoteStartInvoke {
+trait RemoteStartInvokeAndListen {
+  def actorClass: String
   def port: Int
   def name: Symbol
   def mode: ServiceMode.Value
@@ -96,14 +97,13 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
   }
 
   private def newActor(actorClass: String): Actor =
-    Class.forName(actorClass).asInstanceOf[Class[Actor]].newInstance
+    Class.forName(actorClass).asInstanceOf[Class[Actor]].newInstance()
 
-  start() // ctor starts
-  def act {
-		val cfg = new DefaultConfiguration {
+  override def act() {
+		implicit val cfg = new DefaultConfiguration {
 			override def aliveMode = getMode
 		}
-    alive(getPort)(cfg)
+    alive0(getPort, self, false)
     register(thisSym, self)
     Debug.info(this + ": started")
     loop {
@@ -112,10 +112,10 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
           /** Assume actor class does not set itself up, and we need to register it */
           val errorMessage = 
             try {
-							val cfg = new DefaultConfiguration {
+							implicit val cfg = new DefaultConfiguration {
 								override def aliveMode = mode
 							}
-              alive(port)(cfg)
+              alive(port)
               val actor = newActor(actorClass)
               register(name, actor) 
               actor.start()
@@ -128,10 +128,12 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
           /** Just invoke actor class, assume it sets itself up  */
           val errorMessage = 
             try {
-              newActor(actorClass).start()
+              val a = newActor(actorClass) 
+              a.start()
               None
             } catch {
-              case e: Exception => Some(e.getMessage)
+              case e: Exception => 
+                Some(e.getMessage)
             }
           sender ! RemoteStartResult(errorMessage)
         case Terminate =>
@@ -143,6 +145,7 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
     }
   }
 
+  start() // ctor starts
+
   override def toString = "<ControllerActor>"
 }
-

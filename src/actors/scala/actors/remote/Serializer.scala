@@ -96,7 +96,7 @@ abstract class Serializer[+T <: Proxy] {
 
   def newNode(address: String, port: Int): MyNode
 
-  def newNamedSend(senderLoc: MyLocator, receiverLoc: MyLocator, metaData: Array[Byte], data: Array[Byte], session: Symbol): MyNamedSend
+  def newNamedSend(senderLoc: MyLocator, receiverLoc: MyLocator, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): MyNamedSend
 
   def newLocator(node: MyNode, name: Symbol): MyLocator
 
@@ -129,7 +129,7 @@ trait DefaultEnvelopeMessageCreator { this: Serializer[_ <: Proxy] =>
 
   override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
 
-  override def newNamedSend(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, metaData: Array[Byte], data: Array[Byte], session: Symbol): DefaultNamedSendImpl =
+  override def newNamedSend(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): DefaultNamedSendImpl =
     DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
 
   override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =

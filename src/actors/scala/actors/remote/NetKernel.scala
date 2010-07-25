@@ -15,9 +15,9 @@ import scala.collection.mutable.{ HashMap, HashSet }
 import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
 
 object NamedSend {
-  def apply(senderLoc: Locator, receiverLoc: Locator, metaData: Array[Byte], data: Array[Byte], session: Symbol): NamedSend =
+  def apply(senderLoc: Locator, receiverLoc: Locator, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): NamedSend =
     DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
-  def unapply(n: NamedSend): Option[(Locator, Locator, Array[Byte], Array[Byte], Symbol)] =
+  def unapply(n: NamedSend): Option[(Locator, Locator, Array[Byte], Array[Byte], Option[Symbol])] =
     Some((n.senderLoc, n.receiverLoc, n.metaData, n.data, n.session))
 }
 
@@ -26,19 +26,19 @@ trait NamedSend {
   def receiverLoc: Locator
   def metaData: Array[Byte]
   def data: Array[Byte]
-  def session: Symbol
+  def session: Option[Symbol]
 }
 
 case class DefaultNamedSendImpl(override val senderLoc: Locator, 
                                 override val receiverLoc: Locator, 
                                 override val metaData: Array[Byte], 
                                 override val data: Array[Byte], 
-                                override val session: Symbol) extends NamedSend
+                                override val session: Option[Symbol]) extends NamedSend
 
 case class RemoteApply0(senderLoc: Locator, receiverLoc: Locator, rfun: Function2[AbstractActor, Proxy, Unit])
 case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractActor)
 
-case class  SendTo(a: OutputChannel[Any], msg: Any, session: Symbol)
+case class  SendTo(a: OutputChannel[Any], msg: Any, session: Option[Symbol])
 case object Terminate
 
 object Locator {
@@ -71,7 +71,7 @@ private[remote] class NetKernel extends CanTerminate {
 
   import java.io.IOException
 
-  def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Symbol) {
+  def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Option[Symbol]) {
     conn.send { serializer: Serializer[Proxy] =>
       val wireMsg  = serializer.intercept(msg)
       val metadata = serializer.serializeMetaData(wireMsg).getOrElse(null)
@@ -122,15 +122,15 @@ private[remote] class NetKernel extends CanTerminate {
   }
 
   def send(conn: MessageConnection, name: Symbol, msg: AnyRef): Unit =
-    send(conn, name, msg, 'nosession)
+    send(conn, name, msg, None)
 
-  def send(conn: MessageConnection, name: Symbol, msg: AnyRef, session: Symbol) {
+  def send(conn: MessageConnection, name: Symbol, msg: AnyRef, session: Option[Symbol]) {
     val senderLoc   = Locator(conn.localNode, getOrCreateName(Actor.self))
     val receiverLoc = Locator(conn.remoteNode, name)
     namedSend(conn, senderLoc, receiverLoc, msg, session)
   }
 
-  def forward(from: OutputChannel[Any], conn: MessageConnection, name: Symbol, msg: AnyRef, session: Symbol) {
+  def forward(from: OutputChannel[Any], conn: MessageConnection, name: Symbol, msg: AnyRef, session: Option[Symbol]) {
     val senderLoc   = Locator(conn.localNode, getOrCreateName(from))
     val receiverLoc = Locator(conn.remoteNode, name)
     namedSend(conn, senderLoc, receiverLoc, msg, session)

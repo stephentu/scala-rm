@@ -50,6 +50,14 @@ object RemoteActor {
   private final val ControllerSymbol = Symbol("$$ControllerActor$$")
 
   /**
+   * Contains the set of all actors which have either called alive() or select(), 
+   * or some combination of them. This is used so when
+   * explicit shutdown is not desired, we have a way to keep track of the
+   * actors which are still using the remote actor service. 
+   */
+  private val remoteActors = new HashSet[Actor]
+
+  /**
    * Maps each port to a set of actors which are listening on it.
    * Guarded by `portToActors` lock
    */
@@ -61,10 +69,26 @@ object RemoteActor {
    */
   private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
+  @volatile private var _nk: NetKernel = _
+
+  @volatile private var _ctrl: Actor = _
+
   /**
-   * Backing net kernel
+   * Retrieves the backing net kernel. Starts a new one if there is currently
+   * no backing net kernel.
    */
-  private[remote] val netKernel = new NetKernel
+  private[remote] def netKernel = synchronized {
+    if (_nk eq null) {
+      assert(_ctrl eq null)
+      _nk   = new NetKernel
+      _ctrl = new ControllerActor(ControllerSymbol)
+    }
+    _nk
+  }
+
+  private[remote] def netKernel_? : Option[NetKernel] = synchronized {
+    if (_nk eq null) None else Some(_nk)
+  }
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -76,40 +100,92 @@ object RemoteActor {
   def classLoader: ClassLoader = cl
   def classLoader_=(x: ClassLoader) { cl = x }
 
-  @volatile private var explicitlyTerminate = true
+  @volatile private var explicitlyTerminate = false
+
+  /**
+   * Used to indicate whether explicit termination of the network kernel
+   * resources is desired. The default value is <code>false</code>, meaning
+   * that the network kernel will automatically shutdown when all actors which
+   * have expressed intent to use remote functionality (via <code>alive</code>
+   * and <code>select</code>) have terminated. In most simple usages, this is
+   * the desirable behavior.
+   *
+   * However, some may want to reuse network kernel resources. For example,
+   * consider the following usage pattern:
+   * {{{
+   * actor {
+   *   alive(9000)
+   *   register('anActor, self)
+   *   // do some stuff
+   * }
+   * // do more actions, which take longer than the duration of 'anActor
+   * actor {
+   *   val p = select(Node("foo.com", 9000), 'fooActor)
+   *   // do some stuff
+   * }
+   * }}}
+   *
+   * Without explicit termination set to <code>true</code>, after
+   * <code>'anActor</code> terminates, the resources will be freed, and then
+   * reallocated when the second actor executes. Since freeing resources is
+   * not cheap, this is probably not desirable in some cases. Thus by setting
+   * <code>setExplicitTermination</code> to <code>true</code>, the above
+   * usage pattern would reuse the same resources.
+   */
   def setExplicitTermination(isExplicit: Boolean) {
     explicitlyTerminate = isExplicit
   }
 
-  def alive(port: Int, actor: Actor)(implicit cfg: Configuration[_]) {
+  @volatile private var explicitlyUnlisten = false
+
+  def setExplicitUnlisten(isExplicit: Boolean) {
+    explicitlyUnlisten = isExplicit
+  }
+
+  private def watchActor(actor: Actor) {
+    // set termination handler on actor
+    actor onTerminate { actorTerminated(actor) }
+  }
+
+  private[remote] def alive0(port: Int, actor: Actor, addToSet: Boolean)(implicit cfg: Configuration[_]) {
+    // listen if necessary
+    val listener = listenOnPort(port, cfg.aliveMode)
+
+    // actual port chosen (is different from port iff port == 0)
+    val realPort = listener.port
+
+    // register actor to the actual port
     portToActors.synchronized {
-      // listen if necessary
-      val listener = listenOnPort(port, cfg.aliveMode)
-      val realPort = listener.port
-
-      // now register the actor
-      val thisActor = actor 
-
       portToActors.get(realPort) match {
         case Some(set) => 
-          set += thisActor
+          set += actor
         case None =>
           val set = new HashSet[Actor]
-          set += thisActor
+          set += actor
           portToActors += realPort -> set 
       }
 
-      actorToPorts.get(thisActor) match {
+      actorToPorts.get(actor) match {
         case Some(set) =>
           set += realPort
         case None =>
           val set = new HashSet[Int]
           set += realPort
-          actorToPorts += thisActor -> set
+          actorToPorts += actor -> set
       }
-
-      thisActor onTerminate { actorTerminated(thisActor) }
     }
+
+    if (addToSet)
+      remoteActors.synchronized { remoteActors += actor }
+    watchActor(actor)
+  }
+
+  /**
+   * Makes <code>actor</code> remotely accessible on TCP port
+   * <code>port</code>.
+   */
+  def alive(port: Int, actor: Actor)(implicit cfg: Configuration[_]) {
+    alive0(port, actor, true)
   }
 
   /**
@@ -118,90 +194,79 @@ object RemoteActor {
    */
   @throws(classOf[InconsistentServiceException])
   def alive(port: Int)(implicit cfg: Configuration[_]) {
-    alive(port, Actor.self)
+    alive0(port, Actor.self, true)
   }
 
-  private def tryShutdown(port: Int) {
-    newThread {
-      portToActors.synchronized {
+  /**
+   * Tries to unlisten on <code>port</code> if there are no registered actors
+   * listening on it.
+   */
+  private def tryShutdown(ports: Iterable[Int]) {
+    portToActors.synchronized {
+      ports.foreach(port => {
         portToActors.get(port) match {
-          case Some(actors) =>
+          case Some(_) =>
             // ignore request - this is a potential race condition to check
             // for, in the case where tryShutdown(p) is called, then a call to
             // alive(p) is made, then this thread executes. 
           case None =>
-            netKernel.unlisten(port)
+            netKernel_?.foreach(_.unlisten(port))
         }
-      }
+      })
     }
   }
 
   private def newThread(f: => Unit) {
-    val t = new Thread {
-      override def run() = f
-    }
+    val t = new Thread { override def run() = f }
     t.start()
   }
+
+  private final val EmptyIntSet = new HashSet[Int]
 
   private def actorTerminated(actor: Actor) {
     Debug.info("actorTerminated(): alive actor " + actor + " terminated")
     unregister(actor)
-      //// termination handler
-      //thisActor onTerminate {
-      //  Debug.info("alive actor " + thisActor + " terminated")
-      //  // Unregister actor from kernel
-      //  unregister(thisActor)
 
-      //  /*  
-      //   *  TODO: this causes deadlocks - move all connection/listener garbage
-      //   *  collection to a separate collection task instead (which runs like
-      //   *  every N minutes) 
-      //  // we only worry about garbage collecting for un-used listeners. we
-      //  // don't bother to garbage collect for un-used connections
-      //  portToActors.synchronized { // prevents new connections
-      //    // get all the ports this actor was listening on...
-      //    val candidatePorts = actorToPorts.remove(thisActor) match {
-      //      case Some(ports) => 
-      //        ports
-      //      case None => 
-      //        Debug.error("Could not find " + thisActor + " in actorToPorts")
-      //        new HashSet[Int]()
-      //    }
+    val portsToShutdown = portToActors.synchronized {
+      // get all the ports this actor was listening on...
+      val candidatePorts = actorToPorts.remove(actor).getOrElse(EmptyIntSet)
 
-      //    // ... now for each of these candidates, remove this actor
-      //    // from the set and terminate if the set becomes empty
-      //    candidatePorts.foreach(p => portToActors.get(p) match {
-      //      case Some(actors) =>
-      //        actors -= thisActor
-      //        if (actors.isEmpty) {
-      //          portToActors -= p
-      //          tryShutdown(p) // try to shutdown in a different thread
-      //                         // this is because blocking in a
-      //                         // ForkJoinScheduler worker is bad (causes
-      //                         // starvation)
-      //        }
-      //      case None => tryShutdown(p) 
-      //    })
+      // ... now for each of these candidates, remove this actor
+      // from the set and terminate if the set becomes empty
+      candidatePorts.filter(p => portToActors.get(p) match {
+        case Some(actors) =>
+          actors -= actor
+          if (actors.isEmpty) {
+            portToActors -= p
+            true
+          } else false
+        case None => true 
+      })
+    }
 
-      //  }
-      //  */
+    val terminate = remoteActors.synchronized { 
+      remoteActors -= actor
+      remoteActors.isEmpty && !explicitlyTerminate
+    }
 
-      //}
+    if (terminate) 
+      // don't bother shutting down ports if we need to terminate, because
+      // that will happen implicitly
+      releaseResourcesInActor() // termination handler runs in actor threadpool
+    else if (!explicitlyUnlisten && !portsToShutdown.isEmpty) 
+      newThread { tryShutdown(portsToShutdown) }
   }
 
   def register(name: Symbol, actor: Actor) {
     netKernel.register(name, actor)
-    actor onTerminate { actorTerminated(actor) }
   }
 
   def unregister(actor: Actor) {
-    netKernel.unregister(actor)
+    netKernel_?.foreach(_.unregister(actor))
   }
 
   private def listenOnPort(port: Int, mode: ServiceMode.Value) =
     netKernel.listen(port, mode) 
-
-  private val controller = new ControllerActor(ControllerSymbol)
 
   def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
     remoteStart(node, m.erasure.asInstanceOf[Class[A]])
@@ -237,26 +302,28 @@ object RemoteActor {
 
         // oops, this actor isn't alive anywhere. in this case, pick a random
         // port (by scanning portToActors)
-        portToActors.headOption.map(_._1).getOrElse({
+        val newPort = portToActors.headOption.map(_._1).getOrElse({
 
           // no ports are actually listening. so pick a random one now (by
           // listening with 0 as the port)
           val listener = listenOnPort(0, cfg.aliveMode)
-          val realPort = listener.port
 
-          // now call alive, so that thisActor gets mapped to the new port
-          alive(realPort, thisActor)
-
-          // return realPort
-          realPort
+          // return the actual port
+          listener.port
         })
+
+        // now call alive, so that thisActor gets mapped to the new port (if it
+        // already wasn't)
+        alive(newPort, thisActor)
+
+        newPort
       })
     }
 
     val remoteNode        = serializer.newNode(Node.localhost, port)
     val remoteConnectMode = cfg.selectMode
     val clzName           = serializer.getClass.getName
-    val remoteName        = netKernel.getOrCreateName(Actor.self) // auto-registers name if a new one is created
+    val remoteName        = netKernel.getOrCreateName(thisActor) // auto-registers name if a new one is created
     serializer.newProxy(remoteNode, remoteConnectMode, clzName, remoteName)
   }
 
@@ -265,18 +332,47 @@ object RemoteActor {
 
   /**
    * Returns (a proxy for) the actor registered under
-   * <code>name</code> on <code>node</code>.
+   * <code>name</code> on <code>node</code>. Note that if you call select
+   * outside of an actor, you cannot rely on explicit termination to shutdown.
    */
   @throws(classOf[InconsistentSerializerException])
   @throws(classOf[InconsistentServiceException])
-  def select[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P =
+  def select[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
+    Debug.info("select(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
+    val thisActor = Actor.self
+    remoteActors.synchronized { remoteActors += thisActor }
+    watchActor(thisActor)
     netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
-
-  def releaseResources() {
-    //controller ! Terminate
-    netKernel.terminateTop()
   }
 
+  /**
+   * Shutdown the network kernel explicitly. Only necessary when
+   * <code>setExplicitTermination(true)</code> has been called.
+   *
+   * Because this method may block until write buffers are drained, use
+   * <code>releaseResourcesInActor</code> to shut down the network kernel from
+   * within an actor.
+   */
+  def releaseResources() {
+    synchronized {
+      if (_nk ne null) {
+        assert(_ctrl ne null)
+        _ctrl ! Terminate
+        _ctrl = null
+
+        _nk.terminateTop()
+        _nk = null
+      }
+    }
+  }
+
+  /**
+   * Shutdown the network kernel explicitly from within an actor. Only necessary when
+   * <code>setExplicitTermination(true)</code> has been called. 
+   *
+   * This particular implementation simply spawns a new thread to call
+   * <code>releaseResources</code>.
+   */
   def releaseResourcesInActor() {
     newThread { releaseResources() }
   }
