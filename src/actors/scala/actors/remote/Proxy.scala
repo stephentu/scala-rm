@@ -117,13 +117,13 @@ trait AbstractProxyWrapper { _: AbstractActor =>
     target !! (wrap(msg), f)
 
   override def linkTo(to: AbstractActor): Unit =
-    target ! wrap(Apply0(to, new LinkToFun))
+    target ! wrap(Apply0(to, LinkToFun))
 
   override def unlinkFrom(from: AbstractActor): Unit =
-    target ! wrap(Apply0(from, new UnlinkFromFun))
+    target ! wrap(Apply0(from, UnlinkFromFun))
 
   override def exit(from: AbstractActor, reason: AnyRef): Unit =
-    target ! wrap(Apply0(from, new ExitFun(reason)))
+    target ! wrap(Apply0(from, ExitFun(reason)))
 
 }
 
@@ -161,13 +161,13 @@ class ProxyActor(proxy: Proxy) extends Actor {
     target !! (wrap(msg), f)
 
   override def linkTo(to: AbstractActor): Unit =
-    target ! wrap(Apply0(to, new LinkToFun))
+    target ! wrap(Apply0(to, LinkToFun))
 
   override def unlinkFrom(from: AbstractActor): Unit =
-    target ! wrap(Apply0(from, new UnlinkFromFun))
+    target ! wrap(Apply0(from, UnlinkFromFun))
 
   override def exit(from: AbstractActor, reason: AnyRef): Unit =
-    target ! wrap(Apply0(from, new ExitFun(reason)))
+    target ! wrap(Apply0(from, ExitFun(reason)))
 }
 
 /**
@@ -205,8 +205,9 @@ class DefaultProxyImpl(var _remoteNode: Node,
 
 }
 
-@serializable
-class LinkToFun extends Function2[AbstractActor, Proxy, Unit] {
+sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Unit]
+
+@serializable object LinkToFun extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
     target.linkTo(creator)
   }
@@ -214,8 +215,7 @@ class LinkToFun extends Function2[AbstractActor, Proxy, Unit] {
     "<LinkToFun>"
 }
 
-@serializable
-class UnlinkFromFun extends Function2[AbstractActor, Proxy, Unit] {
+@serializable object UnlinkFromFun extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
     target.unlinkFrom(creator)
   }
@@ -223,8 +223,7 @@ class UnlinkFromFun extends Function2[AbstractActor, Proxy, Unit] {
     "<UnlinkFromFun>"
 }
 
-@serializable
-class ExitFun(reason: AnyRef) extends Function2[AbstractActor, Proxy, Unit] {
+@serializable case class ExitFun(reason: AnyRef) extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
     target.exit(creator, reason)
   }
@@ -232,7 +231,7 @@ class ExitFun(reason: AnyRef) extends Function2[AbstractActor, Proxy, Unit] {
     "<ExitFun>("+reason.toString+")"
 }
 
-private[remote] case class Apply0(actor: AbstractActor, rfun: Function2[AbstractActor, Proxy, Unit])
+private[remote] case class Apply0(actor: AbstractActor, rfun: RemoteFunction)
 
 private[remote] class ProxyChannel(proxy: Proxy) 
   extends Channel[Any](new ProxyActor(proxy))

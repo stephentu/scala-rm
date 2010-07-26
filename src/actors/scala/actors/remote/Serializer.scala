@@ -93,6 +93,7 @@ abstract class Serializer[+T <: Proxy] {
   type MyLocator <: Locator
   type MyRemoteStartInvoke <: RemoteStartInvoke
   type MyRemoteStartInvokeAndListen <: RemoteStartInvokeAndListen
+  type MyRemoteApply <: RemoteApply
 
   def newNode(address: String, port: Int): MyNode
 
@@ -105,6 +106,8 @@ abstract class Serializer[+T <: Proxy] {
   def newRemoteStartInvoke(actorClass: String): MyRemoteStartInvoke
 
   def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): MyRemoteStartInvokeAndListen
+
+  def newRemoteApply(senderLoc: MyLocator, receiverLoc: MyLocator, rfun: RemoteFunction): MyRemoteApply
 
   def intercept(m: AnyRef): AnyRef = m match {
     case RemoteStartInvoke(actorClass) => 
@@ -123,9 +126,10 @@ trait DefaultProxyCreator { this: Serializer[DefaultProxyImpl] =>
 }
 
 trait DefaultEnvelopeMessageCreator { this: Serializer[_ <: Proxy] =>
-  override type MyNode = DefaultNodeImpl
-  override type MyNamedSend = DefaultNamedSendImpl
-  override type MyLocator = DefaultLocatorImpl
+  override type MyNode        = DefaultNodeImpl
+  override type MyNamedSend   = DefaultNamedSendImpl
+  override type MyLocator     = DefaultLocatorImpl
+  override type MyRemoteApply = DefaultRemoteApplyImpl
 
   override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
 
@@ -134,10 +138,13 @@ trait DefaultEnvelopeMessageCreator { this: Serializer[_ <: Proxy] =>
 
   override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =
     DefaultLocatorImpl(node, name)
+
+  override def newRemoteApply(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, rfun: RemoteFunction): DefaultRemoteApplyImpl =
+    DefaultRemoteApplyImpl(senderLoc, receiverLoc, rfun)
 }
 
 trait DefaultControllerMessageCreator { this: Serializer[_ <: Proxy] =>
-  override type MyRemoteStartInvoke = DefaultRemoteStartInvokeImpl
+  override type MyRemoteStartInvoke          = DefaultRemoteStartInvokeImpl
   override type MyRemoteStartInvokeAndListen = DefaultRemoteStartInvokeAndListenImpl
 
   override def newRemoteStartInvoke(actorClass: String): DefaultRemoteStartInvokeImpl = 

@@ -11,53 +11,12 @@ package scala.actors
 package remote
 
 import scala.collection.mutable.{ HashMap, HashSet }
-
 import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
 
-object NamedSend {
-  def apply(senderLoc: Locator, receiverLoc: Locator, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): NamedSend =
-    DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
-  def unapply(n: NamedSend): Option[(Locator, Locator, Array[Byte], Array[Byte], Option[Symbol])] =
-    Some((n.senderLoc, n.receiverLoc, n.metaData, n.data, n.session))
-}
-
-trait NamedSend {
-  def senderLoc: Locator
-  def receiverLoc: Locator
-  def metaData: Array[Byte]
-  def data: Array[Byte]
-  def session: Option[Symbol]
-}
-
-case class DefaultNamedSendImpl(override val senderLoc: Locator, 
-                                override val receiverLoc: Locator, 
-                                override val metaData: Array[Byte], 
-                                override val data: Array[Byte], 
-                                override val session: Option[Symbol]) extends NamedSend
-
-case class RemoteApply0(senderLoc: Locator, receiverLoc: Locator, rfun: Function2[AbstractActor, Proxy, Unit])
 case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractActor)
 
 case class  SendTo(a: OutputChannel[Any], msg: Any, session: Option[Symbol])
 case object Terminate
-
-object Locator {
-  def apply(node: Node, name: Symbol): Locator = DefaultLocatorImpl(node, name)
-  def unapply(l: Locator): Option[(Node, Symbol)] = Some((l.node, l.name))
-}
-
-trait Locator {
-  def node: Node
-  def name: Symbol
-  override def equals(o: Any) = o match {
-    case l: Locator =>
-      l.node == this.node && l.name == this.name
-    case _ => false
-  }
-  override def hashCode = node.hashCode + name.hashCode
-}
-
-case class DefaultLocatorImpl(override val node: Node, override val name: Symbol) extends Locator
 
 case class MsgConnAttachment(val del: DelegateActor, val proxies: ConcurrentHashMap[Symbol, Proxy])
 
@@ -130,10 +89,14 @@ private[remote] class NetKernel extends CanTerminate {
     namedSend(conn, senderLoc, receiverLoc, msg, session)
   }
 
-  def remoteApply(conn: MessageConnection, name: Symbol, from: OutputChannel[Any], rfun: Function2[AbstractActor, Proxy, Unit]) {
-    val senderLoc   = Locator(conn.localNode, getOrCreateName(from))
-    val receiverLoc = Locator(conn.remoteNode, name)
-    conn.send(RemoteApply0(senderLoc, receiverLoc, rfun))
+  def remoteApply(conn: MessageConnection, name: Symbol, from: OutputChannel[Any], rfun: RemoteFunction) {
+    conn.send { serializer: Serializer[Proxy] =>
+      val _senderLocNode   = serializer.newNode(conn.localNode.address, conn.localNode.port)
+      val _receiverLocNode = serializer.newNode(conn.remoteNode.address, conn.remoteNode.port)
+      val _senderLoc       = serializer.newLocator(_senderLocNode, getOrCreateName(from))
+      val _receiverLoc     = serializer.newLocator(_receiverLocNode, name)
+      serializer.newRemoteApply(_senderLoc, _receiverLoc, rfun) 
+    }
   }
 
   /**
@@ -284,7 +247,7 @@ private[remote] class NetKernel extends CanTerminate {
 
   private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef) {
     msg match {
-      case cmd@RemoteApply0(senderLoc, receiverLoc, rfun) =>
+      case cmd @ RemoteApply(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)
         val a = actors.get(receiverLoc.name)
         if (a eq null) {
@@ -294,7 +257,7 @@ private[remote] class NetKernel extends CanTerminate {
           val senderProxy = getOrCreateProxy(conn, senderLoc.name)
           senderProxy.send(LocalApply0(rfun, a.asInstanceOf[AbstractActor]), null)
         }
-      case cmd@NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
+      case cmd @ NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
         Debug.info(this+": processing "+cmd)
 
         def sendToProxy(a: OutputChannel[Any]) {
