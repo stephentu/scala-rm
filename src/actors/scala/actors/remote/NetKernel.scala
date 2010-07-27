@@ -161,6 +161,8 @@ private[remote] class NetKernel extends CanTerminate {
     // terminate the delegate actor for this connection
     val del = getDelegate(conn)
     if (del.getState != Actor.State.Terminated) {
+      Debug.info(this + ": exiting delegate linked actors")
+      del.exitLinkedActors()
       Debug.info(this + ": waiting for delegate to terminate")
       Debug.info(this + ": delegate is in state: " + del.getState)
       val latch = new CountDownLatch(1)

@@ -12,6 +12,8 @@ package remote
 
 import scala.collection.mutable.HashMap
 
+import java.util.WeakHashMap
+import java.lang.ref.WeakReference
 import java.io.{ ObjectInputStream, ObjectOutputStream }
 
 /**
@@ -241,9 +243,13 @@ private[remote] class ProxyChannel(proxy: Proxy)
   extends Channel[Any](new ProxyActor(proxy))
 
 /**
- * Each MessageConnection instance will have its own DelegateActor
+ * Each MessageConnection instance has exactly one DelegateActor. A
+ * DelegateActor, however, can back more than one proxies. This is done with
+ * the MFromProxy message class, which gives context to the DelegateActor
+ * which proxy is sending a message.
  *
  * @author Philipp Haller
+ * @author Stephen Tu
  */
 private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) extends Actor {
 
@@ -256,11 +262,22 @@ private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) 
       Debug.doError { e.printStackTrace }
   }
 
-  def act() {
+  private val linkMap = new WeakHashMap[AbstractActor, WeakReference[Proxy]]
+
+  /**
+   * Called by the NetKernel when a DelegateActor terminates
+   */
+  private[remote] def exitLinkedActors() {
+    import scala.collection.JavaConversions._
+    linkMap.entrySet.foreach(entry => entry.getKey.exit(entry.getValue.get, 'ConnectionTerminated))
+  }
+
+  override def act() {
     Actor.loop {
         react {
           case cmd @ MFromProxy(proxy, Apply0(actor, rfun)) =>
             Debug.info("cmd@Apply0: " + cmd)
+            linkMap.put(actor, new WeakReference[Proxy](proxy))
             kernel.remoteApply(conn, proxy.name, actor, rfun)
 
           case cmd @ MFromProxy(proxy, LocalApply0(rfun, target)) =>
