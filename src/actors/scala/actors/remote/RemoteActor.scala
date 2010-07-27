@@ -85,7 +85,7 @@ object RemoteActor {
   }
 
   private[remote] def netKernel_? : Option[NetKernel] = synchronized {
-    if (_nk eq null) None else Some(_nk)
+    Option(_nk)
   }
 
   /* If set to <code>null</code> (default), the default class loader
@@ -241,9 +241,12 @@ object RemoteActor {
         case None => true 
       })
     }
+    Debug.info("actorTerminated(" + actor + "): ports to shutdown: " + portsToShutdown)
 
     val terminate = remoteActors.synchronized { 
       remoteActors -= actor
+      Debug.info("actorTerminated(" + actor + "): remoteActors.size (after actor removal): " + remoteActors.size)
+      Debug.info(remoteActors.toString)
       remoteActors.isEmpty && !explicitlyTerminate
     }
 
@@ -287,8 +290,7 @@ object RemoteActor {
     select(Node(node.address, node.port), name)
   }
 
-  def remoteSelf[P <: Proxy](implicit cfg: Configuration[P]): P = {
-    val thisActor = Actor.self
+  def remoteActorFor[P <: Proxy](thisActor: Actor)(implicit cfg: Configuration[P]): P = {
     val serializer = cfg.newSerializer()
 
     // need to establish a port for this actor to listen on, so that the proxy
@@ -325,12 +327,16 @@ object RemoteActor {
     serializer.newProxy(remoteNode, remoteConnectMode, clzName, remoteName)
   }
 
+
+  def remoteSelf[P <: Proxy](implicit cfg: Configuration[P]): P =
+    remoteActorFor(Actor.self)
+
   private def connect(node: Node, serializer: Serializer[Proxy], mode: ServiceMode.Value): MessageConnection =
     netKernel.connect(node, serializer, mode)
 
   /**
    * Returns (a proxy for) the actor registered under
-   * <code>name</code> on <code>node</code>. Note that if you call select
+   * <code>sym</code> on <code>node</code>. Note that if you call select
    * outside of an actor, you cannot rely on explicit termination to shutdown.
    */
   @throws(classOf[InconsistentSerializerException])
@@ -340,6 +346,23 @@ object RemoteActor {
     val thisActor = Actor.self
     remoteActors.synchronized { remoteActors += thisActor }
     watchActor(thisActor)
+    netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
+  }
+
+  /**
+   * Returns (a proxy for) the actor registered under
+   * <code>name</code> on <code>node</code>. Note that this method is exactly
+   * the same as <code>select</code>, except that it is safe to call it
+   * outside of an actor, and still rely on explicit termination. However,
+   * calling this method inside an actor can cause the network kernel to
+   * shutdown if no other actors are using remote services (and said actor is
+   * not explicitly listening via <code>alive</code>, and explicit termination
+   * is not set).
+   */
+  @throws(classOf[InconsistentSerializerException])
+  @throws(classOf[InconsistentServiceException])
+  def remoteActorAt[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
+    Debug.info("remoteActorAt(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
     netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
   }
 
@@ -355,9 +378,11 @@ object RemoteActor {
     synchronized {
       if (_nk ne null) {
         assert(_ctrl ne null)
+        Debug.info("releaseResources(): sending Terminate to _ctrl")
         _ctrl ! Terminate
         _ctrl = null
 
+        Debug.info("releaseResources(): calling terminateTop on _nk")
         _nk.terminateTop()
         _nk = null
       }

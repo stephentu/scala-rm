@@ -225,6 +225,10 @@ sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Uni
 
 @serializable case class ExitFun(reason: AnyRef) extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
+    //target match {
+    //  case a: Actor         => a.exit(reason)
+    //  case _: AbstractActor => target.exit(creator, reason)
+    //}
     target.exit(creator, reason)
   }
   override def toString =
@@ -344,9 +348,9 @@ private[remote] class DelegateActor(conn: MessageConnection, kernel: NetKernel) 
                 Some(fresh)
             }
 
-            Debug.info("sender.receiver: " + sender.receiver) 
-            Debug.info("proxy.name: " + proxy.name)
-            kernel.forward(sender.receiver, conn, proxy.name, msg, sessionName)
+            //Debug.info("sender.receiver: " + sender.receiver) 
+            //Debug.info("proxy.name: " + proxy.name)
+            kernel.forward(if (sender eq null) null else sender.receiver, conn, proxy.name, msg, sessionName)
           case e =>
             Debug.error("Unknown message for delegate: " + e)
         }

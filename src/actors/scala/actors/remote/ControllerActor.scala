@@ -16,6 +16,8 @@ import Actor._
 import remote._
 import RemoteActor._
 
+import java.io.IOException
+
 object RemoteStartInvoke {
   def apply(actorClass: String): RemoteStartInvoke = 
     DefaultRemoteStartInvokeImpl(actorClass)
@@ -103,7 +105,14 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
 		implicit val cfg = new DefaultConfiguration {
 			override def aliveMode = getMode
 		}
-    alive0(getPort, self, false)
+    try {
+      alive0(getPort, self, false)
+    } catch { 
+      case e: IOException =>
+        // oops, the specified port is already taken
+        Debug.error(this + ": Could not listen on port: " + getPort)
+        exit()
+    }
     register(thisSym, self)
     Debug.info(this + ": started")
     loop {

@@ -13,8 +13,9 @@ package remote
 
 
 import java.io.{ DataInputStream, DataOutputStream, IOException }
-import java.net.{ InetSocketAddress, ServerSocket, Socket, UnknownHostException }
-import java.util.concurrent.Executors
+import java.net.{ InetSocketAddress, ServerSocket, Socket, 
+                  SocketException, UnknownHostException }
+import java.util.concurrent.{ ConcurrentHashMap, Executors }
 
 import scala.collection.mutable.HashMap
 
@@ -42,7 +43,11 @@ class BlockingServiceProvider extends ServiceProvider {
     private var terminated = false
 
     override def doTerminateImpl(isBottom: Boolean) {
+      Debug.info(this + ": doTerminateImpl(" + isBottom + ")")
       terminated = true
+      dataout.flush()
+      datain.close()
+      dataout.close()
       so.close()
     }
 
@@ -113,6 +118,8 @@ class BlockingServiceProvider extends ServiceProvider {
     override def toString = "<BlockingServiceWorker: " + so + ">"
   }
 
+  private val DUMMY_VALUE = new Object
+
   class BlockingServiceListener(
 			serverPort: Int,
       override val connectionCallback: ConnectionCallback[ByteConnection],
@@ -129,16 +136,24 @@ class BlockingServiceProvider extends ServiceProvider {
 
 		override def port = serverSocket.getLocalPort
 
+    private val childConnections = new ConcurrentHashMap[ByteConnection, Object]
+
     override def run() {
       try {
         while (!terminated) {
           val client = serverSocket.accept()
           client.setTcpNoDelay(true)
           val conn = new BlockingServiceWorker(client, receiveCallback)
+          conn afterTerminate { isBottom =>
+            childConnections.remove(conn)
+          }
+          childConnections.put(conn, DUMMY_VALUE)
           executor.execute(conn)
           receiveConnection(conn)
         }
       } catch {
+        case e: SocketException if (terminated) =>
+          Debug.error(this + ": Listening thread is shutting down")
         case e: Exception =>
           Debug.error(this + ": caught " + e.getMessage)
           Debug.doError { e.printStackTrace }
@@ -148,6 +163,9 @@ class BlockingServiceProvider extends ServiceProvider {
 
     override def doTerminateImpl(isBottom: Boolean) {
       terminated = true
+      import scala.collection.JavaConversions._
+      childConnections.keys.foreach(_.doTerminate(isBottom))
+      childConnections.clear()
       serverSocket.close()
     }
 

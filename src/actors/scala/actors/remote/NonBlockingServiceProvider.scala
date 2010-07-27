@@ -605,6 +605,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         Debug.info(this + ": doTerminateImpl() called")
         import scala.collection.JavaConversions._
         childConnections.keys.foreach(_.doTerminate(isBottom))
+        childConnections.clear()
         serverSocketChannel.close()
       }
 
