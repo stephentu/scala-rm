@@ -64,7 +64,14 @@ trait RemoteStartResult {
 
 case class DefaultRemoteStartResultImpl(override val errorMessage: Option[String]) extends RemoteStartResult
 
+object ControllerActor {
+  val defaultPort = 11723 
+  val defaultMode = ServiceMode.Blocking
+}
+
 private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
+
+  import ControllerActor._
 
   private def getProperty(prop: String): Option[String] = System.getProperty(prop) match {
     case null => None
@@ -74,7 +81,6 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
   private def port: Option[String] = getProperty("scala.actors.remote.controller.port")
   private def mode: Option[String] = getProperty("scala.actors.remote.controller.mode")
 
-  private val defaultPort = 11723 
   private def getPort = port match {
     case Some(s) => 
       try { s.toInt } catch { case _ =>
@@ -84,7 +90,6 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
     case None => defaultPort
   }
 
-  private val defaultMode: ServiceMode.Value = ServiceMode.Blocking
   private def getMode = mode match {
     case Some(m) =>
       if (m.equalsIgnoreCase("blocking"))

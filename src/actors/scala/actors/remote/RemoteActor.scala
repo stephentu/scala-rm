@@ -269,10 +269,24 @@ object RemoteActor {
   private def listenOnPort(port: Int, mode: ServiceMode.Value) =
     netKernel.listen(port, mode) 
 
+  def remoteStart[A <: Actor](host: String)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
+    remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.asInstanceOf[Class[A]])
+  }
+
   def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
     remoteStart(node, m.erasure.asInstanceOf[Class[A]])
   }
 
+  def remoteStart[A <: Actor](host: String, actorClass: Class[A])(implicit cfg: Configuration[Proxy]) {
+    remoteStart(Node(host, ControllerActor.defaultPort), actorClass)
+  }
+
+  /**
+   * Start a new instance of an actor of class <code>actorClass</code> on
+   * the given remote node. The port of the <code>node</code> argument is used
+   * to contact the <code>ControllerActor</code> listening on
+   * <code>node</code>.
+   */
   def remoteStart[A <: Actor](node: Node, actorClass: Class[A])(implicit cfg: Configuration[Proxy]) {
     val remoteController = select(node, ControllerSymbol)
     remoteController !? RemoteStartInvoke(actorClass.getName) match {
@@ -282,14 +296,37 @@ object RemoteActor {
     }
   }
 
+
+  def remoteStartAndListen[A <: Actor, P <: Proxy](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration[P]): P =
+    remoteStartAndListen(Node(host, ControllerActor.defaultPort), m.erasure.asInstanceOf[Class[A]], port, name)
+
+  def remoteStartAndListen[A <: Actor, P <: Proxy](host: String, actorClass: Class[A], port: Int, name: Symbol)(implicit cfg: Configuration[P]): P =
+    remoteStartAndListen(Node(host, ControllerActor.defaultPort), actorClass, port, name)
+
   def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration[P]): P =
     remoteStartAndListen(node, m.erasure.asInstanceOf[Class[A]], port, name)
 
+  /**
+   * Start a new instance of an actor of class <code>actorClass</code> on the
+   * given remote node, listening on <code>port</code> under name
+   * <code>name</code>, and return a proxy handle to the new remote instance.
+   *
+   * Note: This function call actually explicitly registers the new instance
+   * with the network kernel, so the code within <code>actorClass</code>
+   * does not need to make calls to <code>alive</code> and
+   * <code>register</code> to achieve the desired effect.
+   */
   def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, actorClass: Class[A], port: Int, name: Symbol)(implicit cfg: Configuration[P]): P = {
     remoteStart(node, actorClass)
     select(Node(node.address, node.port), name)
   }
 
+  /**
+   * Returns a remote handle which can be serialized and sent remotely, which
+   * contains the necessary information to re-establish the connection. If
+   * <code>thisActor</code> is not currently listening on any port (via
+   * call(s) to <code>alive</code>), a random port is selected.
+   */
   def remoteActorFor[P <: Proxy](thisActor: Actor)(implicit cfg: Configuration[P]): P = {
     val serializer = cfg.newSerializer()
 
@@ -327,7 +364,10 @@ object RemoteActor {
     serializer.newProxy(remoteNode, remoteConnectMode, clzName, remoteName)
   }
 
-
+  /**
+   * Returns a remote handle for the current running actor. Equivalent to
+   * <code>remoteActorFor(Actor.self)</code>.
+   */
   def remoteSelf[P <: Proxy](implicit cfg: Configuration[P]): P =
     remoteActorFor(Actor.self)
 
