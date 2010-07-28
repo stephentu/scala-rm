@@ -51,4 +51,10 @@ object FreshNameCreator {
   private def mkSym(prefix: String, id: Int) = Symbol(prefix + "$" + id)
 
   def newName(): Symbol = Symbol("$" + counter.getAndIncrement() + "$")
+
+  private val random = new Random
+
+  def newSessionId(): Symbol = {
+    Symbol("$" + Node.localhost + "$" + random.nextLong)
+  }
 }

@@ -26,6 +26,7 @@ class BlockingServiceProvider extends ServiceProvider {
 
   class BlockingServiceWorker(
       so: Socket, 
+      override val isEphemeral: Boolean,
       override val receiveCallback: BytesReceiveCallback)
     extends Runnable
     with    ByteConnection 
@@ -143,7 +144,7 @@ class BlockingServiceProvider extends ServiceProvider {
         while (!terminated) {
           val client = serverSocket.accept()
           client.setTcpNoDelay(true)
-          val conn = new BlockingServiceWorker(client, receiveCallback)
+          val conn = new BlockingServiceWorker(client, true, receiveCallback)
           conn afterTerminate { isBottom =>
             childConnections.remove(conn)
           }
@@ -182,7 +183,7 @@ class BlockingServiceProvider extends ServiceProvider {
     val socket = new Socket
     socket.setTcpNoDelay(true)
     socket.connect(new InetSocketAddress(node.address, node.port))
-    val worker = new BlockingServiceWorker(socket, receiveCallback)
+    val worker = new BlockingServiceWorker(socket, false, receiveCallback)
     executor.execute(worker)
     worker
   }

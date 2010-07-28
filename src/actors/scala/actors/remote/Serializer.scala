@@ -16,7 +16,7 @@ class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
 }
 
-abstract class Serializer[+T <: Proxy] {
+abstract class Serializer {
 
   // Handshake management 
 
@@ -88,75 +88,11 @@ abstract class Serializer[+T <: Proxy] {
    */
   override def hashCode = uniqueId.toInt
 
-  type MyNode <: Node
-  type MyNamedSend <: NamedSend
-  type MyLocator <: Locator
-  type MyRemoteStartInvoke <: RemoteStartInvoke
-  type MyRemoteStartInvokeAndListen <: RemoteStartInvokeAndListen
-  type MyRemoteApply <: RemoteApply
-
-  def newNode(address: String, port: Int): MyNode
-
-  def newNamedSend(senderLoc: MyLocator, receiverLoc: MyLocator, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): MyNamedSend
-
-  def newLocator(node: MyNode, name: Symbol): MyLocator
-
-  def newProxy(remoteNode: MyNode, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): T 
-
-  def newRemoteStartInvoke(actorClass: String): MyRemoteStartInvoke
-
-  def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): MyRemoteStartInvokeAndListen
-
-  def newRemoteApply(senderLoc: MyLocator, receiverLoc: MyLocator, rfun: RemoteFunction): MyRemoteApply
-
-  def intercept(m: AnyRef): AnyRef = m match {
-    case RemoteStartInvoke(actorClass) => 
-      newRemoteStartInvoke(actorClass)
-    case RemoteStartInvokeAndListen(actorClass, port, name, mode) =>
-      newRemoteStartInvokeAndListen(actorClass, port, name, mode)
-    case e => 
-      e
-  }
-
-}
-
-trait DefaultProxyCreator { this: Serializer[DefaultProxyImpl] =>
-  override def newProxy(remoteNode: MyNode, mode: ServiceMode.Value, serializerClassName: String, name: Symbol): DefaultProxyImpl =
-    new DefaultProxyImpl(remoteNode, mode, serializerClassName, name)
-}
-
-trait DefaultEnvelopeMessageCreator { this: Serializer[_ <: Proxy] =>
-  override type MyNode        = DefaultNodeImpl
-  override type MyNamedSend   = DefaultNamedSendImpl
-  override type MyLocator     = DefaultLocatorImpl
-  override type MyRemoteApply = DefaultRemoteApplyImpl
-
-  override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
-
-  override def newNamedSend(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): DefaultNamedSendImpl =
-    DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
-
-  override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =
-    DefaultLocatorImpl(node, name)
-
-  override def newRemoteApply(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, rfun: RemoteFunction): DefaultRemoteApplyImpl =
-    DefaultRemoteApplyImpl(senderLoc, receiverLoc, rfun)
-}
-
-trait DefaultControllerMessageCreator { this: Serializer[_ <: Proxy] =>
-  override type MyRemoteStartInvoke          = DefaultRemoteStartInvokeImpl
-  override type MyRemoteStartInvokeAndListen = DefaultRemoteStartInvokeAndListenImpl
-
-  override def newRemoteStartInvoke(actorClass: String): DefaultRemoteStartInvokeImpl = 
-    DefaultRemoteStartInvokeImpl(actorClass)
-
-  override def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): DefaultRemoteStartInvokeAndListenImpl =
-    DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name, mode)
 }
 
 class NonHandshakingSerializerException extends Exception
 
-trait NonHandshakingSerializer { this: Serializer[_ <: Proxy] =>
+trait NonHandshakingSerializer { this: Serializer =>
   override def initialState = None
   override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case _ => throw new NonHandshakingSerializerException
@@ -170,7 +106,7 @@ case object SendID
 case object ExpectID
 case object Resolved
 
-trait IdResolvingSerializer { this: Serializer[_ <: Proxy] =>
+trait IdResolvingSerializer { this: Serializer =>
   override def initialState: Option[Any] = Some(SendID)
   override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case SendID   => (ExpectID, Some(uniqueId))

@@ -67,26 +67,7 @@ object RemoteActor {
    */
   private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
-  @volatile private var _nk: NetKernel = _
-
   @volatile private var _ctrl: Actor = _
-
-  /**
-   * Retrieves the backing net kernel. Starts a new one if there is currently
-   * no backing net kernel.
-   */
-  private[remote] def netKernel = synchronized {
-    if (_nk eq null) {
-      assert(_ctrl eq null)
-      _nk   = new NetKernel
-      _ctrl = new ControllerActor(ControllerSymbol)
-    }
-    _nk
-  }
-
-  private[remote] def netKernel_? : Option[NetKernel] = synchronized {
-    Option(_nk)
-  }
 
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
@@ -138,6 +119,67 @@ object RemoteActor {
 
   def setExplicitUnlisten(isExplicit: Boolean) {
     explicitlyUnlisten = isExplicit
+  }
+
+  @volatile private var _configuration = DefaultConfiguration
+  def setConfiguration(c: Configuration[Proxy]) {
+    _configuration = c
+  }
+  private[remote] def configuration = _configuration
+
+  private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
+
+  @throws(classOf[NameAlreadyRegisteredException])
+  def register(name: Symbol, a: OutputChannel[Any]) {
+    val existing = actors.putIfAbsent(name, a)
+    if (existing ne null) {
+      if (existing != a)
+        throw NameAlreadyRegisteredException(name, existing)
+      Debug.warning("re-registering " + name + " to channel " + a)
+    } else Debug.info(this + ": successfully mapped " + name + " to " + a)
+    a.channelName match {
+      case Some(prevName) => 
+        if (prevName != name)
+          throw new IllegalStateException("Channel already registered as: " + prevName)
+      case None =>
+        a.channelName = Some(name)
+    }
+  }
+
+  def unregister(a: OutputChannel[Any]) {
+    a.channelName.foreach(name => {
+      actors.remove(name)
+      Debug.info(this + ": successfully removed name " + name + " for " + a + " from map")
+    })
+  }
+
+  private[remote] def getOrCreateName(from: OutputChannel[Any]) = from.channelName match {
+    case Some(name) => name
+    case None => 
+      val newName = FreshNameCreator.newName("remotesender")
+      Debug.info(this + ": creating new name for output channel " + from + " as " + newName)
+      register(newName, from)
+      newName
+  }
+
+  private val channels = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
+  private val sessions = new ConcurrentHashMap[OutputChannel[Any], Symbol]
+
+  def newChannel(ch: OutputChannel[Any]) = {
+    val fresh = FreshNameCreator.newSessionId()
+    channels.put(fresh, ch)
+    fresh
+  }
+  def findChannel(name: Symbol) = Option(channels.get(name))
+
+  def finishChannel(name: Symbol) {
+    channels.remove(name)
+  }
+
+  def finishSession(ch: OutputChannel[Any]) = Option(session.remove(ch))
+
+  def startSession(ch: OutputChannel[Any], name: Symbol) {
+    sessions.put(ch, name)
   }
 
   private def watchActor(actor: Actor) {

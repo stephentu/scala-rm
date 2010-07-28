@@ -75,6 +75,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   override def localNode  = byteConn.localNode
   override def remoteNode = byteConn.remoteNode
 
+  override def isEphemeral = byteConn.isEphemeral
+
   override def doTerminateImpl(isBottom: Boolean) {
     Debug.info(this + ": doTerminateImpl(" + isBottom + ")")
     if (!isBottom && !sendQueue.isEmpty) {

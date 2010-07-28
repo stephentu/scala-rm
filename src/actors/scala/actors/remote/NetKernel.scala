@@ -11,6 +11,7 @@ package scala.actors
 package remote
 
 import scala.collection.mutable.{ HashMap, HashSet }
+import java.io.IOException
 import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
 
 case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractActor)
@@ -21,234 +22,133 @@ case object Terminate
 case class MsgConnAttachment(val del: DelegateActor, val proxies: ConcurrentHashMap[Symbol, Proxy])
 
 /**
- * @version 0.9.17
+ * @version 1.0.0
  * @author Philipp Haller
+ * @author Stephen Tu
  */
-private[remote] class NetKernel extends CanTerminate {
+private[remote] object NetKernel {
 
-  private val service = new StandardService
+  @volatile private var _service = new StandardService
 
-  import java.io.IOException
+  private val connections = new ConcurrentHashMap[(Node, Long, ServiceMode.Value), MessageConnection]
 
-  def namedSend(conn: MessageConnection, senderLoc: Locator, receiverLoc: Locator, msg: AnyRef, session: Option[Symbol]) {
-    conn.send { serializer: Serializer[Proxy] =>
-      val wireMsg  = serializer.intercept(msg)
-      val metadata = serializer.serializeMetaData(wireMsg).getOrElse(null)
-      val bytes    = serializer.serialize(wireMsg)
-
-      // deep copy everything into serializer form
-      val _senderLocNode   = serializer.newNode(senderLoc.node.address, senderLoc.node.port)
-      val _receiverLocNode = serializer.newNode(receiverLoc.node.address, receiverLoc.node.port)
-      val _senderLoc       = serializer.newLocator(_senderLocNode, senderLoc.name)
-      val _receiverLoc     = serializer.newLocator(_receiverLocNode, receiverLoc.name)
-      serializer.newNamedSend(_senderLoc, _receiverLoc, metadata, bytes, session)
-    }
-  }
-
-  private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
-
-  @throws(classOf[NameAlreadyRegisteredException])
-  def register(name: Symbol, a: OutputChannel[Any]) {
-    val existing = actors.putIfAbsent(name, a)
-    if (existing ne null) {
-      if (existing != a)
-        throw NameAlreadyRegisteredException(name, existing)
-      Debug.warning("re-registering " + name + " to channel " + a)
-    } else Debug.info(this + ": successfully mapped " + name + " to " + a)
-    a.channelName match {
-      case Some(prevName) => 
-        if (prevName != name)
-          throw new IllegalStateException("Channel already registered as: " + prevName)
-      case None =>
-        a.channelName = Some(name)
-    }
-  }
-
-  def unregister(a: OutputChannel[Any]) {
-    a.channelName.foreach(name => {
-      actors.remove(name)
-      Debug.info(this + ": successfully removed name " + name + " for " + a + " from map")
-    })
-  }
-
-  def getOrCreateName(from: OutputChannel[Any]) = from.channelName match {
-    case Some(name) => name
-    case None => 
-      val newName = FreshNameCreator.newName("remotesender")
-      Debug.info(this + ": creating new name for output channel " + from + " as " + newName)
-      register(newName, from)
-      newName
-  }
-
-  def forward(from: OutputChannel[Any], conn: MessageConnection, name: Symbol, msg: AnyRef, session: Option[Symbol]) {
-    val fromName = 
-      if (from eq null) Symbol("$$NoSender$$") // TODO: this is a hack for now
-      else              getOrCreateName(from)
-    val senderLoc   = Locator(conn.localNode,  fromName)
-    val receiverLoc = Locator(conn.remoteNode, name)
-    namedSend(conn, senderLoc, receiverLoc, msg, session)
-  }
-
-  def remoteApply(conn: MessageConnection, name: Symbol, from: OutputChannel[Any], rfun: RemoteFunction) {
-    conn.send { serializer: Serializer[Proxy] =>
-      val _senderLocNode   = serializer.newNode(conn.localNode.address, conn.localNode.port)
-      val _receiverLocNode = serializer.newNode(conn.remoteNode.address, conn.remoteNode.port)
-      val _senderLoc       = serializer.newLocator(_senderLocNode, getOrCreateName(from))
-      val _receiverLoc     = serializer.newLocator(_receiverLocNode, name)
-      serializer.newRemoteApply(_senderLoc, _receiverLoc, rfun) 
-    }
-  }
-
-  /**
-   * Does NOT assign delegate
-   */
-  private def createProxy(conn: MessageConnection, sym: Symbol): Proxy = {
-    // invariant: createProxy() is always called with a connection that has
-    // already created an activeSerializer (not necessarily that the handshake
-    // is complete though)
-    val serializer  = conn.activeSerializer.asInstanceOf[Serializer[Proxy]]
-    val _remoteNode = serializer.newNode(conn.remoteNode.address, conn.remoteNode.port)
-    serializer.newProxy(_remoteNode, conn.mode, serializer.getClass.getName, sym)
-  }
-
-  private val processMsgFunc = processMsg _
-
-  private val connectionCache = new HashMap[(Node, Serializer[Proxy], ServiceMode.Value), MessageConnection]
-
-  // TODO: guard connect with terminateLock
-  def connect(node: Node, serializer: Serializer[Proxy], serviceMode: ServiceMode.Value): MessageConnection =
-    connect0(node.canonicalForm, serializer, serviceMode)
-
-  private def newDelegate(conn: MessageConnection) = {
-    val del = new DelegateActor(conn, this)
-    del.start()
-    del
-  }
-
-  private def getDelegate(conn: MessageConnection) =
-    conn.attachment_!.asInstanceOf[MsgConnAttachment].del
-
-  private def getProxies(conn: MessageConnection) =
-    conn.attachment_!.asInstanceOf[MsgConnAttachment].proxies
-
-  private def connect0(node: Node, serializer: Serializer[Proxy], serviceMode: ServiceMode.Value): MessageConnection = connectionCache.synchronized {
-    connectionCache.get((node, serializer, serviceMode)) match {
-      case Some(conn) => conn
-      case None =>
-        val conn = service.connect(node, serializer, serviceMode, processMsgFunc)
-
-        conn.attach(MsgConnAttachment(newDelegate(conn), new ConcurrentHashMap[Symbol, Proxy]))
-
-        conn beforeTerminate { isBottom =>
-          // don't let threads on this Node use this connection anymore
-          connectionCache.synchronized {
-            connectionCache -= ((node, serializer, serviceMode))
+  def getConnectionFor(node: Node, cfg: Configuration[Proxy]) = {
+    val key = (node, cfg.cachedSerializer.uniqueId, cfg.selectMode)
+    val testConn = connections.get(key)
+    if (testConn ne null)
+      testConn
+    else {
+      connections.synchronized {
+        val testConn0 = connections.get(key)
+        if (testConn0 ne null)
+          testConn0
+        else {
+          val conn = _service.connect(node, cfg.newSerializer(), cfg.selectMode, processMsgFunc)
+          conn beforeTerminate { isBottom =>
+            connections.remove(key)
           }
-
-          // wait until the connection's delegate is terminated
-          terminateDelegateFor(conn)
+          connections.put(key, conn)
+          conn
         }
-
-        connectionCache += ((node, serializer, serviceMode)) -> conn
-        conn
+      }
     }
   }
 
-  /**
-   * Waits up til 1 minute for the connection's delegate to terminate
-   */
-  private def terminateDelegateFor(conn: MessageConnection) {
-    // terminate the delegate actor for this connection
-    val del = getDelegate(conn)
-    if (del.getState != Actor.State.Terminated) {
-      Debug.info(this + ": exiting delegate linked actors")
-      del.exitLinkedActors()
-      Debug.info(this + ": waiting for delegate to terminate")
-      Debug.info(this + ": delegate is in state: " + del.getState)
-      val latch = new CountDownLatch(1)
-      del onTerminate { latch.countDown() }
-      del.send(Terminate, null)
-      if (!latch.await(60, TimeUnit.SECONDS))
-        Debug.error(this + ": Delegate did not terminate within given time")
-    } else 
-      Debug.info(this + ": ERROR: delegate was already terminated!")
-  }
+  private val listeners = new ConcurrentHashMap[Int, Listener]
 
-  private val listeners = new HashMap[(Int, ServiceMode.Value), Listener]
-  private val listenersByPort = new HashMap[Int, Listener]
-
-  private val msgConnCallback = (listener: Listener, msgConn: MessageConnection) => {
-    // NOTE: we don't bother to cache the connections which come from
-    // listeners, since we cannot connect to these anyways
-    msgConn.attach(MsgConnAttachment(newDelegate(msgConn), new ConcurrentHashMap[Symbol, Proxy]))
-    msgConn beforeTerminate { isBottom => terminateDelegateFor(msgConn) }
-  }
-
-  // TODO: guard listen with terminateLock
-  def listen(port: Int, serviceMode: ServiceMode.Value): Listener = listeners.synchronized {
-    listeners.get((port, serviceMode)) match {
-      case Some(listener) => listener
-      case None =>
-        // check the port
-        if (listenersByPort.contains(port))
-          throw InconsistentServiceException(serviceMode, listenersByPort(port).mode)
-
-        val listener = service.listen(port, serviceMode, msgConnCallback, processMsgFunc)
-				val realPort = listener.port
-        listener beforeTerminate { isBottom =>
-          listeners.synchronized {
-            listeners -= ((realPort, serviceMode))
-            listenersByPort -= realPort
+  def getListenerFor(port: Int, cfg: Configuration[Proxy]) = {
+    def ensureListener(listener: Listener) = {
+      if (listener.getMode != cfg.aliveMode)
+        throw InconsistentServiceException(cfg.aliveMode, listener.getMode)
+      listener
+    }
+    val testListener = listeners.get(port)
+    if (testListener ne null)
+      ensureListener(testListener)
+    else {
+      listeners.synchronized {
+        val testListener0 = listeners.get(port)
+        if (testListener0 ne null)
+          ensureListener(testListener0)
+        else {
+          val listener = _service.listen(port, cfg.aliveMode, msgConnCallback, processMsgFunc)
+          val realPort = listener.port
+          listener beforeTerminate { isBottom =>
+            listeners.remove(realPort)
           }
+          listeners.put(realPort, listener)
+          listener
         }
-        listeners += ((realPort, serviceMode)) -> listener
-        listenersByPort += realPort -> listener
-        listener
+      }
     }
   }
 
   def unlisten(port: Int) {
     Debug.info(this + ": unlisten() - port " + port)
+    val listener = listeners.remove(port)
+    if (listener eq null)
+      Debug.info(this + ": unlisten() - no listener on port " + port)
+    else
+      listener.terminateTop()
+  }
+
+  def releaseResources() {
     listeners.synchronized {
-      listenersByPort.get(port) match {
-        case Some(listener) => listener.terminateTop()
-        case None =>
-          Debug.info(this + ": unlisten() - port " + port + " is not being listened on")
+      connections.synchronized {
+
+        connections.values.foreach(_.terminateTop())
+        connections.clear()
+
+        listeners.values.foreach(_.terminateTop())
+        listeners.clear()
+
+        _service.terminateTop()
+        _service = new StandardService
       }
     }
   }
 
-  def getOrCreateProxy(conn: MessageConnection, senderName: Symbol): Proxy = {
-    val proxies   = getProxies(conn) 
-    val testProxy = proxies.get(senderName)
-    if (testProxy ne null) testProxy
-    else {
-      val newProxy  = createProxy(conn, senderName)
-      newProxy.del  = getDelegate(conn)
-      val newProxy0 = proxies.putIfAbsent(senderName, newProxy)
-      if (newProxy0 ne null) newProxy0 // newProxy0 came first, so use that one
-      else {
-        Debug.info(this + ": created new proxy: " + newProxy)
-        newProxy
-      }
+  def namedSend(node: Node, toName: Symbol, fromName: Symbol, session: Option[Symbol], msg: AnyRef, cfg: Configuration[Proxy]) {
+    val conn = getConnectionFor(node, cfg)
+    conn.send { serializer: Serializer =>
+      val wireMsg  = cfg.messageCreator.intercept(msg)
+      val metadata = serializer.serializeMetaData(wireMsg).orNull
+      val bytes    = serializer.serialize(wireMsg)
+
+      val _senderLocNode   = cfg.messageCreator.newNode(conn.localNode.address, conn.localNode.port)
+      val _receiverLocNode = cfg.messageCreator.newNode(node.address, node.port)
+      val _senderLoc       = cfg.messageCreator.newLocator(_senderLocNode, fromName)
+      val _receiverLoc     = cfg.messageCreator.newLocator(_receiverLocNode, toName)
+      cfg.messageCreator.newNamedSend(_senderLoc, _receiverLoc, metadata, bytes, session)
     }
   }
 
-  // TODO: guard with terminateLock
-  private[remote] def delegateFor(proxy: Proxy) = {
-
-    // TODO: catch exceptions here
-    val serializer  = Class.forName(proxy.serializerClassName).newInstance().asInstanceOf[Serializer[Proxy]]
-
-    // grab connection (possibly making a new connection)
-    val messageConn = connect(proxy.remoteNode, serializer, proxy.mode)
-
-    // NOTE: yes this means that we allow duplicate proxies, if a proxy object
-    // is instantiated explicitly
-    getDelegate(messageConn)
+  def forward(node: Node, toName: Symbol, from: OutputChannel[Any], session: Option[Symbol], msg: AnyRef, cfg: Configuration[Proxy]) {
+    val fromName = 
+      if (from eq null) Symbol("$$NoSender$$") // TODO: this is a hack for now
+      else              RemoteActor.getOrCreateName(from)
+    namedSend(node, toName, fromName, session, msg, cfg)
   }
 
-  private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef) {
+  def remoteApply(node: Node, toName: Symbol, from: OutputChannel[Any], rfun: RemoteFunction, cfg: Configuration[Proxy]) {
+    val conn = getConnectionFor(node, cfg)
+    conn.send { serializer: Serializer =>
+      val _senderLocNode   = serializer.newNode(conn.localNode.address, conn.localNode.port)
+      val _receiverLocNode = serializer.newNode(node.address, node.port)
+      val _senderLoc       = serializer.newLocator(_senderLocNode, RemoteActor.getOrCreateName(from))
+      val _receiverLoc     = serializer.newLocator(_receiverLocNode, toName)
+      cfg.messageCreator.newRemoteApply(_senderLoc, _receiverLoc, rfun) 
+    }
+  }
+
+  private val processMsgFunc = processMsg _
+
+  private val msgConnCallback = (listener: Listener, msgConn: MessageConnection) => {
+    // NOTE: we don't bother to cache the connections which come from
+    // listeners, since we cannot connect to these anyways
+  }
+
+  private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
     msg match {
       case cmd @ RemoteApply(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)
@@ -257,8 +157,8 @@ private[remote] class NetKernel extends CanTerminate {
           // message is lost
           Debug.info(this+": lost message")
         } else {
-          val senderProxy = getOrCreateProxy(conn, senderLoc.name)
-          senderProxy.send(LocalApply0(rfun, a.asInstanceOf[AbstractActor]), null)
+          val senderProxy = RemoteActor.configuration.messageCreator.newProxy(conn, senderLoc.name)
+          senderProxy.handleMessage(LocalApply0(rfun, a.asInstanceOf[AbstractActor]))
         }
       case cmd @ NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
         Debug.info(this+": processing "+cmd)
@@ -266,8 +166,8 @@ private[remote] class NetKernel extends CanTerminate {
         def sendToProxy(a: OutputChannel[Any]) {
           try {
             val msg = serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
-            val senderProxy = getOrCreateProxy(conn, senderLoc.name)
-            senderProxy.send(SendTo(a, msg, session), null)
+            val senderProxy = RemoteActor.configuration.messageCreator.newProxy(conn, senderLoc.name)
+            senderProxy.handleMessage(SendTo(a, msg, session))
           } catch {
             case e: Exception =>
               Debug.error(this+": caught "+e)
@@ -296,29 +196,4 @@ private[remote] class NetKernel extends CanTerminate {
     }
   }
 
-  override def doTerminateImpl(isBottom: Boolean) {
-    Debug.info(this + ": doTerminateImpl()")
-
-    Debug.info(this + ": try to gracefully shut down all the remaining connections")
-    // terminate all connections
-    connectionCache.synchronized {
-      connectionCache.valuesIterator.foreach { _.terminateTop() }
-      connectionCache.clear()
-    }
-
-    Debug.info(this + ": try to gracefully shut down remaining listeners")
-    // terminate all listeners
-    listeners.synchronized {
-      listeners.valuesIterator.foreach { _.terminateTop() }
-      listeners.clear()
-    }
-    
-    Debug.info(this + ": unregister all actors")
-    // clear all name mappings
-    actors.clear()
-
-    Debug.info(this + ": now kill service threads")
-    // terminate the service
-    service.terminateTop()
-  }
 }

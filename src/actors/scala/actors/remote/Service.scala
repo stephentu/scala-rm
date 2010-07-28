@@ -59,6 +59,8 @@ trait Connection
    */
   def localNode: Node
 
+  def isEphemeral: Boolean
+
   @volatile private var _attachment: AnyRef = _ 
   private val attachLock = new Object
 

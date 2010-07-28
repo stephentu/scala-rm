@@ -253,7 +253,10 @@ class NonBlockingServiceProvider extends ServiceProvider {
         override val remoteNode: Node,
         socketChannel: SocketChannel,
         receiveCallback: BytesReceiveCallback)
-      extends NonBlockingServiceConnection(socketChannel, receiveCallback)
+      extends NonBlockingServiceConnection(socketChannel, receiveCallback) {
+        override val isEphemeral = false
+      }
+
 
     class ReceivedNonBlockingServiceConnection(
         socketChannel: SocketChannel,
@@ -261,6 +264,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
       extends NonBlockingServiceConnection(socketChannel, receiveCallback) {
 
       override lazy val remoteNode = Node(so.getInetAddress.getHostName, so.getPort) 
+
+      override val isEphemeral = true
     }
 
     abstract class NonBlockingServiceConnection(

@@ -11,24 +11,35 @@
 package scala.actors
 package remote
 
-object Configuration {
-  implicit object defaultConfig extends DefaultConfiguration
-}
-
 abstract class Configuration[+P <: Proxy] {
   def aliveMode: ServiceMode.Value 
   def selectMode: ServiceMode.Value 
-  def newSerializer(): Serializer[P]
+  def newSerializer(): Serializer
+	def messageCreator: MessageCreator[P]
+
+  private[remote] lazy val cachedSerializer = newSerializer()
 }
 
 class DefaultConfiguration 
   extends HasJavaSerializer
+	with    DefaultMessageCreator
   with    HasBlockingAlive 
   with    HasBlockingSelect
 
-abstract class HasJavaSerializer extends Configuration[DefaultProxyImpl] { 
+object DefaultConfig extends DefaultConfiguration
+
+trait HasJavaSerializer { this: Configuration[_] =>
   override def newSerializer() = new JavaSerializer(RemoteActor.classLoader)
 }
+
+trait HasDefaultMessageCreator { this: Configuration[DefaultProxyImpl] =>
+	override def messageCreator = DefaultMessageCreator
+}
+
+object DefaultMessageCreator extends MessageCreator[DefaultProxyImpl]
+														 with    DefaultProxyCreator 
+                             with    DefaultEnvelopeMessageCreator 
+                             with    DefaultControllerMessageCreator
 
 trait HasBlockingAlive { this: Configuration[_] =>
   override def aliveMode = ServiceMode.Blocking
