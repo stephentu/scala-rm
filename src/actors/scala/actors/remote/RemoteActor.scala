@@ -413,7 +413,7 @@ object RemoteActor {
   def remoteActorAt[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
     Debug.info("remoteActorAt(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
     val msgCreator = cfg.cachedSerializer
-    val newNode  = msgCreator.newNode(node.address, node.port)
+    val newNode  = msgCreator.newNode(node.canonicalForm.address, node.port)
     val newProxy = msgCreator.newProxy(newNode, sym)
     newProxy.setConfig(cfg)
     newProxy

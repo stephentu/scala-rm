@@ -29,6 +29,12 @@ class DefaultConfiguration
   with    HasBlockingAlive 
   with    HasBlockingSelect
 
+class DefaultNonBlockingConfiguration
+  extends Configuration[DefaultProxyImpl]
+  with    HasJavaSerializer
+  with    HasNonBlockingAlive 
+  with    HasNonBlockingSelect
+
 trait HasJavaSerializer { this: Configuration[_] =>
   override def newSerializer() = new JavaSerializer(RemoteActor.classLoader)
 }
