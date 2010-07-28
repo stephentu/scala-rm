@@ -19,8 +19,6 @@ case class LocalApply0(rfun: Function2[AbstractActor, Proxy, Unit], a: AbstractA
 case class  SendTo(a: OutputChannel[Any], msg: Any, session: Option[Symbol])
 case object Terminate
 
-case class MsgConnAttachment(val del: DelegateActor, val proxies: ConcurrentHashMap[Symbol, Proxy])
-
 /**
  * @version 1.0.0
  * @author Philipp Haller
@@ -45,6 +43,7 @@ private[remote] object NetKernel {
         else {
           val conn = _service.connect(node, cfg.newSerializer(), cfg.selectMode, processMsgFunc)
           conn beforeTerminate { isBottom =>
+            Debug.info(this + ": removing key: " + key)
             connections.remove(key)
           }
           connections.put(key, conn)
@@ -58,8 +57,8 @@ private[remote] object NetKernel {
 
   def getListenerFor(port: Int, cfg: Configuration[Proxy]) = {
     def ensureListener(listener: Listener) = {
-      if (listener.getMode != cfg.aliveMode)
-        throw InconsistentServiceException(cfg.aliveMode, listener.getMode)
+      if (listener.mode != cfg.aliveMode)
+        throw InconsistentServiceException(cfg.aliveMode, listener.mode)
       listener
     }
     val testListener = listeners.get(port)
@@ -95,7 +94,7 @@ private[remote] object NetKernel {
   def releaseResources() {
     listeners.synchronized {
       connections.synchronized {
-
+        import scala.collection.JavaConversions._
         connections.values.foreach(_.terminateTop())
         connections.clear()
 
@@ -108,56 +107,57 @@ private[remote] object NetKernel {
     }
   }
 
-  def namedSend(node: Node, toName: Symbol, fromName: Symbol, session: Option[Symbol], msg: AnyRef, cfg: Configuration[Proxy]) {
-    val conn = getConnectionFor(node, cfg)
-    conn.send { serializer: Serializer =>
-      val wireMsg  = cfg.messageCreator.intercept(msg)
+  def namedSend(conn: MessageConnection, toName: Symbol, fromName: Symbol, session: Option[Symbol], msg: AnyRef) {
+    conn.send { serializer: Serializer[Proxy] =>
+      val wireMsg  = serializer.intercept(msg)
       val metadata = serializer.serializeMetaData(wireMsg).orNull
       val bytes    = serializer.serialize(wireMsg)
 
-      val _senderLocNode   = cfg.messageCreator.newNode(conn.localNode.address, conn.localNode.port)
-      val _receiverLocNode = cfg.messageCreator.newNode(node.address, node.port)
-      val _senderLoc       = cfg.messageCreator.newLocator(_senderLocNode, fromName)
-      val _receiverLoc     = cfg.messageCreator.newLocator(_receiverLocNode, toName)
-      cfg.messageCreator.newNamedSend(_senderLoc, _receiverLoc, metadata, bytes, session)
+      val messageCreator   = serializer 
+      val _senderLocNode   = messageCreator.newNode(conn.localNode.address, conn.localNode.port)
+      val _receiverLocNode = messageCreator.newNode(conn.remoteNode.address, conn.remoteNode.port)
+      val _senderLoc       = messageCreator.newLocator(_senderLocNode, fromName)
+      val _receiverLoc     = messageCreator.newLocator(_receiverLocNode, toName)
+      messageCreator.newNamedSend(_senderLoc, _receiverLoc, metadata, bytes, session)
     }
   }
 
-  def forward(node: Node, toName: Symbol, from: OutputChannel[Any], session: Option[Symbol], msg: AnyRef, cfg: Configuration[Proxy]) {
+  def forward(conn: MessageConnection, toName: Symbol, from: OutputChannel[Any], session: Option[Symbol], msg: AnyRef) {
     val fromName = 
       if (from eq null) Symbol("$$NoSender$$") // TODO: this is a hack for now
       else              RemoteActor.getOrCreateName(from)
-    namedSend(node, toName, fromName, session, msg, cfg)
+    namedSend(conn, toName, fromName, session, msg)
   }
 
-  def remoteApply(node: Node, toName: Symbol, from: OutputChannel[Any], rfun: RemoteFunction, cfg: Configuration[Proxy]) {
-    val conn = getConnectionFor(node, cfg)
-    conn.send { serializer: Serializer =>
-      val _senderLocNode   = serializer.newNode(conn.localNode.address, conn.localNode.port)
-      val _receiverLocNode = serializer.newNode(node.address, node.port)
-      val _senderLoc       = serializer.newLocator(_senderLocNode, RemoteActor.getOrCreateName(from))
-      val _receiverLoc     = serializer.newLocator(_receiverLocNode, toName)
-      cfg.messageCreator.newRemoteApply(_senderLoc, _receiverLoc, rfun) 
+  def remoteApply(conn: MessageConnection, toName: Symbol, from: OutputChannel[Any], rfun: RemoteFunction) {
+    conn.send { serializer: Serializer[Proxy] =>
+      val messageCreator   = serializer
+      val _senderLocNode   = messageCreator.newNode(conn.localNode.address, conn.localNode.port)
+      val _receiverLocNode = messageCreator.newNode(conn.remoteNode.address, conn.remoteNode.port)
+      val _senderLoc       = messageCreator.newLocator(_senderLocNode, RemoteActor.getOrCreateName(from))
+      val _receiverLoc     = messageCreator.newLocator(_receiverLocNode, toName)
+      messageCreator.newRemoteApply(_senderLoc, _receiverLoc, rfun) 
     }
   }
 
   private val processMsgFunc = processMsg _
 
   private val msgConnCallback = (listener: Listener, msgConn: MessageConnection) => {
-    // NOTE: we don't bother to cache the connections which come from
-    // listeners, since we cannot connect to these anyways
   }
 
-  private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
+  private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef) {
     msg match {
       case cmd @ RemoteApply(senderLoc, receiverLoc, rfun) =>
         Debug.info(this+": processing "+cmd)
-        val a = actors.get(receiverLoc.name)
+        val a = RemoteActor.getActor(receiverLoc.name)
         if (a eq null) {
           // message is lost
           Debug.info(this+": lost message")
         } else {
-          val senderProxy = RemoteActor.configuration.messageCreator.newProxy(conn, senderLoc.name)
+          val msgCreator  = serializer 
+          val remoteNode  = msgCreator.newNode(conn.remoteNode.address, conn.remoteNode.port) 
+          val senderProxy = msgCreator.newProxy(remoteNode, senderLoc.name)
+          senderProxy.setConn(conn)
           senderProxy.handleMessage(LocalApply0(rfun, a.asInstanceOf[AbstractActor]))
         }
       case cmd @ NamedSend(senderLoc, receiverLoc, metadata, data, session) =>
@@ -166,7 +166,10 @@ private[remote] object NetKernel {
         def sendToProxy(a: OutputChannel[Any]) {
           try {
             val msg = serializer.deserialize(if (metadata eq null) None else Some(metadata), data)
-            val senderProxy = RemoteActor.configuration.messageCreator.newProxy(conn, senderLoc.name)
+            val msgCreator  = serializer 
+            val remoteNode  = msgCreator.newNode(conn.remoteNode.address, conn.remoteNode.port) 
+            val senderProxy = msgCreator.newProxy(remoteNode, senderLoc.name)
+            senderProxy.setConn(conn)
             senderProxy.handleMessage(SendTo(a, msg, session))
           } catch {
             case e: Exception =>
@@ -178,10 +181,10 @@ private[remote] object NetKernel {
         def removeOrphan(a: OutputChannel[Any]) {
           // orphaned actor sitting in hash maps
           Debug.info(this + ": found orphaned (terminated) actor: " + a)
-          unregister(a)
+          RemoteActor.unregister(a)
         }
 
-        val a = actors.get(receiverLoc.name)
+        val a = RemoteActor.getActor(receiverLoc.name)
         if (a eq null) {
           // message is lost
           Debug.info(this+": lost message")

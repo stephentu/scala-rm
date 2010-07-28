@@ -13,6 +13,8 @@ package remote
 
 import scala.collection.mutable.{ HashMap, HashSet }
 
+import java.util.concurrent.ConcurrentHashMap
+
 /**
  *  This object provides methods for creating, registering, and
  *  selecting remotely accessible actors.
@@ -69,6 +71,20 @@ object RemoteActor {
 
   @volatile private var _ctrl: Actor = _
 
+  def startController() {
+    synchronized {
+      if (_ctrl eq null)
+        _ctrl = new ControllerActor(ControllerSymbol)
+    }
+  }
+
+  def stopController() {
+    synchronized {
+      if (_ctrl ne null)
+        _ctrl ! Terminate
+    }
+  }
+
   /* If set to <code>null</code> (default), the default class loader
    * of <code>java.io.ObjectInputStream</code> is used for deserializing
    * java objects sent as messages. Custom serializers are free to ignore this
@@ -121,12 +137,6 @@ object RemoteActor {
     explicitlyUnlisten = isExplicit
   }
 
-  @volatile private var _configuration = DefaultConfiguration
-  def setConfiguration(c: Configuration[Proxy]) {
-    _configuration = c
-  }
-  private[remote] def configuration = _configuration
-
   private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
 
   @throws(classOf[NameAlreadyRegisteredException])
@@ -153,6 +163,8 @@ object RemoteActor {
     })
   }
 
+  @inline private[remote] def getActor(s: Symbol) = actors.get(s)
+
   private[remote] def getOrCreateName(from: OutputChannel[Any]) = from.channelName match {
     case Some(name) => name
     case None => 
@@ -172,11 +184,9 @@ object RemoteActor {
   }
   def findChannel(name: Symbol) = Option(channels.get(name))
 
-  def finishChannel(name: Symbol) {
-    channels.remove(name)
-  }
+  def finishChannel(name: Symbol) = Option(channels.remove(name))
 
-  def finishSession(ch: OutputChannel[Any]) = Option(session.remove(ch))
+  def finishSession(ch: OutputChannel[Any]) = Option(sessions.remove(ch))
 
   def startSession(ch: OutputChannel[Any], name: Symbol) {
     sessions.put(ch, name)
@@ -187,9 +197,9 @@ object RemoteActor {
     actor onTerminate { actorTerminated(actor) }
   }
 
-  private[remote] def alive0(port: Int, actor: Actor, addToSet: Boolean)(implicit cfg: Configuration[_]) {
+  private[remote] def alive0(port: Int, actor: Actor, addToSet: Boolean)(implicit cfg: Configuration[Proxy]) {
     // listen if necessary
-    val listener = listenOnPort(port, cfg.aliveMode)
+    val listener = NetKernel.getListenerFor(port, cfg)
 
     // actual port chosen (is different from port iff port == 0)
     val realPort = listener.port
@@ -215,16 +225,19 @@ object RemoteActor {
       }
     }
 
-    if (addToSet)
-      remoteActors.synchronized { remoteActors += actor }
-    watchActor(actor)
+    if (addToSet) {
+      remoteActors.synchronized {
+        if (remoteActors.add(actor))
+          watchActor(actor)
+      }
+    }
   }
 
   /**
    * Makes <code>actor</code> remotely accessible on TCP port
    * <code>port</code>.
    */
-  def alive(port: Int, actor: Actor)(implicit cfg: Configuration[_]) {
+  def alive(port: Int, actor: Actor)(implicit cfg: Configuration[Proxy]) {
     alive0(port, actor, true)
   }
 
@@ -233,32 +246,8 @@ object RemoteActor {
    * <code>port</code>.
    */
   @throws(classOf[InconsistentServiceException])
-  def alive(port: Int)(implicit cfg: Configuration[_]) {
+  def alive(port: Int)(implicit cfg: Configuration[Proxy]) {
     alive0(port, Actor.self, true)
-  }
-
-  /**
-   * Tries to unlisten on <code>port</code> if there are no registered actors
-   * listening on it.
-   */
-  private def tryShutdown(ports: Iterable[Int]) {
-    portToActors.synchronized {
-      ports.foreach(port => {
-        portToActors.get(port) match {
-          case Some(_) =>
-            // ignore request - this is a potential race condition to check
-            // for, in the case where tryShutdown(p) is called, then a call to
-            // alive(p) is made, then this thread executes. 
-          case None =>
-            netKernel_?.foreach(_.unlisten(port))
-        }
-      })
-    }
-  }
-
-  private def newThread(f: => Unit) {
-    val t = new Thread { override def run() = f }
-    t.start()
   }
 
   private final val EmptyIntSet = new HashSet[Int]
@@ -267,7 +256,7 @@ object RemoteActor {
     Debug.info("actorTerminated(): alive actor " + actor + " terminated")
     unregister(actor)
 
-    val portsToShutdown = portToActors.synchronized {
+    portToActors.synchronized {
       // get all the ports this actor was listening on...
       val candidatePorts = actorToPorts.remove(actor).getOrElse(EmptyIntSet)
 
@@ -281,35 +270,15 @@ object RemoteActor {
             true
           } else false
         case None => true 
-      })
+      }).foreach(p => NetKernel.unlisten(p))
     }
-    Debug.info("actorTerminated(" + actor + "): ports to shutdown: " + portsToShutdown)
 
-    val terminate = remoteActors.synchronized { 
+    remoteActors.synchronized {
       remoteActors -= actor
-      Debug.info("actorTerminated(" + actor + "): remoteActors.size (after actor removal): " + remoteActors.size)
-      Debug.info(remoteActors.toString)
-      remoteActors.isEmpty && !explicitlyTerminate
+      if (!explicitlyTerminate && remoteActors.isEmpty)
+        NetKernel.releaseResources()
     }
-
-    if (terminate) 
-      // don't bother shutting down ports if we need to terminate, because
-      // that will happen implicitly
-      releaseResourcesInActor() // termination handler runs in actor threadpool
-    else if (!explicitlyUnlisten && !portsToShutdown.isEmpty) 
-      newThread { tryShutdown(portsToShutdown) }
   }
-
-  def register(name: Symbol, actor: Actor) {
-    netKernel.register(name, actor)
-  }
-
-  def unregister(actor: Actor) {
-    netKernel_?.foreach(_.unregister(actor))
-  }
-
-  private def listenOnPort(port: Int, mode: ServiceMode.Value) =
-    netKernel.listen(port, mode) 
 
   def remoteStart[A <: Actor](host: String)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
     remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.asInstanceOf[Class[A]])
@@ -370,8 +339,6 @@ object RemoteActor {
    * call(s) to <code>alive</code>), a random port is selected.
    */
   def remoteActorFor[P <: Proxy](thisActor: Actor)(implicit cfg: Configuration[P]): P = {
-    val serializer = cfg.newSerializer()
-
     // need to establish a port for this actor to listen on, so that the proxy
     // returned by remoteSelf makes sense (as in, you can connect to it)
     val port = portToActors.synchronized {
@@ -385,7 +352,7 @@ object RemoteActor {
 
           // no ports are actually listening. so pick a random one now (by
           // listening with 0 as the port)
-          val listener = listenOnPort(0, cfg.aliveMode)
+          val listener = NetKernel.getListenerFor(0, cfg)
 
           // return the actual port
           listener.port
@@ -399,11 +366,12 @@ object RemoteActor {
       })
     }
 
-    val remoteNode        = serializer.newNode(Node.localhost, port)
-    val remoteConnectMode = cfg.selectMode
-    val clzName           = serializer.getClass.getName
-    val remoteName        = netKernel.getOrCreateName(thisActor) // auto-registers name if a new one is created
-    serializer.newProxy(remoteNode, remoteConnectMode, clzName, remoteName)
+    val messageCreator = cfg.cachedSerializer
+    val remoteNode = messageCreator.newNode(Node.localhost, port)
+    val remoteName = getOrCreateName(thisActor) // auto-registers name if a new one is created
+    val proxy = messageCreator.newProxy(remoteNode, remoteName)
+    proxy.setConfig(cfg)
+    proxy
   }
 
   /**
@@ -412,9 +380,6 @@ object RemoteActor {
    */
   def remoteSelf[P <: Proxy](implicit cfg: Configuration[P]): P =
     remoteActorFor(Actor.self)
-
-  private def connect(node: Node, serializer: Serializer[Proxy], mode: ServiceMode.Value): MessageConnection =
-    netKernel.connect(node, serializer, mode)
 
   /**
    * Returns (a proxy for) the actor registered under
@@ -426,9 +391,11 @@ object RemoteActor {
   def select[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
     Debug.info("select(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
     val thisActor = Actor.self
-    remoteActors.synchronized { remoteActors += thisActor }
-    watchActor(thisActor)
-    netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
+    remoteActors.synchronized {
+      if (remoteActors.add(thisActor))
+        watchActor(thisActor)
+    }
+    remoteActorAt(node, sym)
   }
 
   /**
@@ -445,7 +412,11 @@ object RemoteActor {
   @throws(classOf[InconsistentServiceException])
   def remoteActorAt[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
     Debug.info("remoteActorAt(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
-    netKernel.getOrCreateProxy(connect(node, cfg.newSerializer(), cfg.selectMode), sym).asInstanceOf[P]
+    val msgCreator = cfg.cachedSerializer
+    val newNode  = msgCreator.newNode(node.address, node.port)
+    val newProxy = msgCreator.newProxy(newNode, sym)
+    newProxy.setConfig(cfg)
+    newProxy
   }
 
   /**
@@ -457,31 +428,8 @@ object RemoteActor {
    * within an actor.
    */
   def releaseResources() {
-    synchronized {
-      if (_nk ne null) {
-        assert(_ctrl ne null)
-        Debug.info("releaseResources(): sending Terminate to _ctrl")
-        _ctrl ! Terminate
-        _ctrl = null
-
-        Debug.info("releaseResources(): calling terminateTop on _nk")
-        _nk.terminateTop()
-        _nk = null
-      }
-    }
+    NetKernel.releaseResources()
   }
-
-  /**
-   * Shutdown the network kernel explicitly from within an actor. Only necessary when
-   * <code>setExplicitTermination(true)</code> has been called. 
-   *
-   * This particular implementation simply spawns a new thread to call
-   * <code>releaseResources</code>.
-   */
-  def releaseResourcesInActor() {
-    newThread { releaseResources() }
-  }
-
 }
 
 case class InconsistentSerializerException(expected: Serializer[Proxy], actual: Serializer[Proxy]) 

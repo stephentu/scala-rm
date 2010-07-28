@@ -14,7 +14,7 @@ import scala.collection.mutable.HashMap
 
 import java.util.WeakHashMap
 import java.lang.ref.WeakReference
-import java.io.{ ObjectInputStream, ObjectOutputStream }
+import java.io.{ ObjectInputStream, ObjectOutputStream, IOException }
 
 
 /**
@@ -35,21 +35,67 @@ trait Proxy extends Actor {
   def name: Symbol
 
   @volatile @transient
-  private[this] var _cfg: Configuration[Proxy] =  
-    RemoteActor.configuration
-  private[remote] def config_=(cfg: Configuration[Proxy]) {
+  private[this] var _cfg: Configuration[Proxy] = _
+  def setConfig(cfg: Configuration[Proxy]) {
     _cfg = cfg
   }
-  def config = _cfg
+
+  private[this] def config      = _cfg
+  private[this] def isEpheremal = _cfg eq null
+
+  @volatile @transient
+  private[this] var _conn: MessageConnection = _
+
+  def setConn(c: MessageConnection) {
+    _conn = c
+  }
+
+  private[this] def conn = {
+    val testConn = _conn
+    if (testConn ne null) testConn
+    else {
+      synchronized {
+        if (_conn ne null) _conn
+        else if (!isEpheremal) {
+          // try to (re-)initialize connection from the NetKernel
+          _conn = NetKernel.getConnectionFor(remoteNode, config)
+          _conn
+        } else
+          throw new RuntimeException("Cannot re-initialize epheremal proxy")
+      }
+    }
+  }
 
   override def start() = { throw new RuntimeException("Should never call start() on a ProxyActor") }
   override def act()     { throw new RuntimeException("Should never call act() on a ProxyActor")   }
+
+  private[this] def terminateConn(usingConn: MessageConnection) {
+    synchronized {
+      if (_conn eq usingConn) {
+        Debug.info(this + ": setting _conn to null")
+        _conn = null
+      } else {
+        Debug.info(this + ": _conn already replaced!")
+        Debug.info(this + ": _conn: " + _conn)
+        Debug.info(this + ": usingConn: " + usingConn)
+      }
+      usingConn.terminateBottom()
+    }
+  }
 
   def handleMessage(m: Any) {
     m match {
       case cmd @ Apply0(actor, rfun) =>
         Debug.info("cmd@Apply0: " + cmd)
-        NetKernel.remoteApply(remoteNode, name, actor, rfun, config)
+        val usingConn = conn
+        try {
+          NetKernel.remoteApply(usingConn, name, actor, rfun)
+        } catch {
+          case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
+            Debug.error(this + ": Caught exception: " + e.getMessage)
+            Debug.doError { e.printStackTrace() }
+            terminateConn(usingConn)
+        }
       case cmd @ LocalApply0(rfun, target) =>
         Debug.info("cmd@LocalApply0: " + cmd)
         Debug.info("target: " + target + ", creator: " + this)
@@ -86,7 +132,7 @@ trait Proxy extends Actor {
     }
   }
 
-  override def send(msg: Any, replyCh: OutputChannel[Any]) {
+  override def send(msg: Any, sender: OutputChannel[Any]) {
     msg match {
       // local proxy receives response to
       // reply channel
@@ -104,8 +150,16 @@ trait Proxy extends Actor {
             // send back response - the sender (from) field is null here,
             // because you cannot reply to a request-response cycle more
             // than once.
-            kernel.forward(remoteNode, name, null, Some(sid), msg, config)
-
+            val usingConn = conn
+            try {
+              NetKernel.forward(usingConn, name, null, Some(sid), msg)
+            } catch {
+              case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
+                Debug.error(this + ": Caught exception: " + e.getMessage)
+                Debug.doError { e.printStackTrace() }
+                terminateConn(usingConn)
+                throw e
+            }
           case None =>
             Debug.info(this+": cannot find session for "+ch)
         }
@@ -130,13 +184,19 @@ trait Proxy extends Actor {
 
         //Debug.info("sender.receiver: " + sender.receiver) 
         //Debug.info("proxy.name: " + proxy.name)
-        kernel.forward(remoteNode, name, if (sender eq null) null else sender.receiver, sessionName, msg, config)
+        val usingConn = conn
+        try {
+          NetKernel.forward(conn, name, if (sender eq null) null else sender.receiver, sessionName, msg)
+        } catch {
+          case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
+            Debug.error(this + ": Caught exception: " + e.getMessage)
+            Debug.doError { e.printStackTrace() }
+            terminateConn(usingConn)
+            throw e
+        }
       case e =>
         Debug.error("Unknown message for delegate: " + e)
-
     }
-
-
   }
 
   override def linkTo(to: AbstractActor): Unit = { }

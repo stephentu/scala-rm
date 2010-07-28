@@ -222,5 +222,5 @@ abstract class Service extends CanTerminate {
 
 }
 
-class ProviderAlreadyClosedException extends RuntimeException
-class ConnectionAlreadyClosedException extends RuntimeException
+class ProviderAlreadyClosedException extends AlreadyTerminatedException
+class ConnectionAlreadyClosedException extends AlreadyTerminatedException

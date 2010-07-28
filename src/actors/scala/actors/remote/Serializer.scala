@@ -16,7 +16,7 @@ class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
 }
 
-abstract class Serializer {
+abstract class Serializer[+P <: Proxy] extends MessageCreator[P] {
 
   // Handshake management 
 
@@ -78,8 +78,8 @@ abstract class Serializer {
    * Default equality method for serializers. Looks simply at the uniqueId field 
    */
   override def equals(o: Any): Boolean = o match {
-    case s: Serializer[Proxy] => uniqueId == s.uniqueId
-    case _                    => false
+    case s: Serializer[_] => uniqueId == s.uniqueId
+    case _                => false
   }
 
   /**
@@ -92,7 +92,7 @@ abstract class Serializer {
 
 class NonHandshakingSerializerException extends Exception
 
-trait NonHandshakingSerializer { this: Serializer =>
+trait NonHandshakingSerializer { this: Serializer[Proxy] =>
   override def initialState = None
   override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case _ => throw new NonHandshakingSerializerException
@@ -106,7 +106,7 @@ case object SendID
 case object ExpectID
 case object Resolved
 
-trait IdResolvingSerializer { this: Serializer =>
+trait IdResolvingSerializer { this: Serializer[Proxy] =>
   override def initialState: Option[Any] = Some(SendID)
   override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
     case SendID   => (ExpectID, Some(uniqueId))

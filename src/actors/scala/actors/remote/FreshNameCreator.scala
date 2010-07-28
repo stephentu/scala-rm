@@ -10,6 +10,8 @@
 package scala.actors
 package remote
 
+import scala.util.Random
+
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 

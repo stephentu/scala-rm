@@ -19,7 +19,7 @@ object ConnectionStatus {
   val Terminated           = 0x4
 }
 
-class HandshakeState(serializer: Serializer[_]) {
+class HandshakeState(serializer: Serializer[Proxy]) {
   private var curState = serializer.initialState.getOrElse(null)
   private var done     = serializer.initialState.isEmpty
 

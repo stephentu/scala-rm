@@ -57,7 +57,7 @@ class BlockingServiceProvider extends ServiceProvider {
       dataout.write(data)
     }
 
-    override def newAlreadyTerminatedException(): Exception = new ConnectionAlreadyClosedException
+    override def newAlreadyTerminatedException() = new ConnectionAlreadyClosedException
 
     override def send(data: Array[Byte]) {
       terminateLock.synchronized {
@@ -176,7 +176,7 @@ class BlockingServiceProvider extends ServiceProvider {
 
   override def mode = ServiceMode.Blocking
 
-  override def newAlreadyTerminatedException(): Exception = new ProviderAlreadyClosedException
+  override def newAlreadyTerminatedException() = new ProviderAlreadyClosedException
 
   override def connect(node: Node, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
     ensureAlive()

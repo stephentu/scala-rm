@@ -60,7 +60,7 @@ trait CanTerminate {
     if (terminateInitiated) throw newAlreadyTerminatedException()
   }
 
-  protected def newAlreadyTerminatedException(): Exception = new RuntimeException("Already terminated")
+  protected def newAlreadyTerminatedException(): AlreadyTerminatedException = new AlreadyTerminatedException
 
   /**
    * Guaranteed to only execute once. TerminateLock is acquired when
@@ -80,3 +80,8 @@ trait CanTerminate {
    * run) */
   final def hasTerminateFinished = terminateCompleted
 }
+
+class AlreadyTerminatedException(s: String) extends RuntimeException(s) {
+  def this() = this("Already terminated")
+}
+

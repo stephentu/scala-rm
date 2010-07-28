@@ -111,7 +111,7 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
 			override def aliveMode = getMode
 		}
     try {
-      alive0(getPort, self, false)
+      alive(getPort)
     } catch { 
       case e: IOException =>
         // oops, the specified port is already taken

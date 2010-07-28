@@ -19,7 +19,7 @@ trait MessageCreator[+P <: Proxy] {
   type MyRemoteStartInvokeAndListen <: RemoteStartInvokeAndListen
   type MyRemoteApply                <: RemoteApply
 
-  def newProxy(remoteNode: MyNode, name: Symbol): T 
+  def newProxy(remoteNode: MyNode, name: Symbol): P
 
   def newNode(address: String, port: Int): MyNode
 

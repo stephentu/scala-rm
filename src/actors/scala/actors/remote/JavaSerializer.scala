@@ -40,11 +40,9 @@ extends ObjectInputStream(in) {
  *  @author Philipp Haller
  */
 class JavaSerializer(cl: ClassLoader) 
-  extends Serializer[DefaultProxyImpl] 
-  with    IdResolvingSerializer
-  with    DefaultEnvelopeMessageCreator
-  with    DefaultControllerMessageCreator
-  with    DefaultProxyCreator {
+  extends Serializer[DefaultProxyImpl]
+  with    DefaultMessageCreator
+  with    IdResolvingSerializer {
 
   def this() = this(null)
 
