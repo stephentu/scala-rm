@@ -10,6 +10,7 @@
 package scala.actors
 package remote
 
+import java.util.concurrent.ConcurrentHashMap
 import java.net.{ InetAddress, InetSocketAddress }
 
 object Node {
@@ -19,6 +20,20 @@ object Node {
     else                 DefaultNodeImpl(address, port)
   def apply(port: Int): Node = apply(localhost, port)
   def unapply(n: Node): Option[(String, Int)] = Some((n.address, n.port))
+
+  private final val addresses = new ConcurrentHashMap[String, String]
+  private[remote] def getCanonicalAddress(s: String): String = {
+    val testAddress = addresses.get(s)
+    if (testAddress ne null)
+      testAddress
+    else {
+      val resolved = InetAddress.getByName(s).getCanonicalHostName
+      val testAddress0 = addresses.putIfAbsent(s, resolved)
+      if ((testAddress0 ne null) && testAddress0 != resolved)
+        Debug.error("Address " + s + " resolved differently: " + testAddress0 + " and " + resolved)
+      resolved
+    }
+  }
 }
 
 trait Node {
@@ -36,7 +51,7 @@ trait Node {
    * address into canonical form (as determined by the Java API)
    */
   def canonicalForm =
-    newNode(InetAddress.getByName(address).getCanonicalHostName, port)
+    newNode(Node.getCanonicalAddress(address), port)
 
   protected def newNode(a: String, p: Int): Node
 
