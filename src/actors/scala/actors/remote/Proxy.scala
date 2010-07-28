@@ -70,17 +70,8 @@ trait Proxy extends Actor {
   override def act()     { throw new RuntimeException("Should never call act() on a ProxyActor")   }
 
   private[this] def terminateConn(usingConn: MessageConnection) {
-    synchronized {
-      if (_conn eq usingConn) {
-        Debug.info(this + ": setting _conn to null")
-        _conn = null
-      } else {
-        Debug.info(this + ": _conn already replaced!")
-        Debug.info(this + ": _conn: " + _conn)
-        Debug.info(this + ": usingConn: " + usingConn)
-      }
-      usingConn.terminateBottom()
-    }
+    usingConn.terminateBottom()
+    synchronized { _conn = null }
   }
 
   def handleMessage(m: Any) {
