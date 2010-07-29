@@ -14,7 +14,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.net.{ InetAddress, InetSocketAddress }
 
 object Node {
-  val localhost = InetAddress.getLocalHost.getCanonicalHostName
+  final val localhost = InetAddress.getLocalHost.getCanonicalHostName
+  // TODO: error check the port number
   def apply(address: String, port: Int): Node = 
     if (address eq null) DefaultNodeImpl(localhost, port)
     else                 DefaultNodeImpl(address, port)
@@ -64,6 +65,7 @@ trait Node {
       false
   }
 
+  // TODO: better hash code
   override def hashCode = address.hashCode + port.hashCode
 
 }
@@ -72,56 +74,76 @@ case class DefaultNodeImpl(override val address: String, override val port: Int)
   override def newNode(a: String, p: Int) = DefaultNodeImpl(a, p)
 }
 
-object Locator {
-  def apply(node: Node, name: Symbol): Locator = DefaultLocatorImpl(node, name)
-  def unapply(l: Locator): Option[(Node, Symbol)] = Some((l.node, l.name))
+object AsyncSend {
+  def apply(senderName: Option[Symbol], receiverName: Symbol, metaData: Array[Byte], data: Array[Byte]): AsyncSend =
+    DefaultAsyncSendImpl(senderName, receiverName, metaData, data)
+  def unapply(n: AsyncSend): Option[(Option[Symbol], Symbol, Array[Byte], Array[Byte])] =
+    Some((n.senderName, n.receiverName, n.metaData, n.data))
 }
 
-trait Locator {
-  def node: Node
-  def name: Symbol
-  override def equals(o: Any) = o match {
-    case l: Locator =>
-      l.node == this.node && l.name == this.name
-    case _ => false
-  }
-  override def hashCode = node.hashCode + name.hashCode
-}
-
-case class DefaultLocatorImpl(override val node: Node, override val name: Symbol) extends Locator
-
-object NamedSend {
-  def apply(senderLoc: Locator, receiverLoc: Locator, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): NamedSend =
-    DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
-  def unapply(n: NamedSend): Option[(Locator, Locator, Array[Byte], Array[Byte], Option[Symbol])] =
-    Some((n.senderLoc, n.receiverLoc, n.metaData, n.data, n.session))
-}
-
-trait NamedSend {
-  def senderLoc: Locator
-  def receiverLoc: Locator
+trait AsyncSend {
+  def senderName: Option[Symbol]
+  def receiverName: Symbol
   def metaData: Array[Byte]
   def data: Array[Byte]
-  def session: Option[Symbol]
 }
 
-case class DefaultNamedSendImpl(override val senderLoc: Locator, 
-                                override val receiverLoc: Locator, 
+case class DefaultAsyncSendImpl(override val senderName: Option[Symbol],
+                                override val receiverName: Symbol, 
                                 override val metaData: Array[Byte], 
-                                override val data: Array[Byte], 
-                                override val session: Option[Symbol]) extends NamedSend
+                                override val data: Array[Byte]) extends AsyncSend
+
+object SyncSend {
+  def apply(senderName: Symbol, receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): SyncSend =
+    DefaultSyncSendImpl(senderName, receiverName, metaData, data, session)
+  def unapply(n: SyncSend): Option[(Symbol, Symbol, Array[Byte], Array[Byte], Symbol)] =
+    Some((n.senderName, n.receiverName, n.metaData, n.data, n.session))
+}
+
+trait SyncSend {
+  def senderName: Symbol
+  def receiverName: Symbol
+  def metaData: Array[Byte]
+  def data: Array[Byte]
+  def session: Symbol
+}
+
+case class DefaultSyncSendImpl(override val senderName: Symbol, 
+                               override val receiverName: Symbol, 
+                               override val metaData: Array[Byte], 
+                               override val data: Array[Byte],
+                               override val session: Symbol) extends SyncSend
+
+object SyncReply {
+  def apply(receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): SyncReply =
+    DefaultSyncReplyImpl(receiverName, metaData, data, session)
+  def unapply(n: SyncReply): Option[(Symbol, Array[Byte], Array[Byte], Symbol)] =
+    Some((n.receiverName, n.metaData, n.data, n.session))
+}
+
+trait SyncReply {
+  def receiverName: Symbol
+  def metaData: Array[Byte]
+  def data: Array[Byte]
+  def session: Symbol
+}
+
+case class DefaultSyncReplyImpl(override val receiverName: Symbol, 
+                                override val metaData: Array[Byte], 
+                                override val data: Array[Byte],
+                                override val session: Symbol) extends SyncReply
 
 object RemoteApply {
-  def apply(senderLoc: Locator, receiverLoc: Locator, rfun: RemoteFunction): RemoteApply = DefaultRemoteApplyImpl(senderLoc, receiverLoc, rfun)
-  def unapply(r: RemoteApply): Option[(Locator, Locator, RemoteFunction)] = Some((r.senderLoc, r.receiverLoc, r.function))
+  def apply(senderName: Symbol, receiverName: Symbol, rfun: RemoteFunction): RemoteApply = DefaultRemoteApplyImpl(senderName, receiverName, rfun)
+  def unapply(r: RemoteApply): Option[(Symbol, Symbol, RemoteFunction)] = Some((r.senderName, r.receiverName, r.function))
 }
 
 trait RemoteApply {
-  def senderLoc: Locator
-  def receiverLoc: Locator
+  def senderName: Symbol
+  def receiverName: Symbol
   def function: RemoteFunction
 }
 
-case class DefaultRemoteApplyImpl(override val senderLoc: Locator, 
-                                  override val receiverLoc: Locator, 
+case class DefaultRemoteApplyImpl(override val senderName: Symbol,
+                                  override val receiverName: Symbol,
                                   override val function: RemoteFunction) extends RemoteApply

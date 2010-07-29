@@ -80,8 +80,10 @@ object RemoteActor {
 
   def stopController() {
     synchronized {
-      if (_ctrl ne null)
+      if (_ctrl ne null) {
         _ctrl ! Terminate
+        _ctrl = null
+      }
     }
   }
 

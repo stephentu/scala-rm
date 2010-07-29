@@ -13,8 +13,9 @@ package remote
 
 trait MessageCreator[+P <: Proxy] {
   type MyNode                       <: Node
-  type MyNamedSend                  <: NamedSend
-  type MyLocator                    <: Locator
+  type MyAsyncSend                  <: AsyncSend
+  type MySyncSend                   <: SyncSend
+  type MySyncReply                  <: SyncReply
   type MyRemoteStartInvoke          <: RemoteStartInvoke
   type MyRemoteStartInvokeAndListen <: RemoteStartInvokeAndListen
   type MyRemoteApply                <: RemoteApply
@@ -23,15 +24,17 @@ trait MessageCreator[+P <: Proxy] {
 
   def newNode(address: String, port: Int): MyNode
 
-  def newNamedSend(senderLoc: MyLocator, receiverLoc: MyLocator, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): MyNamedSend
+  def newAsyncSend(senderName: Option[Symbol], receiverName: Symbol, metaData: Array[Byte], data: Array[Byte]): MyAsyncSend
 
-  def newLocator(node: MyNode, name: Symbol): MyLocator
+  def newSyncSend(senderName: Symbol, receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): MySyncSend
+
+  def newSyncReply(receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): MySyncReply
 
   def newRemoteStartInvoke(actorClass: String): MyRemoteStartInvoke
 
   def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): MyRemoteStartInvokeAndListen
 
-  def newRemoteApply(senderLoc: MyLocator, receiverLoc: MyLocator, rfun: RemoteFunction): MyRemoteApply
+  def newRemoteApply(senderName: Symbol, receiverName: Symbol, rfun: RemoteFunction): MyRemoteApply
 
   def intercept(m: AnyRef): AnyRef = m match {
     case RemoteStartInvoke(actorClass) => 
@@ -50,20 +53,23 @@ trait DefaultProxyCreator { this: MessageCreator[DefaultProxyImpl] =>
 
 trait DefaultEnvelopeMessageCreator { this: MessageCreator[_ <: Proxy] =>
   override type MyNode        = DefaultNodeImpl
-  override type MyNamedSend   = DefaultNamedSendImpl
-  override type MyLocator     = DefaultLocatorImpl
+  override type MyAsyncSend   = DefaultAsyncSendImpl
+  override type MySyncSend    = DefaultSyncSendImpl
+  override type MySyncReply   = DefaultSyncReplyImpl
   override type MyRemoteApply = DefaultRemoteApplyImpl
 
   override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
 
-  override def newNamedSend(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, metaData: Array[Byte], data: Array[Byte], session: Option[Symbol]): DefaultNamedSendImpl =
-    DefaultNamedSendImpl(senderLoc, receiverLoc, metaData, data, session)
+  override def newAsyncSend(senderName: Option[Symbol], receiverName: Symbol, metaData: Array[Byte], data: Array[Byte]): DefaultAsyncSendImpl =
+    DefaultAsyncSendImpl(senderName, receiverName, metaData, data)
 
-  override def newLocator(node: DefaultNodeImpl, name: Symbol): DefaultLocatorImpl =
-    DefaultLocatorImpl(node, name)
+  override def newSyncSend(senderName: Symbol, receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): DefaultSyncSendImpl =
+    DefaultSyncSendImpl(senderName, receiverName, metaData, data, session)
+                                                                                   
+  override def newSyncReply(receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): DefaultSyncReplyImpl = DefaultSyncReplyImpl(receiverName, metaData, data, session)
 
-  override def newRemoteApply(senderLoc: DefaultLocatorImpl, receiverLoc: DefaultLocatorImpl, rfun: RemoteFunction): DefaultRemoteApplyImpl =
-    DefaultRemoteApplyImpl(senderLoc, receiverLoc, rfun)
+  override def newRemoteApply(senderName: Symbol, receiverName: Symbol, rfun: RemoteFunction): DefaultRemoteApplyImpl =
+    DefaultRemoteApplyImpl(senderName, receiverName, rfun)
 }
 
 trait DefaultControllerMessageCreator { this: MessageCreator[_ <: Proxy] =>

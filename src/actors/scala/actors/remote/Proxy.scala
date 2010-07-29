@@ -74,13 +74,13 @@ trait Proxy extends Actor {
     synchronized { _conn = null }
   }
 
-  def handleMessage(m: Any) {
+  def handleMessage(m: ProxyCommand) {
     m match {
-      case cmd @ Apply0(actor, rfun) =>
+      case cmd @ RemoteApply0(actor, rfun) =>
         Debug.info("cmd@Apply0: " + cmd)
         val usingConn = conn
         try {
-          NetKernel.remoteApply(usingConn, name, actor, rfun)
+          NetKernel.remoteApply(usingConn, name, RemoteActor.getOrCreateName(actor), rfun)
         } catch {
           case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
             Debug.error(this + ": Caught exception: " + e.getMessage)
@@ -93,29 +93,29 @@ trait Proxy extends Actor {
         rfun(target, this)
       // Request from remote proxy.
       // `this` is local proxy.
-      case cmd @ SendTo(out, msg, None) =>
+      case cmd @ SendTo(out, msg) =>
         Debug.info("cmd@SendTo: " + cmd)
         // local send
         out.send(msg, this) // use the proxy as the reply channel
-      case cmd @ SendTo(out, msg, Some(session)) =>
-        Debug.info("cmd@SendTo: " + cmd)
+      case cmd @ StartSession(out, msg, session) =>
+        Debug.info(this + ": creating new reply channel for session: " + session)
+
+        // create a new reply channel...
+        val replyCh = new Channel[Any](this)
+        // ...that maps to session
+        RemoteActor.startSession(replyCh, session)
+
+        Debug.info(this + ": sending msg " + msg + " to out: " + out)
+        // local send
+        out.send(msg, replyCh)
+
+      case cmd @ FinishSession(out, msg, session) =>
         // is this an active session?
         RemoteActor.finishChannel(session) match {
           case None =>
-            Debug.info(this + ": creating new reply channel for session: " + session)
-
-            // create a new reply channel...
-            val replyCh = new Channel[Any](this)
-            // ...that maps to session
-            RemoteActor.startSession(replyCh, session)
-
-            Debug.info(this + ": sending msg " + msg + " to out: " + out)
-            // local send
-            out.send(msg, replyCh)
-
+            Debug.info(this + ": lost session: " + session)
           // finishes request-reply cycle
           case Some(replyCh) =>
-            assert(name == Symbol("$$NoSender$$"))
             Debug.info(this + ": finishing request-reply cycle for session: " + session + " on replyCh " + replyCh)
             replyCh ! msg
         }
@@ -143,7 +143,7 @@ trait Proxy extends Actor {
             // than once.
             val usingConn = conn
             try {
-              NetKernel.forward(usingConn, name, null, Some(sid), msg)
+              NetKernel.syncReply(usingConn, name, msg, sid)
             } catch {
               case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
                 Debug.error(this + ": Caught exception: " + e.getMessage)
@@ -161,23 +161,21 @@ trait Proxy extends Actor {
       // which type of call it was
       case msg: AnyRef =>
         Debug.info("msg: AnyRef = " + msg)
-        // find out whether it's a synchronous send
-        val sessionName = sender match {
-          case (_: Actor) | null =>  /** Comes from !, or send(m, null) */
-            Debug.info(this + ": async send: sender: " + sender)
-            None
-          case _ =>                  /** Comes from !! and !? */
-            Debug.info(this + ": sync send: sender: " + sender)
-            val fresh = RemoteActor.newChannel(sender)
-            Debug.info(this + ": mapped " + fresh + " -> " + sender)
-            Some(fresh)
-        }
 
-        //Debug.info("sender.receiver: " + sender.receiver) 
-        //Debug.info("proxy.name: " + proxy.name)
         val usingConn = conn
         try {
-          NetKernel.forward(conn, name, if (sender eq null) null else sender.receiver, sessionName, msg)
+          // find out whether it's a synchronous send
+          sender match {
+            case (_: Actor) | null =>  /** Comes from !, or send(m, null) */
+              Debug.info(this + ": async send: sender: " + sender)
+              val fromName = if (sender eq null) None else Some(RemoteActor.getOrCreateName(sender))
+              NetKernel.asyncSend(usingConn, name, fromName, msg)
+            case _ =>                  /** Comes from !! and !? */
+              Debug.info(this + ": sync send: sender: " + sender)
+              val session = RemoteActor.newChannel(sender)
+              Debug.info(this + ": mapped " + session + " -> " + sender)
+              NetKernel.syncSend(usingConn, name, RemoteActor.getOrCreateName(sender.receiver), msg, session)
+          }
         } catch {
           case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
             Debug.error(this + ": Caught exception: " + e.getMessage)
@@ -185,16 +183,23 @@ trait Proxy extends Actor {
             terminateConn(usingConn)
             throw e
         }
+
       case e =>
         Debug.error("Unknown message for delegate: " + e)
     }
   }
 
-  override def linkTo(to: AbstractActor): Unit = { }
+  override def linkTo(to: AbstractActor) { 
+    handleMessage(RemoteApply0(to, LinkToFun))
+  }
 
-  override def unlinkFrom(from: AbstractActor): Unit = { }
+  override def unlinkFrom(from: AbstractActor) {
+    handleMessage(RemoteApply0(from, UnlinkFromFun))
+  }
 
-  override def exit(from: AbstractActor, reason: AnyRef): Unit = { }
+  override def exit(from: AbstractActor, reason: AnyRef) {
+    handleMessage(RemoteApply0(from, ExitFun(reason)))
+  }
 
   override def toString = "<" + name + "@" + remoteNode + ">"
 
@@ -254,4 +259,9 @@ sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Uni
     "<ExitFun>("+reason.toString+")"
 }
 
-private[remote] case class Apply0(actor: AbstractActor, rfun: RemoteFunction)
+sealed trait ProxyCommand
+case class SendTo(a: OutputChannel[Any], msg: Any) extends ProxyCommand
+case class StartSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand
+case class FinishSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand
+case class LocalApply0(rfun: RemoteFunction, a: AbstractActor) extends ProxyCommand
+case class RemoteApply0(actor: AbstractActor, rfun: RemoteFunction) extends ProxyCommand
