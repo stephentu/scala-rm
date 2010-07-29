@@ -81,7 +81,7 @@ object RemoteActor {
   def stopController() {
     synchronized {
       if (_ctrl ne null) {
-        _ctrl ! Terminate
+        _ctrl.send(Terminate, null)
         _ctrl = null
       }
     }
@@ -330,8 +330,13 @@ object RemoteActor {
    * <code>register</code> to achieve the desired effect.
    */
   def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, actorClass: Class[A], port: Int, name: Symbol)(implicit cfg: Configuration[P]): P = {
-    remoteStart(node, actorClass)
-    select(Node(node.address, node.port), name)
+    val remoteController = select(node, ControllerSymbol)
+    remoteController !? RemoteStartInvokeAndListen(actorClass.getName, port, name, cfg.aliveMode) match {
+      case RemoteStartResult(None) => // success, do nothing
+      case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
+      case _ => throw new RuntimeException("Failed")
+    }
+    select(Node(node.address, port), name)
   }
 
   /**

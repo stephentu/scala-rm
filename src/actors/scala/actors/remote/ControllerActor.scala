@@ -116,6 +116,7 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
       case e: IOException =>
         // oops, the specified port is already taken
         Debug.error(this + ": Could not listen on port: " + getPort)
+        Debug.doError { e.printStackTrace() }
         exit()
     }
     register(thisSym, self)

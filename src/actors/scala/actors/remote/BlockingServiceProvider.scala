@@ -108,6 +108,8 @@ class BlockingServiceProvider extends ServiceProvider {
           }
         }
       } catch {
+        case e: IOException if (terminated) =>
+          Debug.info(this + ": listening thread is shutting down")
         case e: Exception =>
           Debug.error(this + ": caught " + e.getMessage)
           Debug.doError { e.printStackTrace }

@@ -108,18 +108,7 @@ trait Proxy extends Actor {
         Debug.info(this + ": sending msg " + msg + " to out: " + out)
         // local send
         out.send(msg, replyCh)
-
-      case cmd @ FinishSession(out, msg, session) =>
-        // is this an active session?
-        RemoteActor.finishChannel(session) match {
-          case None =>
-            Debug.info(this + ": lost session: " + session)
-          // finishes request-reply cycle
-          case Some(replyCh) =>
-            Debug.info(this + ": finishing request-reply cycle for session: " + session + " on replyCh " + replyCh)
-            replyCh ! msg
-        }
-
+      case _ => throw new IllegalArgumentException("Cannot handle command: " + m)
     }
   }
 

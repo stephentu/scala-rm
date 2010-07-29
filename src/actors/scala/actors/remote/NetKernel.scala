@@ -41,7 +41,7 @@ private[remote] object NetKernel {
         else {
           val conn = _service.connect(node, cfg.newSerializer(), cfg.selectMode, processMsgFunc)
           conn beforeTerminate { isBottom =>
-            Debug.info(this + ": removing key: " + key)
+            Debug.info(this + ": removing connection with key: " + key)
             connections.remove(key)
           }
           connections.put(key, conn)
@@ -92,6 +92,7 @@ private[remote] object NetKernel {
   def releaseResources() {
     listeners.synchronized {
       connections.synchronized {
+        Debug.info(this + ": releaseResources()")
         import scala.collection.JavaConversions._
         connections.values.foreach(_.terminateTop())
         connections.clear()
@@ -150,6 +151,16 @@ private[remote] object NetKernel {
       m match {
         case SendTo(out, m) =>
           out.send(m, null)
+        case FinishSession(out, msg, session) =>
+          // is this an active session?
+          RemoteActor.finishChannel(session) match {
+            case None =>
+              Debug.info(this + ": lost session: " + session)
+            // finishes request-reply cycle
+            case Some(replyCh) =>
+              Debug.info(this + ": finishing request-reply cycle for session: " + session + " on replyCh " + replyCh)
+              replyCh ! msg
+          }
         case _ =>
           throw new RuntimeException("NoSender cannot handle: " + m)
       }
@@ -157,7 +168,15 @@ private[remote] object NetKernel {
     override def send(msg: Any, sender: OutputChannel[Any]) {
       throw new RuntimeException("NoSender")
     }
-    // TODO: linkTo, unlinkFrom, exit
+    override def linkTo(to: AbstractActor) { 
+      throw new RuntimeException("NoSender")
+    }
+    override def unlinkFrom(from: AbstractActor) {
+      throw new RuntimeException("NoSender")
+    }
+    override def exit(from: AbstractActor, reason: AnyRef) {
+      throw new RuntimeException("NoSender")
+    }
     override def toString = "<NoSender>"
   }
 
