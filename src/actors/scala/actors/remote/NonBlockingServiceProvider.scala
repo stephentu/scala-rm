@@ -423,8 +423,9 @@ class NonBlockingServiceProvider extends ServiceProvider {
             Debug.info(this + ": successfully drained writeQueue")
         }
 
-        // cancel the key
-        socketChannel.keyFor(selector).cancel()
+        // cancel the key, if it has not already been cancelled
+        val key = socketChannel.keyFor(selector)
+        if (key ne null) key.cancel()
 
         // close the socket
         socketChannel.close()
