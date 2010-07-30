@@ -45,6 +45,24 @@ import java.util.concurrent.ConcurrentHashMap
 object RemoteActor {
 
   /**
+   * Shorthand constructor for:
+   * {{{
+   * actor {
+   *    alive(port)
+   *    register(name, self)
+   *    body 
+   * }
+   * }}}
+   */
+  def remoteActor(port: Int, name: Symbol)(body: => Unit)(implicit cfg: Configuration[Proxy]) {
+    Actor.actor {
+      alive(port)
+      register(name, Actor.self)
+      body 
+    }
+  }
+
+  /**
    * Remote name used for the singleton Controller actor
    */
   private final val ControllerSymbol = Symbol("$$ControllerActor$$")
@@ -264,7 +282,7 @@ object RemoteActor {
 
       // ... now for each of these candidates, remove this actor
       // from the set and terminate if the set becomes empty
-      candidatePorts.filter(p => portToActors.get(p) match {
+      val ports = candidatePorts.filter(p => portToActors.get(p) match {
         case Some(actors) =>
           actors -= actor
           if (actors.isEmpty) {
@@ -272,7 +290,10 @@ object RemoteActor {
             true
           } else false
         case None => true 
-      }).foreach(p => NetKernel.unlisten(p))
+      })
+      
+      if (!explicitlyUnlisten)
+        ports.foreach(p => NetKernel.unlisten(p))
     }
 
     remoteActors.synchronized {
@@ -438,6 +459,7 @@ object RemoteActor {
     NetKernel.releaseResources()
   }
 }
+
 
 case class InconsistentSerializerException(expected: Serializer[Proxy], actual: Serializer[Proxy]) 
   extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)

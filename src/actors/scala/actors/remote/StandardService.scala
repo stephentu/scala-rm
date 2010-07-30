@@ -19,48 +19,6 @@ object ConnectionStatus {
   val Terminated           = 0x4
 }
 
-class HandshakeState(serializer: Serializer[Proxy]) {
-  private var curState = serializer.initialState.getOrElse(null)
-  private var done     = serializer.initialState.isEmpty
-
-  def isDone = done
-
-  private var sending  = true
-
-  def isSending   = sending
-  def isReceiving = !isSending
-
-  def nextHandshakeMessage() = {
-    assert(!done && isSending) 
-    if (serializer.nextHandshakeMessage.isDefinedAt(curState)) {
-      val (nextState, nextMsg) = serializer.nextHandshakeMessage.apply(curState)
-      curState = nextState
-      flip()
-      nextMsg match {
-        case Some(_) => nextMsg
-        case None    =>
-          done = true
-          None
-      }
-    } else throw new IllegalHandshakeStateException
-  }
-
-  def flip() {
-    sending = !sending
-  }
-
-  def handleNextMessage(m: Any) {
-    assert(!done && isReceiving)
-    if (serializer.handleHandshakeMessage.isDefinedAt((curState, m))) {
-      val nextState = serializer.handleHandshakeMessage((curState, m))
-      curState = nextState
-      flip()
-    } else throw new IllegalHandshakeStateException
-  }
-
-
-}
-
 class DefaultMessageConnection(byteConn: ByteConnection, 
                                var serializer: Option[Serializer[Proxy]],
                                override val receiveCallback: MessageReceiveCallback,
@@ -95,8 +53,6 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   def status = _status
   private def status_=(newStatus: Int) { _status = newStatus }
 
-  private var handshakeState: Option[HandshakeState] = serializer.map(new HandshakeState(_))
-
   def isWaitingForSerializer = status == WaitingForSerializer
   def isHandshaking          = status == Handshaking
   def isEstablished          = status == Established
@@ -129,11 +85,12 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     //Debug.info(this + ": sending serializer name: " + serializer.get.getClass.getName)
     byteConn.send(serializer.get.getClass.getName.getBytes)
 
-    if (!handshakeState.get.isDone) {
+    if (serializer.get.isHandshaking) {
       // if serializer requires handshake, place in handshake mode...
       status = Handshaking
-      // ... and send the first message from this end
-      sendNextMessage()
+
+      // ... and initialize it
+      handleNextEvent(StartEvent)
     } else 
       // otherwise, in established mode (ready to send messages)
       status = Established 
@@ -145,16 +102,15 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     status = WaitingForSerializer
   }
 
-  // assumes lock on terminateLock is held (except in the bootstrap phase)
-  private def sendNextMessage() {
+  private def handleNextEvent(evt: ReceivableEvent) {
     assert(isHandshaking)
-    handshakeState.get.nextHandshakeMessage() match {
-      case Some(msg) =>
+    serializer.get.handleNextEvent(evt).map {
+      case SendEvent(msg) =>
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
         val meta = primitiveSerializer.serializeMetaData(msg.asInstanceOf[AnyRef])
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
         byteConn.send(meta.get, data)
-      case None =>
+      case Success =>
         // done
         status = Established
         if (!sendQueue.isEmpty) {
@@ -168,6 +124,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
           terminateLock.notifyAll()
         }
         Debug.info(this + ": handshake completed")
+      case Error(reason) =>
+        throw new IllegalHandshakeStateException(reason)
     }
   }
 
@@ -183,14 +141,13 @@ class DefaultMessageConnection(byteConn: ByteConnection,
           //Debug.info(this + ": going to create serializer of clz " + clzName)
           val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer[Proxy]]
           serializer = Some(_serializer)
-          handshakeState = Some(new HandshakeState(_serializer))
 
           // same logic as in bootstrapClient()
-          if (!handshakeState.get.isDone) {
+          if (_serializer.isHandshaking) {
             terminateLock.synchronized {
               if (terminateInitiated) return
               status = Handshaking
-              sendNextMessage()
+              handleNextEvent(StartEvent)
             }
           } else 
             terminateLock.synchronized {
@@ -214,10 +171,9 @@ class DefaultMessageConnection(byteConn: ByteConnection,
       } else if (isHandshaking) {
         val msg = nextPrimitiveMessage()
         //Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
-        handshakeState.get.handleNextMessage(msg)
         terminateLock.synchronized { 
           if (terminateInitiated) return
-          sendNextMessage()
+          handleNextEvent(RecvEvent(msg))
         }
       } else if (isEstablished) {
         val nextMsg = nextSerializerMessage()

@@ -16,35 +16,29 @@ class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
 }
 
+sealed trait HandshakeEvent
+sealed trait ReceivableEvent extends HandshakeEvent
+sealed trait TriggerableEvent extends HandshakeEvent
+
+case object StartEvent extends ReceivableEvent
+case class RecvEvent(msg: Any) extends ReceivableEvent
+
+case class SendEvent(msg: Any) extends TriggerableEvent
+case object Success extends TriggerableEvent
+case class Error(reason: String) extends TriggerableEvent
+
 abstract class Serializer[+P <: Proxy] extends MessageCreator[P] {
 
   // Handshake management 
 
-  /** 
-   * Starting state of the handshake. 
-   * Return None if no handshake is desired, in which case the next two
-   * methods will never be called (and can thus return null)
-   */
-  def initialState: Option[Any]
-
   /**
-   * Returns the next message to send to the other side in the handshake.
-   * The input is the current state, output is a tuple of 
-   * (next state, next message). Next message is None to signal completion
-   * of handshake.
+   * True if this Serializer needs to participate in a handshake
    */
-  def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])]
+  def isHandshaking: Boolean
 
-  /**
-   * Callback to receive the next message of the handshake from the other side.
-   * Input is a tuple of (current state, message to handle). Output is the
-   * next state transition.
-   */
-  def handleHandshakeMessage: PartialFunction[(Any, Any), Any]
+  def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]]
 
-  def isHandshakeError(m: Any) = !(nextHandshakeMessage isDefinedAt m)
-
-  def isHandshakeError(m: (Any, Any)) = !(handleHandshakeMessage isDefinedAt m)
+  def isHandshakeError(evt: ReceivableEvent) = !(handleNextEvent isDefinedAt evt)
 
   // Message serialization
 
@@ -92,28 +86,19 @@ abstract class Serializer[+P <: Proxy] extends MessageCreator[P] {
 
 class NonHandshakingSerializerException extends Exception
 
-trait NonHandshakingSerializer { this: Serializer[Proxy] =>
-  override def initialState = None
-  override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
-    case _ => throw new NonHandshakingSerializerException
-  }
-  override def handleHandshakeMessage: PartialFunction[(Any, Any), Any] = {
+trait NonHandshakingSerializer { this: Serializer[_ <: Proxy] =>
+  override def isHandshaking = false
+  override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
     case _ => throw new NonHandshakingSerializerException
   }
 }
 
-case object SendID
-case object ExpectID
-case object Resolved
-
-trait IdResolvingSerializer { this: Serializer[Proxy] =>
-  override def initialState: Option[Any] = Some(SendID)
-  override def nextHandshakeMessage: PartialFunction[Any, (Any, Option[Any])] = {
-    case SendID   => (ExpectID, Some(uniqueId))
-    case Resolved => (Resolved, None)
-  }
-  override def handleHandshakeMessage: PartialFunction[(Any, Any), Any] = {
-    case (ExpectID, MyUniqueId) => Resolved
+trait IdResolvingSerializer { this: Serializer[_ <: Proxy] =>
+  override def isHandshaking = true
+  override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
+    case StartEvent            => Some(SendEvent(uniqueId))
+    case RecvEvent(MyUniqueId) => Some(Success)
+    case RecvEvent(_)          => Some(Error("ID's do not match"))
   }
   private val MyUniqueId = uniqueId
 }
