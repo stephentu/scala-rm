@@ -40,7 +40,7 @@ extends ObjectInputStream(in) {
  *  @author Philipp Haller
  */
 class JavaSerializer(cl: ClassLoader) 
-  extends Serializer[DefaultProxyImpl]
+  extends Serializer
   with    DefaultMessageCreator
   with    IdResolvingSerializer {
 

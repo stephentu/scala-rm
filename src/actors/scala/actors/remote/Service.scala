@@ -123,15 +123,15 @@ trait ByteConnection extends Connection {
 
 trait MessageConnection extends Connection {
 
-  def send(f: Serializer[Proxy] => AnyRef): Unit 
+  def send(f: Serializer => AnyRef): Unit 
 
-  def send(msg: AnyRef) { send { _: Serializer[Proxy] => msg } }
+  def send(msg: AnyRef) { send { _: Serializer => msg } }
 
-  def activeSerializer: Serializer[Proxy]
+  def activeSerializer: Serializer
 
   protected val receiveCallback: MessageReceiveCallback
 
-  protected def receiveMessage(s: Serializer[Proxy], message: AnyRef) {
+  protected def receiveMessage(s: Serializer, message: AnyRef) {
     try {
       receiveCallback(this, s, message)
     } catch {
@@ -205,7 +205,7 @@ abstract class Service extends CanTerminate {
   }
 
   def connect(node: Node, 
-              serializer: Serializer[Proxy], 
+              serializer: Serializer, 
               mode: ServiceMode.Value,
               recvCallback: MessageReceiveCallback): MessageConnection
 

@@ -11,7 +11,7 @@
 package scala.actors
 package remote
 
-trait MessageCreator[+P <: Proxy] {
+trait MessageCreator {
   type MyNode                       <: Node
   type MyAsyncSend                  <: AsyncSend
   type MySyncSend                   <: SyncSend
@@ -19,8 +19,6 @@ trait MessageCreator[+P <: Proxy] {
   type MyRemoteStartInvoke          <: RemoteStartInvoke
   type MyRemoteStartInvokeAndListen <: RemoteStartInvokeAndListen
   type MyRemoteApply                <: RemoteApply
-
-  def newProxy(remoteNode: MyNode, name: Symbol): P
 
   def newNode(address: String, port: Int): MyNode
 
@@ -46,12 +44,8 @@ trait MessageCreator[+P <: Proxy] {
   }
 }
 
-trait DefaultProxyCreator { this: MessageCreator[DefaultProxyImpl] =>
-  override def newProxy(remoteNode: MyNode, name: Symbol): DefaultProxyImpl =
-    new DefaultProxyImpl(remoteNode, name)
-}
 
-trait DefaultEnvelopeMessageCreator { this: MessageCreator[_ <: Proxy] =>
+trait DefaultEnvelopeMessageCreator { this: MessageCreator =>
   override type MyNode        = DefaultNodeImpl
   override type MyAsyncSend   = DefaultAsyncSendImpl
   override type MySyncSend    = DefaultSyncSendImpl
@@ -72,7 +66,7 @@ trait DefaultEnvelopeMessageCreator { this: MessageCreator[_ <: Proxy] =>
     DefaultRemoteApplyImpl(senderName, receiverName, rfun)
 }
 
-trait DefaultControllerMessageCreator { this: MessageCreator[_ <: Proxy] =>
+trait DefaultControllerMessageCreator { this: MessageCreator =>
   override type MyRemoteStartInvoke          = DefaultRemoteStartInvokeImpl
   override type MyRemoteStartInvokeAndListen = DefaultRemoteStartInvokeAndListenImpl
 

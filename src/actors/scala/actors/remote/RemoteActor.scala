@@ -45,6 +45,11 @@ import java.util.concurrent.ConcurrentHashMap
 object RemoteActor {
 
   /**
+   * TODO: Comment
+   */
+  type RemoteProxy = AbstractActor
+
+  /**
    * Shorthand constructor for:
    * {{{
    * actor {
@@ -54,7 +59,7 @@ object RemoteActor {
    * }
    * }}}
    */
-  def remoteActor(port: Int, name: Symbol)(body: => Unit)(implicit cfg: Configuration[Proxy]) {
+  def actor(port: Int, name: Symbol)(body: => Unit)(implicit cfg: Configuration): Actor = {
     Actor.actor {
       alive(port)
       register(name, Actor.self)
@@ -87,8 +92,11 @@ object RemoteActor {
    */
   private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
-  @volatile private var _ctrl: Actor = _
+  private var _ctrl: Actor = _
 
+  /**
+   * TODO: Comment
+   */
   def startController() {
     synchronized {
       if (_ctrl eq null)
@@ -96,7 +104,7 @@ object RemoteActor {
     }
   }
 
-  def stopController() {
+  private[remote] def stopController() {
     synchronized {
       if (_ctrl ne null) {
         _ctrl.send(Terminate, null)
@@ -151,35 +159,57 @@ object RemoteActor {
     explicitlyTerminate = isExplicit
   }
 
-  @volatile private var explicitlyUnlisten = false
+  private var _defaultConfig: Configuration = Configuration.DefaultConfig
 
-  def setExplicitUnlisten(isExplicit: Boolean) {
-    explicitlyUnlisten = isExplicit
+  /**
+   * Specify the <code>Configuration</code> object used to configure incoming
+   * proxy handles. That is, if a remote handle is sent to this machine via a
+   * message, this controls the configuration of the connection established
+   * by the new remote handle.
+   */
+  def setProxyConfig(config: Configuration) {
+    _defaultConfig = config
   }
+
+  private[remote] def proxyConfig = _defaultConfig
 
   private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
 
+  /**
+   * Registers <code>actor</code> to be selectable remotely via
+   * <code>name</code>. There are two limitations to the mutability of the
+   * <code>name</code>. The first is that only one <code>name</code> can be
+   * valid at a time (distinct actors cannot register with the same
+   * <code>name</code> at the same time). The second is that once an
+   * <code>actor</code> registers with a <code>name</code>, then that
+   * <code>actor</code> cannot register with a different name again until
+   * <code>unregister</code> is called first.
+   */
   @throws(classOf[NameAlreadyRegisteredException])
-  def register(name: Symbol, a: OutputChannel[Any]) {
-    val existing = actors.putIfAbsent(name, a)
+  def register(name: Symbol, actor: OutputChannel[Any]) {
+    val existing = actors.putIfAbsent(name, actor)
     if (existing ne null) {
-      if (existing != a)
+      if (existing != actor)
         throw NameAlreadyRegisteredException(name, existing)
-      Debug.warning("re-registering " + name + " to channel " + a)
-    } else Debug.info(this + ": successfully mapped " + name + " to " + a)
-    a.channelName match {
+      Debug.warning("re-registering " + name + " to channel " + actor)
+    } else Debug.info(this + ": successfully mapped " + name + " to " + actor)
+    actor.channelName match {
       case Some(prevName) => 
         if (prevName != name)
+          // TODO: change exception type
           throw new IllegalStateException("Channel already registered as: " + prevName)
       case None =>
-        a.channelName = Some(name)
+        actor.channelName = Some(name)
     }
   }
 
-  def unregister(a: OutputChannel[Any]) {
-    a.channelName.foreach(name => {
+  /**
+   * TODO: comment
+   */
+  def unregister(actor: OutputChannel[Any]) {
+    actor.channelName.foreach(name => {
       actors.remove(name)
-      Debug.info(this + ": successfully removed name " + name + " for " + a + " from map")
+      Debug.info(this + ": successfully removed name " + name + " for " + actor + " from map")
     })
   }
 
@@ -197,18 +227,18 @@ object RemoteActor {
   private val channels = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
   private val sessions = new ConcurrentHashMap[OutputChannel[Any], Symbol]
 
-  def newChannel(ch: OutputChannel[Any]) = {
+  private[remote] def newChannel(ch: OutputChannel[Any]) = {
     val fresh = FreshNameCreator.newSessionId()
     channels.put(fresh, ch)
     fresh
   }
-  def findChannel(name: Symbol) = Option(channels.get(name))
+  private[remote] def findChannel(name: Symbol) = Option(channels.get(name))
 
-  def finishChannel(name: Symbol) = Option(channels.remove(name))
+  private[remote] def finishChannel(name: Symbol) = Option(channels.remove(name))
 
-  def finishSession(ch: OutputChannel[Any]) = Option(sessions.remove(ch))
+  private[remote] def finishSession(ch: OutputChannel[Any]) = Option(sessions.remove(ch))
 
-  def startSession(ch: OutputChannel[Any], name: Symbol) {
+  private[remote] def startSession(ch: OutputChannel[Any], name: Symbol) {
     sessions.put(ch, name)
   }
 
@@ -217,7 +247,7 @@ object RemoteActor {
     actor onTerminate { actorTerminated(actor) }
   }
 
-  private[remote] def alive0(port: Int, actor: Actor, addToSet: Boolean)(implicit cfg: Configuration[Proxy]) {
+  private[remote] def alive0(port: Int, actor: Actor, addToSet: Boolean)(implicit cfg: Configuration) {
     // listen if necessary
     val listener = NetKernel.getListenerFor(port, cfg)
 
@@ -255,18 +285,26 @@ object RemoteActor {
 
   /**
    * Makes <code>actor</code> remotely accessible on TCP port
-   * <code>port</code>.
+   * <code>port</code>. An <code>actor</code> can be remotely accessible via
+   * more than one port.
+   *
+   * Implementation Detail: The current implementation does not provide
+   * port-level isolation. This means that any port actually can be used to
+   * handle requests for any registered actor. This behavior is subject to
+   * change, meaning you should not (1) rely on <code>alive</code> to give
+   * isolation to actors, and (2) should not only call <code>alive</code> once
+   * and rely on that port to handle every incoming request for correctness.
    */
-  def alive(port: Int, actor: Actor)(implicit cfg: Configuration[Proxy]) {
+  def alive(port: Int, actor: Actor)(implicit cfg: Configuration) {
     alive0(port, actor, true)
   }
 
   /**
    * Makes <code>self</code> remotely accessible on TCP port
-   * <code>port</code>.
+   * <code>port</code>. Is equivalent to <code>alive(port, self)</code>. 
    */
   @throws(classOf[InconsistentServiceException])
-  def alive(port: Int)(implicit cfg: Configuration[Proxy]) {
+  def alive(port: Int)(implicit cfg: Configuration) {
     alive0(port, Actor.self, true)
   }
 
@@ -292,7 +330,7 @@ object RemoteActor {
         case None => true 
       })
       
-      if (!explicitlyUnlisten)
+      if (!explicitlyTerminate)
         ports.foreach(p => NetKernel.unlisten(p))
     }
 
@@ -303,15 +341,15 @@ object RemoteActor {
     }
   }
 
-  def remoteStart[A <: Actor](host: String)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
-    remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.asInstanceOf[Class[A]])
+  def remoteStart[A <: Actor](host: String)(implicit m: Manifest[A], cfg: Configuration) {
+    remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.getName)
   }
 
-  def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration[Proxy]) {
-    remoteStart(node, m.erasure.asInstanceOf[Class[A]])
+  def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration) {
+    remoteStart(node, m.erasure.getName)
   }
 
-  def remoteStart[A <: Actor](host: String, actorClass: Class[A])(implicit cfg: Configuration[Proxy]) {
+  def remoteStart(host: String, actorClass: String)(implicit cfg: Configuration) {
     remoteStart(Node(host, ControllerActor.defaultPort), actorClass)
   }
 
@@ -321,9 +359,9 @@ object RemoteActor {
    * to contact the <code>ControllerActor</code> listening on
    * <code>node</code>.
    */
-  def remoteStart[A <: Actor](node: Node, actorClass: Class[A])(implicit cfg: Configuration[Proxy]) {
+  def remoteStart(node: Node, actorClass: String)(implicit cfg: Configuration) {
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? RemoteStartInvoke(actorClass.getName) match {
+    remoteController !? RemoteStartInvoke(actorClass) match {
       case RemoteStartResult(None) => // success, do nothing
       case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
       case _ => throw new RuntimeException("Failed")
@@ -331,14 +369,14 @@ object RemoteActor {
   }
 
 
-  def remoteStartAndListen[A <: Actor, P <: Proxy](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration[P]): P =
-    remoteStartAndListen(Node(host, ControllerActor.defaultPort), m.erasure.asInstanceOf[Class[A]], port, name)
+  def remoteStartAndListen[A <: Actor](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy =
+    remoteStartAndListen(Node(host, ControllerActor.defaultPort), m.erasure.getName, port, name)
 
-  def remoteStartAndListen[A <: Actor, P <: Proxy](host: String, actorClass: Class[A], port: Int, name: Symbol)(implicit cfg: Configuration[P]): P =
+  def remoteStartAndListen(host: String, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy =
     remoteStartAndListen(Node(host, ControllerActor.defaultPort), actorClass, port, name)
 
-  def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration[P]): P =
-    remoteStartAndListen(node, m.erasure.asInstanceOf[Class[A]], port, name)
+  def remoteStartAndListen[A <: Actor](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy =
+    remoteStartAndListen(node, m.erasure.getName, port, name)
 
   /**
    * Start a new instance of an actor of class <code>actorClass</code> on the
@@ -350,9 +388,9 @@ object RemoteActor {
    * does not need to make calls to <code>alive</code> and
    * <code>register</code> to achieve the desired effect.
    */
-  def remoteStartAndListen[A <: Actor, P <: Proxy](node: Node, actorClass: Class[A], port: Int, name: Symbol)(implicit cfg: Configuration[P]): P = {
+  def remoteStartAndListen(node: Node, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? RemoteStartInvokeAndListen(actorClass.getName, port, name, cfg.aliveMode) match {
+    remoteController !? RemoteStartInvokeAndListen(actorClass, port, name, cfg.aliveMode) match {
       case RemoteStartResult(None) => // success, do nothing
       case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
       case _ => throw new RuntimeException("Failed")
@@ -364,9 +402,11 @@ object RemoteActor {
    * Returns a remote handle which can be serialized and sent remotely, which
    * contains the necessary information to re-establish the connection. If
    * <code>thisActor</code> is not currently listening on any port (via
-   * call(s) to <code>alive</code>), a random port is selected.
+   * call(s) to <code>alive</code>), a random port is selected. If
+   * <code>thisActor</code> is not currently registered under any name, a
+   * random name is chosen.
    */
-  def remoteActorFor[P <: Proxy](thisActor: Actor)(implicit cfg: Configuration[P]): P = {
+  def remoteActorFor(thisActor: Actor)(implicit cfg: Configuration): RemoteProxy = {
     // need to establish a port for this actor to listen on, so that the proxy
     // returned by remoteSelf makes sense (as in, you can connect to it)
     val port = portToActors.synchronized {
@@ -394,20 +434,8 @@ object RemoteActor {
       })
     }
 
-    val messageCreator = cfg.cachedSerializer
-    val remoteNode = messageCreator.newNode(Node.localhost, port)
-    val remoteName = getOrCreateName(thisActor) // auto-registers name if a new one is created
-    val proxy = messageCreator.newProxy(remoteNode, remoteName)
-    proxy.setConfig(cfg)
-    proxy
+    new ConfigProxy(Node(port), getOrCreateName(thisActor), cfg)
   }
-
-  /**
-   * Returns a remote handle for the current running actor. Equivalent to
-   * <code>remoteActorFor(Actor.self)</code>.
-   */
-  def remoteSelf[P <: Proxy](implicit cfg: Configuration[P]): P =
-    remoteActorFor(Actor.self)
 
   /**
    * Returns (a proxy for) the actor registered under
@@ -416,7 +444,7 @@ object RemoteActor {
    */
   @throws(classOf[InconsistentSerializerException])
   @throws(classOf[InconsistentServiceException])
-  def select[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
+  def select(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     Debug.info("select(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
     val thisActor = Actor.self
     remoteActors.synchronized {
@@ -438,13 +466,9 @@ object RemoteActor {
    */
   @throws(classOf[InconsistentSerializerException])
   @throws(classOf[InconsistentServiceException])
-  def remoteActorAt[P <: Proxy](node: Node, sym: Symbol)(implicit cfg: Configuration[P]): P = {
+  def remoteActorAt(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     Debug.info("remoteActorAt(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
-    val msgCreator = cfg.cachedSerializer
-    val newNode  = msgCreator.newNode(node.canonicalForm.address, node.port)
-    val newProxy = msgCreator.newProxy(newNode, sym)
-    newProxy.setConfig(cfg)
-    newProxy
+    new ConfigProxy(node, sym, cfg)
   }
 
   /**
@@ -455,13 +479,13 @@ object RemoteActor {
    * <code>releaseResourcesInActor</code> to shut down the network kernel from
    * within an actor.
    */
-  def releaseResources() {
+  def shutdown() {
     NetKernel.releaseResources()
   }
 }
 
 
-case class InconsistentSerializerException(expected: Serializer[Proxy], actual: Serializer[Proxy]) 
+case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
   extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
 case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 

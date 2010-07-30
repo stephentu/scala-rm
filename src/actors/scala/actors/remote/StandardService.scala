@@ -20,7 +20,7 @@ object ConnectionStatus {
 }
 
 class DefaultMessageConnection(byteConn: ByteConnection, 
-                               var serializer: Option[Serializer[Proxy]],
+                               var serializer: Option[Serializer],
                                override val receiveCallback: MessageReceiveCallback,
                                isServer: Boolean)
   extends MessageConnection {
@@ -66,7 +66,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
    * the time send() was called (due to things like not finishing handshake
    * yet, etc)
    */
-  private val sendQueue = new Queue[Serializer[Proxy] => AnyRef]
+  private val sendQueue = new Queue[Serializer => AnyRef]
   private val primitiveSerializer = new PrimitiveSerializer
 
   // bootstrap in CTOR
@@ -139,7 +139,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         try {
           val clzName = new String(nextMessage())
           //Debug.info(this + ": going to create serializer of clz " + clzName)
-          val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer[Proxy]]
+          val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer]
           serializer = Some(_serializer)
 
           // same logic as in bootstrapClient()
@@ -195,7 +195,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
 
 
-  def send(msg: Serializer[Proxy] => AnyRef) {
+  def send(msg: Serializer => AnyRef) {
     ensureAlive()
     if (isWaitingForSerializer || isHandshaking) {
       val repeat = withoutTermination {
@@ -270,7 +270,7 @@ class StandardService extends Service {
   }
 
   override def connect(node: Node, 
-                       serializer: Serializer[Proxy], 
+                       serializer: Serializer, 
                        mode: ServiceMode.Value, 
                        recvCallback: MessageReceiveCallback): MessageConnection = {
     val byteConn = serviceProviderFor0(mode).connect(node, recvCall0)

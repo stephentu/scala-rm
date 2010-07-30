@@ -27,7 +27,7 @@ case class SendEvent(msg: Any) extends TriggerableEvent
 case object Success extends TriggerableEvent
 case class Error(reason: String) extends TriggerableEvent
 
-abstract class Serializer[+P <: Proxy] extends MessageCreator[P] {
+abstract class Serializer extends MessageCreator {
 
   // Handshake management 
 
@@ -72,8 +72,8 @@ abstract class Serializer[+P <: Proxy] extends MessageCreator[P] {
    * Default equality method for serializers. Looks simply at the uniqueId field 
    */
   override def equals(o: Any): Boolean = o match {
-    case s: Serializer[_] => uniqueId == s.uniqueId
-    case _                => false
+    case s: Serializer => uniqueId == s.uniqueId
+    case _             => false
   }
 
   /**
@@ -86,14 +86,14 @@ abstract class Serializer[+P <: Proxy] extends MessageCreator[P] {
 
 class NonHandshakingSerializerException extends Exception
 
-trait NonHandshakingSerializer { this: Serializer[_ <: Proxy] =>
+trait NonHandshakingSerializer { this: Serializer =>
   override def isHandshaking = false
   override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
     case _ => throw new NonHandshakingSerializerException
   }
 }
 
-trait IdResolvingSerializer { this: Serializer[_ <: Proxy] =>
+trait IdResolvingSerializer { this: Serializer =>
   override def isHandshaking = true
   override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
     case StartEvent            => Some(SendEvent(uniqueId))

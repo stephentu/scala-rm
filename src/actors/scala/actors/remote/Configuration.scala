@@ -15,47 +15,38 @@ object Configuration {
   implicit object DefaultConfig extends DefaultConfiguration
 }
 
-abstract class Configuration[+P <: Proxy] {
+abstract class Configuration {
   def aliveMode: ServiceMode.Value 
   def selectMode: ServiceMode.Value 
-  def newSerializer(): Serializer[P]
+  def newSerializer(): Serializer
 
-  private[remote] lazy val cachedSerializer: Serializer[P] = newSerializer()
+  private[remote] lazy val cachedSerializer: Serializer = newSerializer()
 }
 
 class DefaultConfiguration 
-  extends Configuration[DefaultProxyImpl]
+  extends Configuration
   with    HasJavaSerializer
-  with    HasBlockingAlive 
-  with    HasBlockingSelect
+  with    HasBlockingMode 
 
 class DefaultNonBlockingConfiguration
-  extends Configuration[DefaultProxyImpl]
+  extends Configuration
   with    HasJavaSerializer
-  with    HasNonBlockingAlive 
-  with    HasNonBlockingSelect
+  with    HasNonBlockingMode 
 
-trait HasJavaSerializer { this: Configuration[_] =>
+trait HasJavaSerializer { this: Configuration =>
   override def newSerializer() = new JavaSerializer(RemoteActor.classLoader)
 }
 
-trait DefaultMessageCreator extends MessageCreator[DefaultProxyImpl]
-														with    DefaultProxyCreator 
+trait DefaultMessageCreator extends MessageCreator
                             with    DefaultEnvelopeMessageCreator 
                             with    DefaultControllerMessageCreator
 
-trait HasBlockingAlive { this: Configuration[_] =>
-  override def aliveMode = ServiceMode.Blocking
-}
-
-trait HasBlockingSelect { this: Configuration[_] =>
+trait HasBlockingMode { this: Configuration =>
+  override def aliveMode  = ServiceMode.Blocking
   override def selectMode = ServiceMode.Blocking
 }
 
-trait HasNonBlockingAlive { this: Configuration[_] =>
-  override def aliveMode = ServiceMode.NonBlocking
-}
-
-trait HasNonBlockingSelect { this: Configuration[_] =>
+trait HasNonBlockingMode { this: Configuration =>
+  override def aliveMode  = ServiceMode.NonBlocking
   override def selectMode = ServiceMode.NonBlocking
 }

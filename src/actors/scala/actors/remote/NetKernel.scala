@@ -28,8 +28,13 @@ private[remote] object NetKernel {
 
   private val connections = new ConcurrentHashMap[(Node, Long, ServiceMode.Value), MessageConnection]
 
-  def getConnectionFor(node: Node, cfg: Configuration[Proxy]) = {
-    val key = (node, cfg.cachedSerializer.uniqueId, cfg.selectMode)
+  def getConnectionFor(node: Node, cfg: Configuration) = {
+    val cfg0 = 
+      if (cfg eq null)
+        RemoteActor.proxyConfig
+      else 
+        cfg
+    val key = (node, cfg0.cachedSerializer.uniqueId, cfg0.selectMode)
     val testConn = connections.get(key)
     if (testConn ne null)
       testConn
@@ -39,7 +44,7 @@ private[remote] object NetKernel {
         if (testConn0 ne null)
           testConn0
         else {
-          val conn = _service.connect(node, cfg.newSerializer(), cfg.selectMode, processMsgFunc)
+          val conn = _service.connect(node, cfg0.newSerializer(), cfg0.selectMode, processMsgFunc)
           conn beforeTerminate { isBottom =>
             Debug.info(this + ": removing connection with key: " + key)
             connections.remove(key)
@@ -53,7 +58,7 @@ private[remote] object NetKernel {
 
   private val listeners = new ConcurrentHashMap[Int, Listener]
 
-  def getListenerFor(port: Int, cfg: Configuration[Proxy]) = {
+  def getListenerFor(port: Int, cfg: Configuration) = {
     def ensureListener(listener: Listener) = {
       if (listener.mode != cfg.aliveMode)
         throw InconsistentServiceException(cfg.aliveMode, listener.mode)
@@ -107,7 +112,7 @@ private[remote] object NetKernel {
   }
 
   def asyncSend(conn: MessageConnection, toName: Symbol, fromName: Option[Symbol], msg: AnyRef) {
-    conn.send { serializer: Serializer[Proxy] =>
+    conn.send { serializer: Serializer =>
       val wireMsg  = serializer.intercept(msg)
       val metadata = serializer.serializeMetaData(wireMsg).orNull
       val bytes    = serializer.serialize(wireMsg)
@@ -116,7 +121,7 @@ private[remote] object NetKernel {
   }
 
   def syncSend(conn: MessageConnection, toName: Symbol, fromName: Symbol, msg: AnyRef, session: Symbol) {
-    conn.send { serializer: Serializer[Proxy] =>
+    conn.send { serializer: Serializer =>
       val wireMsg  = serializer.intercept(msg)
       val metadata = serializer.serializeMetaData(wireMsg).orNull
       val bytes    = serializer.serialize(wireMsg)
@@ -125,7 +130,7 @@ private[remote] object NetKernel {
   }
 
   def syncReply(conn: MessageConnection, toName: Symbol, msg: AnyRef, session: Symbol) {
-    conn.send { serializer: Serializer[Proxy] =>
+    conn.send { serializer: Serializer =>
       val wireMsg  = serializer.intercept(msg)
       val metadata = serializer.serializeMetaData(wireMsg).orNull
       val bytes    = serializer.serialize(wireMsg)
@@ -134,7 +139,7 @@ private[remote] object NetKernel {
   }
 
   def remoteApply(conn: MessageConnection, toName: Symbol, fromName: Symbol, rfun: RemoteFunction) {
-    conn.send { serializer: Serializer[Proxy] =>
+    conn.send { serializer: Serializer =>
       serializer.newRemoteApply(fromName, toName, rfun) 
     }
   }
@@ -145,8 +150,14 @@ private[remote] object NetKernel {
   }
 
   private final val NoSender = new Proxy {
-    override def remoteNode = throw new RuntimeException("NoSender")
-    override def name = throw new RuntimeException("NoSender")
+    override def remoteNode    = throw new RuntimeException("NoSender")
+    override def name          = throw new RuntimeException("NoSender")
+    override def conn          = throw new RuntimeException("NoSender")
+
+    override def terminateConn(usingConn: MessageConnection) { 
+      throw new RuntimeException("NoSender")
+    }
+
     override def handleMessage(m: ProxyCommand) {
       m match {
         case SendTo(out, m) =>
@@ -165,6 +176,7 @@ private[remote] object NetKernel {
           throw new RuntimeException("NoSender cannot handle: " + m)
       }
     }
+
     override def send(msg: Any, sender: OutputChannel[Any]) {
       throw new RuntimeException("NoSender")
     }
@@ -180,13 +192,9 @@ private[remote] object NetKernel {
     override def toString = "<NoSender>"
   }
 
-  private def processMsg(conn: MessageConnection, serializer: Serializer[Proxy], msg: AnyRef) {
-    def mkProxy(senderName: Symbol) = {
-      val remoteNode  = serializer.newNode(conn.remoteNode.address, conn.remoteNode.port) 
-      val senderProxy = serializer.newProxy(remoteNode, senderName)
-      senderProxy.setConn(conn)
-      senderProxy
-    }
+  private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
+    def mkProxy(senderName: Symbol) = 
+      new ConnectionProxy(conn.remoteNode, senderName, conn)
     def deserialize(meta: Array[Byte], data: Array[Byte]) = 
       serializer.deserialize(Option(meta), data)
     def removeOrphan(a: OutputChannel[Any]) {

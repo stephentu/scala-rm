@@ -59,14 +59,11 @@ trait Node {
   def isCanonical = this == canonicalForm
 
   override def equals(o: Any) = o match {
-    case n: Node =>
-      n.address == this.address && n.port == this.port
-    case _ => 
-      false
+    case n: Node => n.address == this.address && n.port == this.port
+    case _       => false
   }
 
-  // TODO: better hash code
-  override def hashCode = address.hashCode + port.hashCode
+  override def hashCode = address.hashCode ^ port.hashCode
 
 }
 
