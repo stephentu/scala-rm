@@ -73,18 +73,15 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
 
   import ControllerActor._
 
-  private def getProperty(prop: String): Option[String] = System.getProperty(prop) match {
-    case null => None
-    case e    => Some(e)
-  }
+  private def getProperty(prop: String) = Option(System.getProperty(prop))
 
-  private def port: Option[String] = getProperty("scala.actors.remote.controller.port")
-  private def mode: Option[String] = getProperty("scala.actors.remote.controller.mode")
+  private def port = getProperty("scala.actors.remote.controller.port")
+  private def mode = getProperty("scala.actors.remote.controller.mode")
 
   private def getPort = port match {
     case Some(s) => 
       try { s.toInt } catch { case _ =>
-        Debug.info(this + ": Bad port specified: " + port)
+        Debug.error(this + ": Bad port specified: " + port)
         defaultPort
       }
     case None => defaultPort
@@ -97,21 +94,29 @@ private[remote] class ControllerActor(thisSym: Symbol) extends Actor {
       else if (m.equalsIgnoreCase("nonblocking"))
         ServiceMode.NonBlocking
       else {
-        Debug.info(this + ": Bad mode specified: " + mode)
+        Debug.error(this + ": Bad mode specified: " + mode)
         defaultMode
       }
     case None => defaultMode
   }
 
+  // TODO: let user specify class loader
   private def newActor(actorClass: String): Actor =
     Class.forName(actorClass).asInstanceOf[Class[Actor]].newInstance()
+
+  override def exceptionHandler: PartialFunction[Exception, Unit] = {
+    case e: Exception =>
+      Debug.error(this + ": Caught exception: " + e.getMessage)
+      Debug.doError { e.printStackTrace() }
+  }
 
   override def act() {
 		implicit val cfg = new DefaultConfiguration {
 			override def aliveMode = getMode
 		}
     try {
-      alive(getPort)
+      // call alive0 so that this actor doesn't prevent shutdown
+      alive0(getPort, self, false)
     } catch { 
       case e: IOException =>
         // oops, the specified port is already taken

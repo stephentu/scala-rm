@@ -97,14 +97,14 @@ object RemoteActor {
   /**
    * TODO: Comment
    */
-  def startController() {
+  def startRemoteStartListener() {
     synchronized {
       if (_ctrl eq null)
         _ctrl = new ControllerActor(ControllerSymbol)
     }
   }
 
-  private[remote] def stopController() {
+  private[remote] def stopRemoteStartListener() {
     synchronized {
       if (_ctrl ne null) {
         _ctrl.send(Terminate, null)
@@ -126,7 +126,7 @@ object RemoteActor {
   @volatile private var explicitlyTerminate = false
 
   /**
-   * Used to indicate whether explicit termination of the network kernel
+   * Used to indicate whether explicit shutdown of the network kernel
    * resources is desired. The default value is <code>false</code>, meaning
    * that the network kernel will automatically shutdown when all actors which
    * have expressed intent to use remote functionality (via <code>alive</code>
@@ -152,10 +152,14 @@ object RemoteActor {
    * <code>'anActor</code> terminates, the resources will be freed, and then
    * reallocated when the second actor executes. Since freeing resources is
    * not cheap, this is probably not desirable in some cases. Thus by setting
-   * <code>setExplicitTermination</code> to <code>true</code>, the above
+   * <code>setExplicitShutdown</code> to <code>true</code>, the above
    * usage pattern would reuse the same resources.
+   *
+   * Note: If explicit termination is set to <code>true</code>, the JVM will
+   * not shutdown (because of remaining threads running) until
+   * <code>shutdown</code> is invoked by the program.
    */
-  def setExplicitTermination(isExplicit: Boolean) {
+  def setExplicitShutdown(isExplicit: Boolean) {
     explicitlyTerminate = isExplicit
   }
 
@@ -177,7 +181,9 @@ object RemoteActor {
 
   /**
    * Registers <code>actor</code> to be selectable remotely via
-   * <code>name</code>. There are two limitations to the mutability of the
+   * <code>name</code>. 
+   *
+   * Note: There are two limitations to the mutability of the
    * <code>name</code>. The first is that only one <code>name</code> can be
    * valid at a time (distinct actors cannot register with the same
    * <code>name</code> at the same time). The second is that once an
@@ -232,6 +238,7 @@ object RemoteActor {
     channels.put(fresh, ch)
     fresh
   }
+
   private[remote] def findChannel(name: Symbol) = Option(channels.get(name))
 
   private[remote] def finishChannel(name: Symbol) = Option(channels.remove(name))
@@ -337,7 +344,7 @@ object RemoteActor {
     remoteActors.synchronized {
       remoteActors -= actor
       if (!explicitlyTerminate && remoteActors.isEmpty)
-        NetKernel.releaseResources()
+        shutdown()
     }
   }
 
@@ -480,6 +487,7 @@ object RemoteActor {
    * within an actor.
    */
   def shutdown() {
+    stopRemoteStartListener()
     NetKernel.releaseResources()
   }
 }
