@@ -24,6 +24,8 @@ case class StartEvent(node: Node) extends ReceivableEvent
 case class RecvEvent(msg: Any) extends ReceivableEvent
 
 case class SendEvent(msg: Any) extends TriggerableEvent
+case class SendWithSuccessEvent(msg: Any) extends TriggerableEvent
+case class SendWithErrorEvent(msg: Any, reason: String) extends TriggerableEvent
 case object Success extends TriggerableEvent
 case class Error(reason: String) extends TriggerableEvent
 
@@ -59,6 +61,14 @@ abstract class Serializer extends MessageCreator {
    * deserialize the data byte array into an object
    */
   def deserialize(metaData: Option[Array[Byte]], data: Array[Byte]): AnyRef
+
+  /**
+   * Returns the class name used to bootstrap an equivalent serializer on the
+   * remote side. The default implementation returns
+   * <code>getClass.getName</code>.
+   */
+  def bootstrapClassName: String = 
+    getClass.getName
 
   /** 
    * Helper method to serialize the class name of a message

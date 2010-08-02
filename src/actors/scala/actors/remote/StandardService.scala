@@ -82,8 +82,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     assert(serializer.isDefined)
 
     // send class name of serializer to remote side
-    //Debug.info(this + ": sending serializer name: " + serializer.get.getClass.getName)
-    byteConn.send(serializer.get.getClass.getName.getBytes)
+    //Debug.info(this + ": sending serializer name: " + serializer.get.bootstrapClassName)
+    byteConn.send(serializer.get.bootstrapClassName.getBytes)
 
     if (serializer.get.isHandshaking) {
       // if serializer requires handshake, place in handshake mode...
@@ -104,28 +104,44 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
   private def handleNextEvent(evt: ReceivableEvent) {
     assert(isHandshaking)
-    serializer.get.handleNextEvent(evt).map {
-      case SendEvent(msg) =>
+    def sendIfNecessary(m: TriggerableEvent) {
+      (m match {
+        case SendEvent(m)             => Some(m)
+        case SendWithSuccessEvent(m)  => Some(m)
+        case SendWithErrorEvent(m, _) => Some(m)
+        case _ => None
+      }) foreach { msg =>
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
         val meta = primitiveSerializer.serializeMetaData(msg.asInstanceOf[AnyRef])
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
+        Debug.info(this + ": sending in handshake: meta: " + java.util.Arrays.toString(meta.get))
+        Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
         byteConn.send(meta.get, data)
-      case Success =>
-        // done
-        status = Established
-        if (!sendQueue.isEmpty) {
-          sendQueue.foreach { f =>
-            val msg = f(serializer.get)
-            //Debug.info(this + ": serializing " + msg + " from sendQueue")
-            val t = serialize(msg)
-            byteConn.send(t._1, t._2)
+      }
+    }
+    serializer.get.handleNextEvent(evt).foreach { evt =>
+      sendIfNecessary(evt)
+      evt match {
+        case SendEvent(_) =>
+        case SendWithSuccessEvent(_) | Success =>
+          // done
+          status = Established
+          if (!sendQueue.isEmpty) {
+            sendQueue.foreach { f =>
+              val msg = f(serializer.get)
+              //Debug.info(this + ": serializing " + msg + " from sendQueue")
+              val t = serialize(msg)
+              byteConn.send(t._1, t._2)
+            }
+            sendQueue.clear()
+            terminateLock.notifyAll()
           }
-          sendQueue.clear()
-          terminateLock.notifyAll()
-        }
-        Debug.info(this + ": handshake completed")
-      case Error(reason) =>
-        throw new IllegalHandshakeStateException(reason)
+          Debug.info(this + ": handshake completed")
+        case SendWithErrorEvent(_, reason) =>
+          throw new IllegalHandshakeStateException(reason)
+        case Error(reason) =>
+          throw new IllegalHandshakeStateException(reason)
+      }
     }
   }
 
