@@ -15,12 +15,27 @@ import java.net.{ InetAddress, InetSocketAddress }
 
 object Node {
   final val localhost = InetAddress.getLocalHost.getCanonicalHostName
-  // TODO: error check the port number
+
+  @throws(classOf[IllegalArgumentException])
   def apply(address: String, port: Int): Node = 
-    if (address eq null) DefaultNodeImpl(localhost, port)
-    else                 DefaultNodeImpl(address, port)
+    NodeImpl(checkAddress(address), checkPort(port))
+
+  @throws(classOf[IllegalArgumentException])
   def apply(port: Int): Node = apply(localhost, port)
-  def unapply(n: Node): Option[(String, Int)] = Some((n.address, n.port))
+
+  def unapply(n: Node): Option[(String, Int)] = Some(n.address, n.port)
+
+  private def checkAddress(a: String) =
+    if (a eq null) localhost else a
+
+  private def checkPort(p: Int) = 
+    if (p > 65535)
+      throw new IllegalArgumentException("Port number too large")
+    else if (p < 0)
+      throw new IllegalArgumentException("Port number cannot be negative")
+    else if (p == 0)
+      throw new IllegalArgumentException("No ephemeral port specification allowed")
+    else p
 
   private final val addresses = new ConcurrentHashMap[String, String]
   private[remote] def getCanonicalAddress(s: String): String = {
@@ -38,7 +53,6 @@ object Node {
 }
 
 trait Node {
-
   def address: String
   def port: Int
 
@@ -51,24 +65,16 @@ trait Node {
    * Returns the canonical representation of this form, resolving the
    * address into canonical form (as determined by the Java API)
    */
-  def canonicalForm =
-    newNode(Node.getCanonicalAddress(address), port)
+  def canonicalForm = newNode(Node.getCanonicalAddress(address), port)
 
-  protected def newNode(a: String, p: Int): Node
+  def isCanonical = address == Node.getCanonicalAddress(address) 
 
-  def isCanonical = this == canonicalForm
-
-  override def equals(o: Any) = o match {
-    case n: Node => n.address == this.address && n.port == this.port
-    case _       => false
-  }
-
-  override def hashCode = address.hashCode ^ port.hashCode
-
+  protected def newNode(address: String, port: Int): Node
 }
 
-case class DefaultNodeImpl(override val address: String, override val port: Int) extends Node {
-  override def newNode(a: String, p: Int) = DefaultNodeImpl(a, p)
+private[remote] case class NodeImpl(override val address: String, 
+                                    override val port: Int) extends Node {
+  override def newNode(a: String, p: Int) = NodeImpl(a, p)
 }
 
 object AsyncSend {

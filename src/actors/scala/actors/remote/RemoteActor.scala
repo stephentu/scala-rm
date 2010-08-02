@@ -94,13 +94,17 @@ object RemoteActor {
 
   private var _ctrl: Actor = _
 
+  def startRemoteStartListener()(implicit cfg: Configuration) {
+    startRemoteStartListener(ControllerActor.defaultPort)
+  }
+
   /**
    * TODO: Comment
    */
-  def startRemoteStartListener() {
+  def startRemoteStartListener(port: Int)(implicit cfg: Configuration) {
     synchronized {
       if (_ctrl eq null)
-        _ctrl = new ControllerActor(ControllerSymbol)
+        _ctrl = new ControllerActor(port, ControllerSymbol)
     }
   }
 
@@ -167,15 +171,13 @@ object RemoteActor {
 
   /**
    * Specify the <code>Configuration</code> object used to configure incoming
-   * proxy handles. That is, if a remote handle is sent to this machine via a
-   * message, this controls the configuration of the connection established
-   * by the new remote handle.
+   * proxy handles 
    */
-  def setProxyConfig(config: Configuration) {
+  def setDefaultConfig(config: Configuration) {
     _defaultConfig = config
   }
 
-  private[remote] def proxyConfig = _defaultConfig
+  private[remote] def defaultConfig = _defaultConfig
 
   private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
 
@@ -397,7 +399,7 @@ object RemoteActor {
    */
   def remoteStartAndListen(node: Node, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? RemoteStartInvokeAndListen(actorClass, port, name, cfg.aliveMode) match {
+    remoteController !? RemoteStartInvokeAndListen(actorClass, port, name) match {
       case RemoteStartResult(None) => // success, do nothing
       case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
       case _ => throw new RuntimeException("Failed")

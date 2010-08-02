@@ -31,7 +31,7 @@ private[remote] object NetKernel {
   def getConnectionFor(node: Node, cfg: Configuration) = {
     val cfg0 = 
       if (cfg eq null)
-        RemoteActor.proxyConfig
+        RemoteActor.defaultConfig
       else 
         cfg
     val key = (node, cfg0.cachedSerializer.uniqueId, cfg0.selectMode)

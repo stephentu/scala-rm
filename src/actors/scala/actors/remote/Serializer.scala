@@ -20,7 +20,7 @@ sealed trait HandshakeEvent
 sealed trait ReceivableEvent extends HandshakeEvent
 sealed trait TriggerableEvent extends HandshakeEvent
 
-case object StartEvent extends ReceivableEvent
+case class StartEvent(node: Node) extends ReceivableEvent
 case class RecvEvent(msg: Any) extends ReceivableEvent
 
 case class SendEvent(msg: Any) extends TriggerableEvent
@@ -96,7 +96,7 @@ trait NonHandshakingSerializer { this: Serializer =>
 trait IdResolvingSerializer { this: Serializer =>
   override def isHandshaking = true
   override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
-    case StartEvent            => Some(SendEvent(uniqueId))
+    case StartEvent(_)         => Some(SendEvent(uniqueId))
     case RecvEvent(MyUniqueId) => Some(Success)
     case RecvEvent(_)          => Some(Error("ID's do not match"))
   }

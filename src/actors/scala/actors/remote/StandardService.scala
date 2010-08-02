@@ -90,7 +90,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
       status = Handshaking
 
       // ... and initialize it
-      handleNextEvent(StartEvent)
+      handleNextEvent(StartEvent(remoteNode))
     } else 
       // otherwise, in established mode (ready to send messages)
       status = Established 
@@ -147,7 +147,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
             terminateLock.synchronized {
               if (terminateInitiated) return
               status = Handshaking
-              handleNextEvent(StartEvent)
+              handleNextEvent(StartEvent(remoteNode))
             }
           } else 
             terminateLock.synchronized {
@@ -192,8 +192,6 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     case None =>
       throw new IllegalStateException("Cannot serialize message, no serializer agreed upon")
   }
-
-
 
   def send(msg: Serializer => AnyRef) {
     ensureAlive()
@@ -246,15 +244,18 @@ class DefaultMessageConnection(byteConn: ByteConnection,
   private def nextPrimitiveMessage() = {
     assert(hasSerializerMessage)
     val (meta, data) = nextMessageTuple()
-    primitiveSerializer.deserialize(Some(meta), data)
+    primitiveSerializer.deserialize(OptionArray(meta), data)
   }
 
   private def nextSerializerMessage() = {
     assert(hasSerializerMessage)
     val (meta, data) = nextMessageTuple()
-    serializer.get.deserialize(Some(meta), data)
+    serializer.get.deserialize(OptionArray(meta), data)
   }
 
+  private def OptionArray(b: Array[Byte]) = 
+    if ((b eq null) || b.length == 0) None
+    else Some(b)
 
 }
 

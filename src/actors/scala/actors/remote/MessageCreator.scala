@@ -12,15 +12,12 @@ package scala.actors
 package remote
 
 trait MessageCreator {
-  type MyNode                       <: Node
   type MyAsyncSend                  <: AsyncSend
   type MySyncSend                   <: SyncSend
   type MySyncReply                  <: SyncReply
   type MyRemoteStartInvoke          <: RemoteStartInvoke
   type MyRemoteStartInvokeAndListen <: RemoteStartInvokeAndListen
   type MyRemoteApply                <: RemoteApply
-
-  def newNode(address: String, port: Int): MyNode
 
   def newAsyncSend(senderName: Option[Symbol], receiverName: Symbol, metaData: Array[Byte], data: Array[Byte]): MyAsyncSend
 
@@ -30,29 +27,29 @@ trait MessageCreator {
 
   def newRemoteStartInvoke(actorClass: String): MyRemoteStartInvoke
 
-  def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): MyRemoteStartInvokeAndListen
+  def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol): MyRemoteStartInvokeAndListen
 
   def newRemoteApply(senderName: Symbol, receiverName: Symbol, rfun: RemoteFunction): MyRemoteApply
 
-  def intercept(m: AnyRef): AnyRef = m match {
+  protected def doIntercept: PartialFunction[AnyRef, AnyRef] = {
     case RemoteStartInvoke(actorClass) => 
       newRemoteStartInvoke(actorClass)
-    case RemoteStartInvokeAndListen(actorClass, port, name, mode) =>
-      newRemoteStartInvokeAndListen(actorClass, port, name, mode)
-    case e => 
-      e
+    case RemoteStartInvokeAndListen(actorClass, port, name) =>
+      newRemoteStartInvokeAndListen(actorClass, port, name)
   }
+
+  def intercept(m: AnyRef) =
+    if (doIntercept.isDefinedAt(m)) 
+      doIntercept(m)
+    else
+      m
 }
 
-
 trait DefaultEnvelopeMessageCreator { this: MessageCreator =>
-  override type MyNode        = DefaultNodeImpl
   override type MyAsyncSend   = DefaultAsyncSendImpl
   override type MySyncSend    = DefaultSyncSendImpl
   override type MySyncReply   = DefaultSyncReplyImpl
   override type MyRemoteApply = DefaultRemoteApplyImpl
-
-  override def newNode(address: String, port: Int): DefaultNodeImpl = DefaultNodeImpl(address, port)
 
   override def newAsyncSend(senderName: Option[Symbol], receiverName: Symbol, metaData: Array[Byte], data: Array[Byte]): DefaultAsyncSendImpl =
     DefaultAsyncSendImpl(senderName, receiverName, metaData, data)
@@ -73,6 +70,6 @@ trait DefaultControllerMessageCreator { this: MessageCreator =>
   override def newRemoteStartInvoke(actorClass: String): DefaultRemoteStartInvokeImpl = 
     DefaultRemoteStartInvokeImpl(actorClass)
 
-  override def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol, mode: ServiceMode.Value): DefaultRemoteStartInvokeAndListenImpl =
-    DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name, mode)
+  override def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: Symbol): DefaultRemoteStartInvokeAndListenImpl =
+    DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name)
 }
