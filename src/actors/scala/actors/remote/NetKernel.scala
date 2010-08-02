@@ -153,6 +153,7 @@ private[remote] object NetKernel {
     override def remoteNode    = throw new RuntimeException("NoSender")
     override def name          = throw new RuntimeException("NoSender")
     override def conn          = throw new RuntimeException("NoSender")
+    override def numRetries    = throw new RuntimeException("NoSender") 
 
     override def terminateConn(usingConn: MessageConnection) { 
       throw new RuntimeException("NoSender")
