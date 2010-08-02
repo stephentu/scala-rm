@@ -123,6 +123,7 @@ private[remote] class ControllerActor(port: Int, thisSym: Symbol)(implicit cfg: 
           sender ! RemoteStartResult(errorMessage)
         case Terminate =>
           Debug.info(this + ": Got terminate message")
+          unregister(self) /** Explicit unregistration because we use alive0 */
           exit()
         case m =>
           Debug.info(this + ": Ignoring unknown message: " + m)
