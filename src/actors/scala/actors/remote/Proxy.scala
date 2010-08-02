@@ -82,23 +82,40 @@ private[remote] abstract class Proxy extends AbstractActor
 
   protected def conn: MessageConnection
   protected def terminateConn(usingConn: MessageConnection): Unit 
+  protected def numRetries: Int   
 
   override def start() = { throw new RuntimeException("Should never call start() on a Proxy") }
   override def act()     { throw new RuntimeException("Should never call act() on a Proxy")   }
+
+  private def tryRemoteAction(f: MessageConnection => Unit) {
+    var triesLeft = numRetries + 1
+    assert(triesLeft > 0)
+    while (triesLeft > 0) {
+      triesLeft -= 1
+      val usingConn = conn
+      try { f(usingConn) } catch {
+        case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
+          Debug.error(this + ": Caught exception: " + e.getMessage)
+          Debug.doError { e.printStackTrace() }
+          terminateConn(usingConn)
+          if (triesLeft == 0)
+            throw e
+      }
+    }
+  }
 
   private[remote] def handleMessage(m: ProxyCommand) {
     m match {
       case cmd @ RemoteApply0(actor, rfun) =>
         Debug.info("cmd@Apply0: " + cmd)
-        val usingConn = conn
-        try {
+        tryRemoteAction { usingConn =>
           NetKernel.remoteApply(usingConn, name, RemoteActor.getOrCreateName(actor), rfun)
-        } catch {
-          case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
-            Debug.error(this + ": Caught exception: " + e.getMessage)
-            Debug.doError { e.printStackTrace() }
-            terminateConn(usingConn)
         }
+      case cmd @ LocalApply0(rfun @ ExitFun(_), target) =>
+        Debug.info("cmd@LocalApply0: " + cmd)
+        Debug.info("target: " + target + ", creator: " + this)
+        // exit() has to be run in an actor, otherwise we'll get an exception
+        Actor.actor { rfun(target, this) }
       case cmd @ LocalApply0(rfun, target) =>
         Debug.info("cmd@LocalApply0: " + cmd)
         Debug.info("target: " + target + ", creator: " + this)
@@ -142,15 +159,8 @@ private[remote] abstract class Proxy extends AbstractActor
             // send back response - the sender (from) field is null here,
             // because you cannot reply to a request-response cycle more
             // than once.
-            val usingConn = conn
-            try {
+            tryRemoteAction { usingConn => 
               NetKernel.syncReply(usingConn, name, msg, sid)
-            } catch {
-              case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
-                Debug.error(this + ": Caught exception: " + e.getMessage)
-                Debug.doError { e.printStackTrace() }
-                terminateConn(usingConn)
-                throw e
             }
           case None =>
             Debug.info(this+": cannot find session for "+ch)
@@ -163,28 +173,22 @@ private[remote] abstract class Proxy extends AbstractActor
       case msg: AnyRef =>
         Debug.info("msg: AnyRef = " + msg)
 
-        val usingConn = conn
-        try {
-          // find out whether it's a synchronous send
-          sender match {
-            case (_: Actor) | null =>  /** Comes from !, or send(m, null) */
-              Debug.info(this + ": async send: sender: " + sender)
-              val fromName = if (sender eq null) None else Some(RemoteActor.getOrCreateName(sender))
+        // find out whether it's a synchronous send
+        sender match {
+          case (_: Actor) | null =>  /** Comes from !, or send(m, null) */
+            Debug.info(this + ": async send: sender: " + sender)
+            val fromName = if (sender eq null) None else Some(RemoteActor.getOrCreateName(sender))
+            tryRemoteAction { usingConn =>
               NetKernel.asyncSend(usingConn, name, fromName, msg)
-            case _ =>                  /** Comes from !! and !? */
-              Debug.info(this + ": sync send: sender: " + sender)
-              val session = RemoteActor.newChannel(sender)
-              Debug.info(this + ": mapped " + session + " -> " + sender)
+            }
+          case _ =>                  /** Comes from !! and !? */
+            Debug.info(this + ": sync send: sender: " + sender)
+            val session = RemoteActor.newChannel(sender)
+            Debug.info(this + ": mapped " + session + " -> " + sender)
+            tryRemoteAction { usingConn =>
               NetKernel.syncSend(usingConn, name, RemoteActor.getOrCreateName(sender.receiver), msg, session)
-          }
-        } catch {
-          case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
-            Debug.error(this + ": Caught exception: " + e.getMessage)
-            Debug.doError { e.printStackTrace() }
-            terminateConn(usingConn)
-            throw e
+            }
         }
-
       case e =>
         Debug.error("Unknown message for delegate: " + e)
     }
@@ -227,12 +231,20 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
         if (_conn ne null) _conn
         else {
           // try to (re-)initialize connection from the NetKernel
-          _conn = NetKernel.getConnectionFor(remoteNode, config)
+          _conn = NetKernel.getConnectionFor(remoteNode, getConfig)
           _conn
         }
       }
     }
   }
+
+  private def getConfig = 
+    if (config eq null) 
+      RemoteActor.defaultConfig 
+    else config
+
+  override def numRetries = 
+    getConfig.numRetries
 
   override def terminateConn(usingConn: MessageConnection) {
     usingConn.terminateBottom()
@@ -257,6 +269,8 @@ private[remote] class ConnectionProxy(override val remoteNode: Node,
       throw new RuntimeException("Connection failed")
     else _conn
   }
+
+  override def numRetries = 0 /** Cannot retry */
 
   override def terminateConn(usingConn: MessageConnection) {
     usingConn.terminateBottom()

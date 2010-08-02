@@ -19,6 +19,7 @@ abstract class Configuration {
   def aliveMode: ServiceMode.Value 
   def selectMode: ServiceMode.Value 
   def newSerializer(): Serializer
+  def numRetries: Int = 0
 
   private[remote] lazy val cachedSerializer: Serializer = newSerializer()
 }
