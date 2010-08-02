@@ -241,9 +241,8 @@ object RemoteActor {
     fresh
   }
 
-  private[remote] def findChannel(name: Symbol) = Option(channels.get(name))
-
-  private[remote] def finishChannel(name: Symbol) = Option(channels.remove(name))
+  private[remote] def finishChannel(name: Symbol) =
+    Option(channels.remove(name))
 
   private[remote] def finishSession(ch: OutputChannel[Any]) = Option(sessions.remove(ch))
 
