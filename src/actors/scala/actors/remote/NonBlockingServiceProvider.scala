@@ -488,6 +488,9 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
         try {
           var continue = true
+          var numEmptyWrites = 0
+          var hasWrittenBytes = false
+          val spinsAllowed = 16
           while (continue) {
             val nextWrite = writeQueue.peek
             if (nextWrite eq null) {
@@ -523,14 +526,24 @@ class NonBlockingServiceProvider extends ServiceProvider {
               }
             } else {
               val bytesWritten = nextWrite.doWrite(socketChannel)
+              if (bytesWritten > 0)
+                hasWrittenBytes = true
+
               if (nextWrite.isFinished) {
                 val head = writeQueue.poll() // remove the write from the queue
-                assert(bytesWritten > 0)
+                assert(bytesWritten > 0 && hasWrittenBytes)
                 assert((head ne null) && (head == nextWrite))
                 head.releaseResources()
               } else if (bytesWritten == 0) {
-                // socket is full
-                continue = false
+                numEmptyWrites += 1
+                if (hasWrittenBytes)
+                  // socket is full, and since we've already done a write, go
+                  // ahead and stop now
+                  continue = false
+                else if (numEmptyWrites > spinsAllowed) 
+                  // we've spun enough times w/o a write, so go ahead and stop
+                  // now
+                  continue = false
               }
             }
           }
