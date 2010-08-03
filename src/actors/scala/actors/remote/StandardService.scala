@@ -22,7 +22,8 @@ object ConnectionStatus {
 class DefaultMessageConnection(byteConn: ByteConnection, 
                                var serializer: Option[Serializer],
                                override val receiveCallback: MessageReceiveCallback,
-                               isServer: Boolean)
+                               isServer: Boolean,
+                               config: Configuration)
   extends MessageConnection {
 
   import ConnectionStatus._
@@ -155,7 +156,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         try {
           val clzName = new String(nextMessage())
           //Debug.info(this + ": going to create serializer of clz " + clzName)
-          val _serializer = Class.forName(clzName).newInstance.asInstanceOf[Serializer]
+          val _serializer = Class.forName(clzName, true, config.classLoader)
+            .newInstance.asInstanceOf[Serializer]
           serializer = Some(_serializer)
 
           // same logic as in bootstrapClient()
@@ -287,25 +289,24 @@ class StandardService extends Service {
   }
 
   override def connect(node: Node, 
-                       serializer: Serializer, 
-                       mode: ServiceMode.Value, 
+                       config: Configuration,
                        recvCallback: MessageReceiveCallback): MessageConnection = {
-    val byteConn = serviceProviderFor0(mode).connect(node, recvCall0)
-    val msgConn = new DefaultMessageConnection(byteConn, Some(serializer), recvCallback, false)
+    val byteConn = serviceProviderFor0(config.selectMode).connect(node, recvCall0)
+    val msgConn = new DefaultMessageConnection(byteConn, Some(config.newSerializer()), recvCallback, false, config)
     byteConn.attach(msgConn)
     msgConn
   }
 
   override def listen(port: Int, 
-                      mode: ServiceMode.Value, 
+                      config: Configuration,
                       connCallback: ConnectionCallback[MessageConnection], 
                       recvCallback: MessageReceiveCallback): Listener = {
     val byteConnCallback = (listener: Listener, byteConn: ByteConnection) => {
-      val msgConn = new DefaultMessageConnection(byteConn, None, recvCallback, true)
+      val msgConn = new DefaultMessageConnection(byteConn, None, recvCallback, true, config)
       byteConn.attach(msgConn)
 			connCallback(listener, msgConn)	
     }
-    serviceProviderFor0(mode).listen(port, byteConnCallback, recvCall0)
+    serviceProviderFor0(config.aliveMode).listen(port, byteConnCallback, recvCall0)
   }
 
 }

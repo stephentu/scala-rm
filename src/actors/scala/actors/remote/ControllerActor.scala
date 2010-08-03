@@ -71,9 +71,8 @@ private[remote] class ControllerActor(port: Int, thisSym: Symbol)(implicit cfg: 
 
   import ControllerActor._
 
-  // TODO: let user specify class loader
   private def newActor(actorClass: String): Actor =
-    Class.forName(actorClass).asInstanceOf[Class[Actor]].newInstance()
+    Class.forName(actorClass, true, cfg.classLoader).asInstanceOf[Class[Actor]].newInstance()
 
   override def exceptionHandler: PartialFunction[Exception, Unit] = {
     case e: Exception =>

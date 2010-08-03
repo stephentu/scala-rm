@@ -117,14 +117,24 @@ object RemoteActor {
     }
   }
 
-  /* If set to <code>null</code> (default), the default class loader
-   * of <code>java.io.ObjectInputStream</code> is used for deserializing
-   * java objects sent as messages. Custom serializers are free to ignore this
-   * field (especially since it probably doesn't apply).
-   */
+
   private var cl: ClassLoader = null
 
+  @deprecated("Configure a JavaSerializer by hand instead")
   def classLoader: ClassLoader = cl
+
+  /**
+   * If set to <code>null</code> (default), the default class loader
+   * of <code>java.io.ObjectInputStream</code> is used for deserializing
+   * Java objects sent as messages. Custom serializers are free to ignore this
+   * field (especially since it probably doesn't apply).
+   *
+   * Note: This <code>ClassLoader</code> is not the same as the
+   * <code>ClassLoader</code> found in a <code>Configuration</code> object.
+   * This one is just used to configure a <code>JavaSerializer</code>, and
+   * will be removed in future releases.
+   */
+  @deprecated("Configure a JavaSerializer by hand instead")
   def classLoader_=(x: ClassLoader) { cl = x }
 
   @volatile private var explicitlyTerminate = false
@@ -170,8 +180,13 @@ object RemoteActor {
   private var _defaultConfig: Configuration = Configuration.DefaultConfig
 
   /**
-   * Specify the <code>Configuration</code> object used to configure incoming
-   * proxy handles 
+   * Specify the <code>Configuration</code> object used by the network kernel
+   * when there is no <code>Configuration</code> object accessible in lexical
+   * scope. 
+   *
+   * Currently this is only used to configure the connections of remote proxy
+   * handles which are explicitly sent (not the handles which are accessed via
+   * <code>sender</code>, which are tied to the connection and are epheremal).
    */
   def setDefaultConfig(config: Configuration) {
     _defaultConfig = config

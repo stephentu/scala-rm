@@ -205,12 +205,11 @@ abstract class Service extends CanTerminate {
   }
 
   def connect(node: Node, 
-              serializer: Serializer, 
-              mode: ServiceMode.Value,
+              config: Configuration,
               recvCallback: MessageReceiveCallback): MessageConnection
 
   def listen(port: Int, 
-						 mode: ServiceMode.Value, 
+             config: Configuration,
 						 connCallback: ConnectionCallback[MessageConnection],
 						 recvCallback: MessageReceiveCallback): Listener
 

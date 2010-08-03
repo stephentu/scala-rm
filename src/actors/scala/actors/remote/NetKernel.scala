@@ -29,12 +29,7 @@ private[remote] object NetKernel {
   private val connections = new ConcurrentHashMap[(Node, Long, ServiceMode.Value), MessageConnection]
 
   def getConnectionFor(node: Node, cfg: Configuration) = {
-    val cfg0 = 
-      if (cfg eq null)
-        RemoteActor.defaultConfig
-      else 
-        cfg
-    val key = (node, cfg0.cachedSerializer.uniqueId, cfg0.selectMode)
+    val key = (node, cfg.cachedSerializer.uniqueId, cfg.selectMode)
     val testConn = connections.get(key)
     if (testConn ne null)
       testConn
@@ -44,7 +39,7 @@ private[remote] object NetKernel {
         if (testConn0 ne null)
           testConn0
         else {
-          val conn = _service.connect(node, cfg0.newSerializer(), cfg0.selectMode, processMsgFunc)
+          val conn = _service.connect(node, cfg, processMsgFunc)
           conn beforeTerminate { isBottom =>
             Debug.info(this + ": removing connection with key: " + key)
             connections.remove(key)
@@ -73,7 +68,7 @@ private[remote] object NetKernel {
         if (testListener0 ne null)
           ensureListener(testListener0)
         else {
-          val listener = _service.listen(port, cfg.aliveMode, msgConnCallback, processMsgFunc)
+          val listener = _service.listen(port, cfg, msgConnCallback, processMsgFunc)
           val realPort = listener.port
           listener beforeTerminate { isBottom =>
             listeners.remove(realPort)
