@@ -76,7 +76,7 @@ class VaryingSizeByteBufferPool {
       ByteBuffer.allocateDirect(align(minCap))
     } else {
       val ret = bufferQueue.poll()
-      assert(ret ne null) 
+      //assert(ret ne null) 
       ret.clear()
       ret
     }
@@ -96,7 +96,7 @@ class VaryingSizeByteBufferPool {
 }
 
 class FixedSizeByteBufferPool(fixedSize: Int) {
-  assert(fixedSize > 0)
+  //assert(fixedSize > 0)
   private val bufferQueue = new ArrayBuffer[ByteBuffer]
 
   def take(): ByteBuffer = 
@@ -313,7 +313,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
                   outerContinue = false
                   continue = false
                 } else {
-                  assert(cnt > 0)
+                  //assert(cnt > 0)
                   // socket offered some to read, so let's keep reading
                   totalBytesRead += cnt
                 }
@@ -533,7 +533,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
               if (writeQueue.peek eq null) {
                 //Debug.error(this + ": doWrite - OP_READ interest set - FLAG")
                 key.interestOps(SelectionKey.OP_READ) /** Go back to only handling READs */
-                assert(key.interestOps == SelectionKey.OP_READ)
+                //assert(key.interestOps == SelectionKey.OP_READ)
               } else {
                 // A thread snuck in sometime between peek() and set(), so
                 // this means we need to handle writes again. So we set
@@ -548,8 +548,8 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
               if (nextWrite.isFinished) {
                 val head = writeQueue.poll() // remove the write from the queue
-                assert(bytesWritten > 0 && hasWrittenBytes)
-                assert((head ne null) && (head == nextWrite))
+                //assert(bytesWritten > 0 && hasWrittenBytes)
+                //assert((head ne null) && (head == nextWrite))
                 head.releaseResources()
               } else if (bytesWritten == 0) {
                 numEmptyWrites += 1
