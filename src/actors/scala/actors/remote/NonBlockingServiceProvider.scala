@@ -55,9 +55,10 @@ object InterestOpUtil {
 }
 
 object NonBlockingServiceProvider {
-  val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 4
-  val NumListenerLoops = Runtime.getRuntime.availableProcessors
-  val ReadBufSize = 8192
+  val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 2
+  val NumListenerLoops   = 1 /* Runtime.getRuntime.availableProcessors */
+
+  val ReadBufSize        = 8192
 }
 
 class VaryingSizeByteBufferPool {
