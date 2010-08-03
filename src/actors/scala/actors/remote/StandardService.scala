@@ -106,10 +106,10 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     assert(isHandshaking)
     def sendIfNecessary(m: TriggerableEvent) {
       (m match {
-        case SendEvent(m)             => Some(m)
-        case SendWithSuccessEvent(m)  => Some(m)
-        case SendWithErrorEvent(m, _) => Some(m)
-        case _ => None
+        case SendEvent(msgs @ _*)             => msgs
+        case SendWithSuccessEvent(msgs @ _*)  => msgs 
+        case SendWithErrorEvent(_, msgs @ _*) => msgs
+        case _ => Seq()
       }) foreach { msg =>
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
         val meta = primitiveSerializer.serializeMetaData(msg.asInstanceOf[AnyRef])
@@ -122,8 +122,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     serializer.get.handleNextEvent(evt).foreach { evt =>
       sendIfNecessary(evt)
       evt match {
-        case SendEvent(_) =>
-        case SendWithSuccessEvent(_) | Success =>
+        case SendEvent(_*) =>
+        case SendWithSuccessEvent(_*) | Success =>
           // done
           status = Established
           if (!sendQueue.isEmpty) {
@@ -137,7 +137,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
             terminateLock.notifyAll()
           }
           Debug.info(this + ": handshake completed")
-        case SendWithErrorEvent(_, reason) =>
+        case SendWithErrorEvent(reason, _*) =>
           throw new IllegalHandshakeStateException(reason)
         case Error(reason) =>
           throw new IllegalHandshakeStateException(reason)

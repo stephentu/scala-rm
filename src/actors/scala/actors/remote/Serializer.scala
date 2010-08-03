@@ -23,9 +23,10 @@ sealed trait TriggerableEvent extends HandshakeEvent
 case class StartEvent(node: Node) extends ReceivableEvent
 case class RecvEvent(msg: Any) extends ReceivableEvent
 
-case class SendEvent(msg: Any) extends TriggerableEvent
-case class SendWithSuccessEvent(msg: Any) extends TriggerableEvent
-case class SendWithErrorEvent(msg: Any, reason: String) extends TriggerableEvent
+case class SendEvent(msgs: Any*) extends TriggerableEvent
+
+case class SendWithSuccessEvent(msgs: Any*) extends TriggerableEvent
+case class SendWithErrorEvent(reason: String, msgs: Any*) extends TriggerableEvent
 case object Success extends TriggerableEvent
 case class Error(reason: String) extends TriggerableEvent
 
@@ -108,7 +109,7 @@ trait IdResolvingSerializer { this: Serializer =>
   override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
     case StartEvent(_)         => Some(SendEvent(uniqueId))
     case RecvEvent(MyUniqueId) => Some(Success)
-    case RecvEvent(_)          => Some(Error("ID's do not match"))
+    case RecvEvent(id)         => Some(Error("ID's do not match. Expected " + MyUniqueId + ", but got " + id))
   }
   private val MyUniqueId = uniqueId
 }
