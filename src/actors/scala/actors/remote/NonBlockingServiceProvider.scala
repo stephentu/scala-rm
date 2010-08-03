@@ -675,9 +675,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         try {
           processOperationQueue()
 
-          //Debug.info(this + ": calling select()")
-          val selected = selector.select(500) /** TODO: consider using select(long) alternative */
-          //Debug.info(this + ": woke up from select() with " + selected + " keys selected")
+          selector.select(10000)
 
           /**
            * The idiomatic Java iterator construct is used here to save an
@@ -688,16 +686,17 @@ class NonBlockingServiceProvider extends ServiceProvider {
           while (selectedKeys.hasNext) {
             val key = selectedKeys.next()
             selectedKeys.remove()
-            if (key.isValid)
-              if (key.isAcceptable) // mutually exclusive
+            if (key.isValid) {
+              val readyOps = key.readyOps
+              if ((readyOps & SelectionKey.OP_ACCEPT) != 0) // mutually exclusive
                 processAccept(key)
-              else if (key.isConnectable) // mutually exclusive
+              else if ((readyOps & SelectionKey.OP_CONNECT) != 0) // mutually exclusive
                 processConnect(key)
               else { // can do both reads and writes at the same time
-                if (key.isWritable) processWrite(key) // do writes first
-                if (key.isReadable) processRead(key)  // then do reads
+                if ((readyOps & SelectionKey.OP_WRITE) != 0) processWrite(key) // do writes first
+                if ((readyOps & SelectionKey.OP_READ) != 0)  processRead(key)  // then do reads
               }
-            else
+            } else
               Debug.error(this + ": Invalid key found: " + key)
           }
         } catch {
