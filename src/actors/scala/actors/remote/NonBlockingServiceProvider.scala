@@ -287,47 +287,63 @@ class NonBlockingServiceProvider extends ServiceProvider {
         def doRead(chan: SocketChannel): Boolean = {
           import BitUtils._
 
-          readBuffer.clear()
+          var outerContinue   = true  /* Should we keep trying new readBuffers? */
+          var shouldTerminate = false /* Did we encounter an error within a readBuffer? */
 
-          var totalBytesRead = 0
-          val shouldTerminate = 
+          while (outerContinue) {
+            readBuffer.clear()
+            var totalBytesRead = 0
             try {
-              var continue = true
-              var cnt = 0
+              var continue = true /* Should we keep trying THIS readBuffer? */
               while (continue) {
-                cnt = chan.read(readBuffer)
-                if (cnt <= 0)
+                val cnt = chan.read(readBuffer)
+                if (cnt == -1) {
+                  // don't continue anymore, EOF
+                  shouldTerminate = true
+                  outerContinue = false
                   continue = false
-                else
+                } else if (readBuffer.remaining == 0) {
+                  // readBuffer is full, so don't continue anymore on this
+                  // readBuffer, but use another one
                   totalBytesRead += cnt
+                  continue = false
+                } else if (cnt == 0) {
+                  // socket has no more to offer to read, so don't continue
+                  // anymore
+                  outerContinue = false
+                  continue = false
+                } else {
+                  assert(cnt > 0)
+                  // socket offered some to read, so let's keep reading
+                  totalBytesRead += cnt
+                }
               }
-              cnt == -1
             } catch {
               case e: IOException => 
                 Debug.error(this + ": Exception " + e.getMessage + " when reading")
                 Debug.doError { e.printStackTrace }
-                true
             }
 
-          if (totalBytesRead > 0) {
-            readBuffer.flip()
-            while (readBuffer.remaining > 0) {
-              // some bytes are here to process, so process as many as
-              // possible
-              val toCopy = java.lang.Math.min(readBuffer.remaining, messageSize - bytesSoFar)
-              readBuffer.get(currentArray, bytesSoFar, toCopy)
-              bytesSoFar += toCopy
+            if (totalBytesRead > 0) {
+              readBuffer.flip()
+              while (readBuffer.remaining > 0) {
+                // some bytes are here to process, so process as many as
+                // possible
+                val toCopy = java.lang.Math.min(readBuffer.remaining, messageSize - bytesSoFar)
+                readBuffer.get(currentArray, bytesSoFar, toCopy)
+                bytesSoFar += toCopy
 
-              // this message is done
-              if (bytesSoFar == messageSize) 
-                if (isReadingSize)
-                  startReadingMessage(bytesToInt(currentArray))
-                else {
-                  receiveBytes(currentArray)
-                  startReadingSize()
-                }
-            }
-          } 
+                // this message is done
+                if (bytesSoFar == messageSize) 
+                  if (isReadingSize)
+                    startReadingMessage(bytesToInt(currentArray))
+                  else {
+                    receiveBytes(currentArray)
+                    startReadingSize()
+                  }
+              }
+            } 
+          }
 
           shouldTerminate
         }
