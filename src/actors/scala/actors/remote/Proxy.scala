@@ -203,7 +203,7 @@ private[remote] abstract class Proxy extends AbstractActor
   }
 
   override def exit(from: AbstractActor, reason: AnyRef) {
-    handleMessage(RemoteApply0(from, ExitFun(reason)))
+    handleMessage(RemoteApply0(from, ExitFun(reason.toString)))
   }
 
   override def toString = "<" + name + "@" + remoteNode + ">"
