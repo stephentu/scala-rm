@@ -46,7 +46,7 @@ class JavaSerializer(cl: ClassLoader)
 
   def this() = this(null)
 
-  override def uniqueId = 1679081588L
+  override val uniqueId = 1679081588L
 
   override def serializeMetaData(message: AnyRef): Option[Array[Byte]] = None
 

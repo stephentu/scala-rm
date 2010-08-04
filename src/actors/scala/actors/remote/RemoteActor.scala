@@ -39,23 +39,81 @@ import java.util.concurrent.ConcurrentHashMap
  *  }
  *  }}}
  *
+ *  There are several relevant points to make about remote actors:
+ *    (1) The configuration of remote actors is done via a
+ *    <code>Configuration</code> object. Most of publically accessible methods
+ *    in <code>RemoteActor</code> take an implicit <code>Configuration</code>
+ *    as a parameter. See the documentation for <code>Configuration</code>
+ *    for more information on the configurable parameters.
+ *
+ *    (2) The type returned for a remote actor is a <code>RemoteProxy</code>.
+ *    See the details below for the difference in semantics between a
+ *    <code>RemoteProxy</code>, and a regular <code>Actor</code>.
+ *
  * @author Philipp Haller
  * @author Stephen Tu
  */
 object RemoteActor {
 
   /**
-   * TODO: Comment
+   * <code>RemoteProxy</code> is a handle to a remote actor. This handle is
+   * supposed to be very lightweight, in additional to serializable. There are
+   * a few caveats, however, which make the semantics of a
+   * <code>RemoteProxy</code> slightly different from a regular
+   * <code>Actor</code>, due to the remote nature of the handle. 
+   *
+   * Most notably, the major difference is that send operations are no longer truly
+   * non-blocking, unless a <code>Configuration</code> object is used with a
+   * <code>ServiceMode</code> of <code>NonBlocking</code>. For the default
+   * mode of operation (the <code>Blocking</code> mode), send operations block
+   * until the data is written to the wire. However long that takes is
+   * entirely determined by the Socket API, and not by the network kernel. The
+   * advantage to this mode is that if a send operation returns without
+   * throwing an exception, then one is guaranteed that the data was actually 
+   * sent over the network.
+   *
+   * In <code>NonBlocking</code> mode, send operations have similar
+   * semantics. That is, send operations merely append to some buffer, and
+   * return. The disadvantage of this mode is that if a send operation
+   * returns without throwing an exception, there is no guarantee that the
+   * data will be written to the network; there is only a guarantee that the
+   * network connection was alive at the point when the send operation was
+   * called. For instance, suppose that the network is up and a send
+   * operation is successfully issued. Then, suppose the network connectivity
+   * goes down between the time after the write request is issued and before
+   * the write request is acutally performed. There is no way to catch this
+   * sort of exception, at least in the current API. 
+   *
+   * Thus, when using <code>NonBlocking</code> mode, if a guarantee is needed
+   * that a message is delivered, standard techniques of ACKs and timeouts
+   * must be used.
    */
   type RemoteProxy = AbstractActor
 
   /**
-   * Shorthand constructor for:
+   * Shorthand factory method for the following common pattern:
    * {{{
    * actor {
    *    alive(port)
    *    register(name, self)
    *    body 
+   * }
+   * }}}
+   *
+   * Note that importing this into scope conflicts with
+   * <code>Actor.actor</code>, so a common usage pattern is:
+   * {{{
+   * import scala.actor._
+   * import Actor._
+   * import remote._
+   * import RemoteActor.{actor => remoteActor, _}
+   *
+   * val localActor  = actor {
+   *   // ...
+   * }
+   * 
+   * val remoteActor = remoteActor(9000, 'anActor) {
+   *   // ...
    * }
    * }}}
    */

@@ -11,6 +11,15 @@
 package scala.actors
 package remote
 
+/**
+ * This trait defines factory methods for the envelope messages used by the
+ * network kernel. Exposing these types allows implementors of serializers
+ * greater control over how the messages are being sent over the wire. Note
+ * that, even though the return types on the factories are of
+ * <code>AnyRef</code> (which is done to give greater flexibility), the
+ * network kernel is expecting messages which implement the appropriately
+ * named interfaces.
+ */
 trait MessageCreator {
   //type MyAsyncSend                  <: AsyncSend
   //type MySyncSend                   <: SyncSend
@@ -38,6 +47,11 @@ trait MessageCreator {
       newRemoteStartInvokeAndListen(actorClass, port, name)
   }
 
+  /**
+   * Intercept is called for every non-envelope message. Its current use case
+   * is so the remote start actor does not have to have a handle to the
+   * Serializer when returning responses.
+   */
   def intercept(m: AnyRef) =
     if (doIntercept.isDefinedAt(m)) 
       doIntercept(m)
@@ -45,6 +59,10 @@ trait MessageCreator {
       m
 }
 
+/**
+ * Provides implementations of each of the envelope messages, as standard
+ * Scala case classes.
+ */
 trait DefaultEnvelopeMessageCreator { this: MessageCreator =>
   //override type MyAsyncSend   = DefaultAsyncSendImpl
   //override type MySyncSend    = DefaultSyncSendImpl
@@ -63,6 +81,10 @@ trait DefaultEnvelopeMessageCreator { this: MessageCreator =>
     DefaultRemoteApplyImpl(senderName, receiverName, rfun)
 }
 
+/**
+ * Provides implementations of each of the remote start actor messages, as standard
+ * Scala case classes.
+ */
 trait DefaultControllerMessageCreator { this: MessageCreator =>
   //override type MyRemoteStartInvoke          = DefaultRemoteStartInvokeImpl
   //override type MyRemoteStartInvokeAndListen = DefaultRemoteStartInvokeAndListenImpl

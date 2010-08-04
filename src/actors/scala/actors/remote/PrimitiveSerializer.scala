@@ -33,7 +33,7 @@ class PrimitiveSerializer
 
   import PrimitiveSerializer._
 
-  override def uniqueId = 282367820L  
+  override val uniqueId = 282367820L  
 
   override def serializeMetaData(message: AnyRef) = { 
     if (message eq null) throw new NullPointerException
