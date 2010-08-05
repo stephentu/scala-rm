@@ -78,75 +78,71 @@ private[remote] case class NodeImpl(override val address: String,
 }
 
 object AsyncSend {
-  def apply(senderName: Option[Symbol], receiverName: Symbol, metaData: Array[Byte], data: Array[Byte]): AsyncSend =
-    DefaultAsyncSendImpl(senderName, receiverName, metaData, data)
-  def unapply(n: AsyncSend): Option[(Option[Symbol], Symbol, Array[Byte], Array[Byte])] =
-    Some((n.senderName, n.receiverName, n.metaData, n.data))
+  def apply(senderName: String, receiverName: String, message: AnyRef): AsyncSend =
+    DefaultAsyncSendImpl(senderName, receiverName, message)
+  def unapply(n: AsyncSend): Option[(String, String, AnyRef)] =
+    Some((n.senderName, n.receiverName, n.message))
 }
 
-trait AsyncSend {
-  def senderName: Option[Symbol]
-  def receiverName: Symbol
-  def metaData: Array[Byte]
-  def data: Array[Byte]
+sealed trait NetKernelMessage
+
+trait AsyncSend extends NetKernelMessage {
+  def senderName: String
+  def receiverName: String
+  def message: AnyRef
 }
 
-case class DefaultAsyncSendImpl(override val senderName: Option[Symbol],
-                                override val receiverName: Symbol, 
-                                override val metaData: Array[Byte], 
-                                override val data: Array[Byte]) extends AsyncSend
+case class DefaultAsyncSendImpl(override val senderName: String,
+                                override val receiverName: String, 
+                                override val message: AnyRef) extends AsyncSend
 
 object SyncSend {
-  def apply(senderName: Symbol, receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): SyncSend =
-    DefaultSyncSendImpl(senderName, receiverName, metaData, data, session)
-  def unapply(n: SyncSend): Option[(Symbol, Symbol, Array[Byte], Array[Byte], Symbol)] =
-    Some((n.senderName, n.receiverName, n.metaData, n.data, n.session))
+  def apply(senderName: String, receiverName: String, message: AnyRef, session: String): SyncSend =
+    DefaultSyncSendImpl(senderName, receiverName, message, session)
+  def unapply(n: SyncSend): Option[(String, String, AnyRef, String)] =
+    Some((n.senderName, n.receiverName, n.message, n.session))
 }
 
-trait SyncSend {
-  def senderName: Symbol
-  def receiverName: Symbol
-  def metaData: Array[Byte]
-  def data: Array[Byte]
-  def session: Symbol
+trait SyncSend extends NetKernelMessage {
+  def senderName: String
+  def receiverName: String
+  def message: AnyRef
+  def session: String
 }
 
-case class DefaultSyncSendImpl(override val senderName: Symbol, 
-                               override val receiverName: Symbol, 
-                               override val metaData: Array[Byte], 
-                               override val data: Array[Byte],
-                               override val session: Symbol) extends SyncSend
+case class DefaultSyncSendImpl(override val senderName: String, 
+                               override val receiverName: String, 
+                               override val message: AnyRef,
+                               override val session: String) extends SyncSend
 
 object SyncReply {
-  def apply(receiverName: Symbol, metaData: Array[Byte], data: Array[Byte], session: Symbol): SyncReply =
-    DefaultSyncReplyImpl(receiverName, metaData, data, session)
-  def unapply(n: SyncReply): Option[(Symbol, Array[Byte], Array[Byte], Symbol)] =
-    Some((n.receiverName, n.metaData, n.data, n.session))
+  def apply(receiverName: String, message: AnyRef, session: String): SyncReply =
+    DefaultSyncReplyImpl(receiverName, message, session)
+  def unapply(n: SyncReply): Option[(String, AnyRef, String)] =
+    Some((n.receiverName, n.message, n.session))
 }
 
-trait SyncReply {
-  def receiverName: Symbol
-  def metaData: Array[Byte]
-  def data: Array[Byte]
-  def session: Symbol
+trait SyncReply extends NetKernelMessage {
+  def receiverName: String
+  def message: AnyRef
+  def session: String
 }
 
-case class DefaultSyncReplyImpl(override val receiverName: Symbol, 
-                                override val metaData: Array[Byte], 
-                                override val data: Array[Byte],
-                                override val session: Symbol) extends SyncReply
+case class DefaultSyncReplyImpl(override val receiverName: String, 
+                                override val message: AnyRef,
+                                override val session: String) extends SyncReply
 
 object RemoteApply {
-  def apply(senderName: Symbol, receiverName: Symbol, rfun: RemoteFunction): RemoteApply = DefaultRemoteApplyImpl(senderName, receiverName, rfun)
-  def unapply(r: RemoteApply): Option[(Symbol, Symbol, RemoteFunction)] = Some((r.senderName, r.receiverName, r.function))
+  def apply(senderName: String, receiverName: String, rfun: RemoteFunction): RemoteApply = DefaultRemoteApplyImpl(senderName, receiverName, rfun)
+  def unapply(r: RemoteApply): Option[(String, String, RemoteFunction)] = Some((r.senderName, r.receiverName, r.function))
 }
 
-trait RemoteApply {
-  def senderName: Symbol
-  def receiverName: Symbol
+trait RemoteApply extends NetKernelMessage {
+  def senderName: String
+  def receiverName: String
   def function: RemoteFunction
 }
 
-case class DefaultRemoteApplyImpl(override val senderName: Symbol,
-                                  override val receiverName: Symbol,
+case class DefaultRemoteApplyImpl(override val senderName: String,
+                                  override val receiverName: String,
                                   override val function: RemoteFunction) extends RemoteApply

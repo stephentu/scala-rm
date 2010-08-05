@@ -10,9 +10,7 @@
 package scala.actors
 package remote
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream,
-                ObjectInputStream, ObjectOutputStream, InputStream,
-                ObjectStreamClass}
+import java.io._
 
 /**
  *  @author Guy Oliver
@@ -36,6 +34,13 @@ extends ObjectInputStream(in) {
     }
 }
 
+object JavaSerializer {
+  final val ASYNC_SEND   = 0x0
+  final val SYNC_SEND    = 0x1
+  final val SYNC_REPLY   = 0x2
+  final val REMOTE_APPLY = 0x3
+}
+
 /**
  *  @author Philipp Haller
  */
@@ -44,36 +49,115 @@ class JavaSerializer(cl: ClassLoader)
   with    DefaultMessageCreator
   with    IdResolvingSerializer {
 
+  import JavaSerializer._
+
   def this() = this(null)
 
   override val uniqueId = 1679081588L
 
-  override def serializeMetaData(message: AnyRef): Option[Array[Byte]] = None
+  private def newObjectInputStream(is: InputStream) = 
+    if (cl eq null) new ObjectInputStream(is)
+    else new CustomObjectInputStream(is, cl)
 
-  override def serialize(o: AnyRef): Array[Byte] = javaSerialize(o)
+  override def writeAsyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef) {
+    val os = new DataOutputStream(outputStream)
+    writeTag(os, ASYNC_SEND)
+    writeString(os, senderName)
+    writeString(os, receiverName)
+    writeObject(os, message)
+  }
 
-  override def deserialize(metaData: Option[Array[Byte]], bytes: Array[Byte]): AnyRef = {
-    if (cl eq null) javaDeserialize(bytes)
-    else {
-      // use custom class loader in this case
-      val bis = new ByteArrayInputStream(bytes)
-      val in  = new CustomObjectInputStream(bis, cl)
-      in.readObject()
+  override def writeSyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef, session: String) {
+    val os = new DataOutputStream(outputStream)
+    writeTag(os, SYNC_SEND)
+    writeString(os, senderName)
+    writeString(os, receiverName)
+    writeString(os, session)
+    writeObject(os, message)
+  }
+
+  override def writeSyncReply(outputStream: OutputStream, receiverName: String, message: AnyRef, session: String) {
+    val os = new DataOutputStream(outputStream)
+    writeTag(os, SYNC_REPLY)
+    writeString(os, receiverName)
+    writeString(os, session)
+    writeObject(os, message)
+  }
+
+  override def writeRemoteApply(outputStream: OutputStream, senderName: String, receiverName: String, rfun: RemoteFunction) {
+    val os = new DataOutputStream(outputStream)
+    writeTag(os, REMOTE_APPLY)
+    writeString(os, senderName)
+    writeString(os, receiverName)
+    writeObject(os, rfun)
+  }
+
+
+  override def read(bytes: Array[Byte]) = {
+    val bais = new ByteArrayInputStream(bytes)
+    val is = new DataInputStream(bais)
+    val tag = readTag(is) 
+    tag match {
+      case ASYNC_SEND =>
+        val senderName = readString(is)
+        val receiverName = readString(is)
+        val message = readObject(is)
+        AsyncSend(senderName, receiverName, message)
+      case SYNC_SEND =>
+        val senderName = readString(is)
+        val receiverName = readString(is)
+        val session = readString(is)
+        val message = readObject(is)
+        SyncSend(senderName, receiverName, message, session)
+      case SYNC_REPLY =>
+        val receiverName = readString(is)
+        val session = readString(is)
+        val message = readObject(is)
+        SyncReply(receiverName, message, session)
+      case REMOTE_APPLY =>
+        val senderName = readString(is)
+        val receiverName = readString(is)
+        val function = readObject(is).asInstanceOf[RemoteFunction]
+        RemoteApply(senderName, receiverName, function)
     }
   }
 
-  private def javaSerialize(o: AnyRef): Array[Byte] = {
-    val bos = new ByteArrayOutputStream()
-    val out = new ObjectOutputStream(bos)
+  private def writeTag(os: DataOutputStream, t: Int) {
+    os.writeByte(t)
+  }
+
+  private def readTag(is: DataInputStream): Int = 
+    is.readByte()
+
+  // TODO: varint encoding
+  private def writeString(os: DataOutputStream, s: String) {
+    if (s eq null)
+      os.writeInt(0)
+    else {
+      os.writeInt(s.length)
+      os.writeBytes(s)
+    }
+  }
+
+  // TODO: varint encoding
+  private def readString(is: DataInputStream): String = {
+    val len = is.readInt()
+    if (len == 0) null
+    else {
+      val bytes = new Array[Byte](len)
+      is.readFully(bytes, 0, len)
+      new String(bytes)
+    }
+  }
+
+  private def writeObject(os: DataOutputStream, o: AnyRef) {
+    val out = new ObjectOutputStream(os)
     out.writeObject(o)
     out.flush()
-    bos.toByteArray()
   }
 
-  private def javaDeserialize(bytes: Array[Byte]): AnyRef = {
-    val bis = new ByteArrayInputStream(bytes)
-    val in  = new ObjectInputStream(bis)
+  private def readObject(is: DataInputStream): AnyRef = {
+    val in  = newObjectInputStream(is)
     in.readObject()
   }
-
 }

@@ -11,7 +11,7 @@ package scala.actors
 package remote
 
 import scala.collection.mutable.{ HashMap, HashSet }
-import java.io.IOException
+import java.io._
 import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
 
 
@@ -106,36 +106,38 @@ private[remote] object NetKernel {
     }
   }
 
-  def asyncSend(conn: MessageConnection, toName: Symbol, fromName: Option[Symbol], msg: AnyRef) {
+  def asyncSend(conn: MessageConnection, toName: String, fromName: Option[String], msg: AnyRef) {
     conn.send { serializer: Serializer =>
+			val baos = new ByteArrayOutputStream(1024)
       val wireMsg  = serializer.intercept(msg)
-      val metadata = serializer.serializeMetaData(wireMsg).orNull
-      val bytes    = serializer.serialize(wireMsg)
-      serializer.newAsyncSend(fromName, toName, metadata, bytes)
+      serializer.writeAsyncSend(baos, fromName.orNull, toName, wireMsg)
+			baos.toByteArray
     }
   }
 
-  def syncSend(conn: MessageConnection, toName: Symbol, fromName: Symbol, msg: AnyRef, session: Symbol) {
+  def syncSend(conn: MessageConnection, toName: String, fromName: String, msg: AnyRef, session: String) {
     conn.send { serializer: Serializer =>
+			val baos = new ByteArrayOutputStream(1024)
       val wireMsg  = serializer.intercept(msg)
-      val metadata = serializer.serializeMetaData(wireMsg).orNull
-      val bytes    = serializer.serialize(wireMsg)
-      serializer.newSyncSend(fromName, toName, metadata, bytes, session)
+      serializer.writeSyncSend(baos, fromName, toName, wireMsg, session)
+			baos.toByteArray
     }
   }
 
-  def syncReply(conn: MessageConnection, toName: Symbol, msg: AnyRef, session: Symbol) {
+  def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String) {
     conn.send { serializer: Serializer =>
+			val baos = new ByteArrayOutputStream(1024)
       val wireMsg  = serializer.intercept(msg)
-      val metadata = serializer.serializeMetaData(wireMsg).orNull
-      val bytes    = serializer.serialize(wireMsg)
-      serializer.newSyncReply(toName, metadata, bytes, session)
+      serializer.writeSyncReply(baos, toName, wireMsg, session)
+			baos.toByteArray
     }
   }
 
-  def remoteApply(conn: MessageConnection, toName: Symbol, fromName: Symbol, rfun: RemoteFunction) {
+  def remoteApply(conn: MessageConnection, toName: String, fromName: String, rfun: RemoteFunction) {
     conn.send { serializer: Serializer =>
-      serializer.newRemoteApply(fromName, toName, rfun) 
+			val baos = new ByteArrayOutputStream(1024)
+      serializer.writeRemoteApply(baos, fromName, toName, rfun) 
+			baos.toByteArray
     }
   }
 
@@ -189,26 +191,24 @@ private[remote] object NetKernel {
   }
 
   private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
-    def mkProxy(senderName: Symbol) = 
-      new ConnectionProxy(conn.remoteNode, senderName, conn)
-    def deserialize(meta: Array[Byte], data: Array[Byte]) = 
-      serializer.deserialize(Option(meta), data)
+    def mkProxy(senderName: String) = 
+      new ConnectionProxy(conn.remoteNode, Symbol(senderName), conn)
     def removeOrphan(a: OutputChannel[Any]) {
       // orphaned actor sitting in hash maps
       Debug.info(this + ": found orphaned (terminated) actor: " + a)
       RemoteActor.unregister(a)
     }
     val (senderName, receiverName) = msg match {
-      case AsyncSend(sender, receiver, _, _) => 
-        (sender, receiver) 
-      case SyncSend(sender, receiver, _, _, _) => 
+      case AsyncSend(sender, receiver, _) => 
+        (Option(sender), receiver) 
+      case SyncSend(sender, receiver, _, _) => 
         (Some(sender), receiver)
-      case SyncReply(receiver, _, _, _) => 
+      case SyncReply(receiver, _, _) => 
         (None, receiver)
       case RemoteApply(sender, receiver, _) => 
         (Some(sender), receiver)
     }
-    val a = RemoteActor.getActor(receiverName)
+    val a = RemoteActor.getActor(Symbol(receiverName))
     if (a eq null)
       // message is lost
       Debug.info(this+": lost message: " + msg)
@@ -217,12 +217,12 @@ private[remote] object NetKernel {
       removeOrphan(a)
     else {
       val cmd = msg match {
-        case AsyncSend(_, _, meta, data) => 
-          SendTo(a, deserialize(meta, data)) 
-        case SyncSend(_, _, meta, data, session) => 
-          StartSession(a, deserialize(meta, data), session) 
-        case SyncReply(_, meta, data, session) => 
-          FinishSession(a, deserialize(meta, data), session)
+        case AsyncSend(_, _, message) => 
+          SendTo(a, message) 
+        case SyncSend(_, _, message, session) => 
+          StartSession(a, message, Symbol(session))
+        case SyncReply(_, message, session) => 
+          FinishSession(a, message, Symbol(session))
         case RemoteApply(_, _, rfun) => 
           LocalApply0(rfun, a.asInstanceOf[AbstractActor])
       }

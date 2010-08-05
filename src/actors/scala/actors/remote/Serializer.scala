@@ -11,6 +11,7 @@
 package scala.actors
 package remote
 
+import java.io.{ InputStream, OutputStream }
 
 class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
@@ -121,26 +122,17 @@ abstract class Serializer extends MessageCreator {
 
   // Message serialization
 
-  /**
-   * Given a message, optionally return any metadata about the message
-   * serialized into a byte array. Note that this method is called for the
-   * envelope messages, in addition to the user messages.
-   */
-  def serializeMetaData(message: AnyRef): Option[Array[Byte]]
+  def writeAsyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef): Unit
 
-  /** 
-   * Given a message, return a byte array representation of the message
-   * without any of its associated metadata. Note that this method is called
-   * for the envelope messages, in addition to user messages.
-   */  
-  def serialize(message: AnyRef): Array[Byte]
+  def writeSyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef, session: String): Unit
 
-  /**
-   * Given an optional metadata byte array and a data byte array, 
-   * deserialize the data byte array into an object. Note that this method is
-   * called for envelope messages, in addition to user messages.
-   */
-  def deserialize(metaData: Option[Array[Byte]], data: Array[Byte]): AnyRef
+  def writeSyncReply(outputStream: OutputStream, receiverName: String, message: AnyRef, session: String): Unit
+
+  def writeRemoteApply(outputStream: OutputStream, senderName: String, receiverName: String, rfun: RemoteFunction): Unit
+
+  // Message deserialization
+
+  def read(bytes: Array[Byte]): NetKernelMessage
 
   /**
    * Returns the class name used to bootstrap an equivalent serializer on the
@@ -151,11 +143,6 @@ abstract class Serializer extends MessageCreator {
    */
   def bootstrapClassName: String = 
     getClass.getName
-
-  /** 
-   * Helper method to serialize the class name of a message
-   */
-  protected def serializeClassName(o: AnyRef): Array[Byte] = o.getClass.getName.getBytes
 
   /** Unique identifier used for this serializer */
   val uniqueId: Long
@@ -195,9 +182,8 @@ trait NonHandshakingSerializer { _: Serializer =>
 trait IdResolvingSerializer { _: Serializer =>
   override val isHandshaking = true
   override def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]] = {
-    case StartEvent(_)         => Some(SendEvent(uniqueId))
-    case RecvEvent(MyUniqueId) => Some(Success)
-    case RecvEvent(id)         => Some(Error("ID's do not match. Expected " + MyUniqueId + ", but got " + id))
+    case StartEvent(_)                     => Some(SendEvent(uniqueId))
+    case RecvEvent(id) if (id == uniqueId) => Some(Success)
+    case RecvEvent(id)                     => Some(Error("ID's do not match. Expected " + uniqueId + ", but got " + id))
   }
-  private val MyUniqueId = uniqueId
 }

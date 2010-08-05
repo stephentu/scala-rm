@@ -11,6 +11,8 @@
 package scala.actors
 package remote
 
+import java.io._
+
 object PrimitiveSerializer {
   final val BYTE_TAG    = 1
   final val SHORT_TAG   = 2
@@ -26,78 +28,68 @@ object PrimitiveSerializer {
 
 class NonPrimitiveClassException(clz: Class[_]) extends Exception
 
-class PrimitiveSerializer 
-  extends Serializer
-  with    DefaultMessageCreator
-  with    NonHandshakingSerializer {
+class PrimitiveSerializer {
 
-  import PrimitiveSerializer._
+	import PrimitiveSerializer._
 
-  override val uniqueId = 282367820L  
+	// TODO: varint encoding
+	def serialize(message: Any) = {
+		val os  = new ExposingByteArrayOutputStream(1 + sizeOf(message))
+		val dos = new DataOutputStream(os)
+		message match {
+			case b: Byte        => dos.writeByte(BYTE_TAG); dos.writeByte(b) 
+			case s: Short       => dos.writeByte(SHORT_TAG); dos.writeShort(s) 
+			case i: Int         => dos.writeByte(INT_TAG); dos.writeInt(i) 
+			case l: Long        => dos.writeByte(LONG_TAG); dos.writeLong(l) 
+			case f: Float       => dos.writeByte(FLOAT_TAG); dos.writeFloat(f) 
+			case d: Double      => dos.writeByte(DOUBLE_TAG); dos.writeDouble(d)
+			case b: Boolean     => dos.writeByte(BOOLEAN_TAG); dos.writeBoolean(b)
+			case c: Char        => dos.writeByte(CHAR_TAG); dos.writeChar(c) 
+			case s: String      => dos.writeByte(STRING_TAG); dos.writeBytes(s) 
+			case b: Array[Byte] => dos.writeByte(BYTES_TAG); dos.write(b)
+		}
+		val underlying = os.getUnderlyingByteArray
+		assert(underlying.length == os.size)
+		underlying
+	}
 
-  override def serializeMetaData(message: AnyRef) = { 
-    if (message eq null) throw new NullPointerException
-    val tag = (message: Any) match {
-      case b: Byte        => BYTE_TAG
-      case s: Short       => SHORT_TAG
-      case i: Int         => INT_TAG
-      case l: Long        => LONG_TAG
-      case f: Float       => FLOAT_TAG
-      case d: Double      => DOUBLE_TAG
-      case b: Boolean     => BOOLEAN_TAG
-      case c: Char        => CHAR_TAG
-      case s: String      => STRING_TAG
-      case b: Array[Byte] => BYTES_TAG
-      case _              => throw new NonPrimitiveClassException(message.getClass)
-    }
-    val meta = new Array[Byte](1)
-    meta(0) = tag.toByte
-    Some(meta)
-  }
+	// TODO: varint encoding
+	def deserialize(bytes: Array[Byte]) = {
+		val is  = new ByteArrayInputStream(bytes)
+		val dis = new DataInputStream(is)
+		dis.readByte() match {
+			case BYTE_TAG    => dis.readByte()
+			case SHORT_TAG   => dis.readShort()
+			case INT_TAG     => dis.readInt() 
+			case LONG_TAG    => dis.readLong()
+			case FLOAT_TAG   => dis.readFloat()
+			case DOUBLE_TAG  => dis.readDouble() 
+			case BOOLEAN_TAG => dis.readBoolean()
+			case CHAR_TAG    => dis.readChar()
+			case STRING_TAG  => 
+				val buf = new Array[Byte](bytes.length - 1)
+				dis.readFully(buf)
+				new String(buf)
+			case BYTES_TAG   => 
+				val buf = new Array[Byte](bytes.length - 1)
+				dis.readFully(buf)
+				buf
+			case t           => throw new IllegalStateException("Bad tag found: " + t)
+		}
+	}
 
-  import BitUtils._
-
-  override def serialize(message: AnyRef) = {
-    if (message eq null) throw new NullPointerException
-    (message: Any) match {
-      case b: Byte    => 
-        val bytes = new Array[Byte](1)
-        bytes(0) = b
-        bytes
-      case s: Short       => shortToBytes(s)
-      case i: Int         => intToBytes(i)
-      case l: Long        => longToBytes(l)
-      case f: Float       => floatToBytes(f)
-      case d: Double      => doubleToBytes(d)
-      case b: Boolean     =>
-        val bytes = new Array[Byte](1)
-        bytes(0) = if (b) 1 else 0 
-        bytes
-      case c: Char        => charToBytes(c)
-      case s: String      => s.getBytes
-      case b: Array[Byte] => b
-      case _              => throw new NonPrimitiveClassException(message.getClass)
-    }
-  }
-
-  override def deserialize(metaData: Option[Array[Byte]], data: Array[Byte]) = metaData match {
-    case Some(metaBytes) =>
-      val retVal = metaBytes(0).toInt match {
-        case BYTE_TAG    => data(0)
-        case SHORT_TAG   => bytesToShort(data)
-        case INT_TAG     => bytesToInt(data)
-        case LONG_TAG    => bytesToLong(data)
-        case FLOAT_TAG   => bytesToFloat(data)
-        case DOUBLE_TAG  => bytesToDouble(data)
-        case BOOLEAN_TAG => if (data(0) == 0) false else true
-        case CHAR_TAG    => bytesToChar(data)
-        case STRING_TAG  => new String(data)
-        case BYTES_TAG   => data
-        case t           => throw new IllegalStateException("Bad tag found: " + t)
-      }
-      retVal.asInstanceOf[AnyRef]
-    case None =>
-      throw new IllegalStateException("Need metadata")
-  }
+	private def sizeOf(message: Any) = message match {
+    case b: Byte        => 1
+    case s: Short       => 2
+    case i: Int         => 4
+    case l: Long        => 8
+    case f: Float       => 4
+    case d: Double      => 8
+    case b: Boolean     => 1
+    case c: Char        => 2
+    case s: String      => s.length
+    case b: Array[Byte] => b.length
+		case a: AnyRef      => throw new NonPrimitiveClassException(a.getClass)
+	}
 
 }

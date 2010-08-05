@@ -109,7 +109,7 @@ private[remote] abstract class Proxy extends AbstractActor
       case cmd @ RemoteApply0(actor, rfun) =>
         Debug.info("cmd@Apply0: " + cmd)
         tryRemoteAction { usingConn =>
-          NetKernel.remoteApply(usingConn, name, RemoteActor.getOrCreateName(actor), rfun)
+          NetKernel.remoteApply(usingConn, name.name, RemoteActor.getOrCreateName(actor).name, rfun)
         }
       case cmd @ LocalApply0(rfun @ ExitFun(_), target) =>
         Debug.info("cmd@LocalApply0: " + cmd)
@@ -160,7 +160,7 @@ private[remote] abstract class Proxy extends AbstractActor
             // because you cannot reply to a request-response cycle more
             // than once.
             tryRemoteAction { usingConn => 
-              NetKernel.syncReply(usingConn, name, msg, sid)
+              NetKernel.syncReply(usingConn, name.name, msg, sid.name)
             }
           case None =>
             Debug.info(this+": cannot find session for "+ch)
@@ -179,14 +179,14 @@ private[remote] abstract class Proxy extends AbstractActor
             Debug.info(this + ": async send: sender: " + sender)
             val fromName = if (sender eq null) None else Some(RemoteActor.getOrCreateName(sender))
             tryRemoteAction { usingConn =>
-              NetKernel.asyncSend(usingConn, name, fromName, msg)
+              NetKernel.asyncSend(usingConn, name.name, fromName.map(_.name), msg)
             }
           case _ =>                  /** Comes from !! and !? */
             Debug.info(this + ": sync send: sender: " + sender)
             val session = RemoteActor.newChannel(sender)
             Debug.info(this + ": mapped " + session + " -> " + sender)
             tryRemoteAction { usingConn =>
-              NetKernel.syncSend(usingConn, name, RemoteActor.getOrCreateName(sender.receiver), msg, session)
+              NetKernel.syncSend(usingConn, name.name, RemoteActor.getOrCreateName(sender.receiver).name, msg, session.name)
             }
         }
       case e =>

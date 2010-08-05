@@ -31,21 +31,21 @@ trait RemoteStartInvoke {
 case class DefaultRemoteStartInvokeImpl(override val actorClass: String) extends RemoteStartInvoke
 
 object RemoteStartInvokeAndListen {
-  def apply(actorClass: String, port: Int, name: Symbol): RemoteStartInvokeAndListen =
+  def apply(actorClass: String, port: Int, name: String): RemoteStartInvokeAndListen =
     DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name)
-  def unapply(r: RemoteStartInvokeAndListen): Option[(String, Int, Symbol)] = 
+  def unapply(r: RemoteStartInvokeAndListen): Option[(String, Int, String)] = 
     Some((r.actorClass, r.port, r.name))
 }
 
 trait RemoteStartInvokeAndListen {
   def actorClass: String
   def port: Int
-  def name: Symbol
+  def name: String
 }
 
 case class DefaultRemoteStartInvokeAndListenImpl(override val actorClass: String,
                                                  override val port: Int,
-                                                 override val name: Symbol)
+                                                 override val name: String)
   extends RemoteStartInvokeAndListen
 
 object RemoteStartResult {
@@ -101,7 +101,7 @@ private[remote] class ControllerActor(port: Int, thisSym: Symbol)(implicit cfg: 
             try {
               alive(port)
               val actor = newActor(actorClass)
-              register(name, actor) 
+              register(Symbol(name), actor) 
               actor.start()
               None
             } catch {

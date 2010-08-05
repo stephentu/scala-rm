@@ -123,9 +123,9 @@ trait ByteConnection extends Connection {
 
 trait MessageConnection extends Connection {
 
-  def send(f: Serializer => AnyRef): Unit 
+  def send(f: Serializer => Array[Byte]): Unit 
 
-  def send(msg: AnyRef) { send { _: Serializer => msg } }
+  def send(msg: Array[Byte]) { send { _: Serializer => msg } }
 
   def activeSerializer: Serializer
 

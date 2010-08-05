@@ -67,7 +67,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
    * the time send() was called (due to things like not finishing handshake
    * yet, etc)
    */
-  private val sendQueue = new Queue[Serializer => AnyRef]
+  private val sendQueue = new Queue[Serializer => Array[Byte]]
   private val primitiveSerializer = new PrimitiveSerializer
 
   // bootstrap in CTOR
@@ -113,11 +113,9 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         case _ => Seq()
       }) foreach { msg =>
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
-        val meta = primitiveSerializer.serializeMetaData(msg.asInstanceOf[AnyRef])
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
-        Debug.info(this + ": sending in handshake: meta: " + java.util.Arrays.toString(meta.get))
         Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
-        byteConn.send(meta.get, data)
+        byteConn.send(data)
       }
     }
     serializer.get.handleNextEvent(evt).foreach { evt =>
@@ -130,9 +128,8 @@ class DefaultMessageConnection(byteConn: ByteConnection,
           if (!sendQueue.isEmpty) {
             sendQueue.foreach { f =>
               val msg = f(serializer.get)
-              //Debug.info(this + ": serializing " + msg + " from sendQueue")
-              val t = serialize(msg)
-              byteConn.send(t._1, t._2)
+              Debug.info(this + ": sending " + msg + " from sendQueue")
+              byteConn.send(msg)
             }
             sendQueue.clear()
             terminateLock.notifyAll()
@@ -205,13 +202,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
   private val EmptyArray = new Array[Byte](0)
 
-  private def serialize(msg: AnyRef) = serializer match {
-    case Some(s) => (s.serializeMetaData(msg).getOrElse(EmptyArray), s.serialize(msg))
-    case None =>
-      throw new IllegalStateException("Cannot serialize message, no serializer agreed upon")
-  }
-
-  def send(msg: Serializer => AnyRef) {
+  def send(msg: Serializer => Array[Byte]) {
     ensureAlive()
     if (isWaitingForSerializer || isHandshaking) {
       val repeat = withoutTermination {
@@ -232,49 +223,28 @@ class DefaultMessageConnection(byteConn: ByteConnection,
     } else {
       // call send immediately
       val m = msg(serializer.get)
-      //Debug.info(this + ": send() - serializing message: " + m)
-      val t = serialize(m)
-      byteConn.send(t._1, t._2)
+      Debug.info(this + ": send() - serializing message: " + m)
+      byteConn.send(m)
     }
   }
 
-  private def hasNextAction = status match {
-    case WaitingForSerializer => hasSimpleMessage
-    case Handshaking | Established => hasSerializerMessage
+  @inline private def hasNextAction = status match {
+    case WaitingForSerializer | Established | Handshaking => hasSimpleMessage
     case _ => false
   }
 
-  private def hasSimpleMessage = messageQueue.size > 0
-  private def hasSerializerMessage = messageQueue.size >= 2
+  @inline private def hasSimpleMessage = messageQueue.size > 0
 
-  private def nextMessage() = {
+  @inline private def nextMessage() = {
     assert(hasSimpleMessage)
     messageQueue.dequeue()
   }
 
-  private def nextMessageTuple() = {
-    assert(hasSerializerMessage)
-    val meta = messageQueue.dequeue()
-    val data = messageQueue.dequeue()
-    (meta, data)
-  }
+  @inline private def nextPrimitiveMessage() =
+    primitiveSerializer.deserialize(nextMessage())
 
-  private def nextPrimitiveMessage() = {
-    assert(hasSerializerMessage)
-    val (meta, data) = nextMessageTuple()
-    primitiveSerializer.deserialize(OptionArray(meta), data)
-  }
-
-  private def nextSerializerMessage() = {
-    assert(hasSerializerMessage)
-    val (meta, data) = nextMessageTuple()
-    serializer.get.deserialize(OptionArray(meta), data)
-  }
-
-  private def OptionArray(b: Array[Byte]) = 
-    if ((b eq null) || b.length == 0) None
-    else Some(b)
-
+  @inline private def nextSerializerMessage() =
+		serializer.get.read(nextMessage())
 }
 
 class StandardService extends Service {
