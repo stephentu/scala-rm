@@ -13,11 +13,11 @@ package remote
 /**
  * Explicit container for a (sub)-sequence of bytes
  */
-private[remote] case class ByteSequence(val bytes: Array[Byte], 
-																			  val offset: Int, 
-																				val length: Int) {
-	def this(bytes: Array[Byte]) = this(bytes, 0, bytes.length)
-	assert(bytes ne null)
-	assert(offset >= 0 && offset < bytes.length)
-	assert(length >= 0 && length <= bytes.length - offset)
+case class ByteSequence(val bytes: Array[Byte], 
+                        val offset: Int, 
+                        val length: Int) {
+  def this(bytes: Array[Byte]) = this(bytes, 0, bytes.length)
+  assert(bytes ne null)
+  assert(offset >= 0 && offset < bytes.length)
+  assert(length >= 0 && length <= bytes.length - offset)
 }

@@ -49,7 +49,7 @@ trait MessageCreator {
  * Provides implementations of each of the remote start actor messages, as standard
  * Scala case classes.
  */
-trait DefaultControllerMessageCreator { _: MessageCreator =>
+trait DefaultMessageCreator { _: MessageCreator =>
 
   override def newRemoteStartInvoke(actorClass: String) = 
     DefaultRemoteStartInvokeImpl(actorClass)

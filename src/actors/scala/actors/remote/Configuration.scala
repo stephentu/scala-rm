@@ -108,10 +108,6 @@ trait HasJavaSerializer { _: Configuration =>
   override def newSerializer() = new JavaSerializer(RemoteActor.classLoader)
 }
 
-trait DefaultMessageCreator extends MessageCreator
-                            with    DefaultEnvelopeMessageCreator 
-                            with    DefaultControllerMessageCreator
-
 /**
  * A convenient mix-in to use blocking mode
  */

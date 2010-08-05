@@ -471,7 +471,7 @@ object RemoteActor {
    */
   def remoteStartAndListen(node: Node, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? RemoteStartInvokeAndListen(actorClass, port, name) match {
+    remoteController !? RemoteStartInvokeAndListen(actorClass, port, name.name) match {
       case RemoteStartResult(None) => // success, do nothing
       case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
       case _ => throw new RuntimeException("Failed")
