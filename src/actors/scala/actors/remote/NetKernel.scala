@@ -14,7 +14,7 @@ import scala.collection.mutable.{ HashMap, HashSet }
 import java.io._
 import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
 
-
+// TODO: make package private?
 case object Terminate
 
 /**
@@ -106,38 +106,43 @@ private[remote] object NetKernel {
     }
   }
 
+	final private val BufSize = 1024
+
+	// TODO: don't expose baos, expose a locked version where reset() throws an
+	// exception
+
   def asyncSend(conn: MessageConnection, toName: String, fromName: Option[String], msg: AnyRef) {
     conn.send { serializer: Serializer =>
-			val baos = new ByteArrayOutputStream(1024)
-      val wireMsg  = serializer.intercept(msg)
+			val baos = new ExposingByteArrayOutputStream(BufSize)
+      val wireMsg = serializer.intercept(msg)
       serializer.writeAsyncSend(baos, fromName.orNull, toName, wireMsg)
-			baos.toByteArray
+			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
     }
   }
 
   def syncSend(conn: MessageConnection, toName: String, fromName: String, msg: AnyRef, session: String) {
     conn.send { serializer: Serializer =>
-			val baos = new ByteArrayOutputStream(1024)
-      val wireMsg  = serializer.intercept(msg)
+			val baos = new ExposingByteArrayOutputStream(BufSize)
+      val wireMsg = serializer.intercept(msg)
       serializer.writeSyncSend(baos, fromName, toName, wireMsg, session)
-			baos.toByteArray
+			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
     }
   }
 
   def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String) {
     conn.send { serializer: Serializer =>
-			val baos = new ByteArrayOutputStream(1024)
-      val wireMsg  = serializer.intercept(msg)
+			val baos = new ExposingByteArrayOutputStream(BufSize)
+      val wireMsg = serializer.intercept(msg)
       serializer.writeSyncReply(baos, toName, wireMsg, session)
-			baos.toByteArray
+			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
     }
   }
 
   def remoteApply(conn: MessageConnection, toName: String, fromName: String, rfun: RemoteFunction) {
     conn.send { serializer: Serializer =>
-			val baos = new ByteArrayOutputStream(1024)
+			val baos = new ExposingByteArrayOutputStream(BufSize)
       serializer.writeRemoteApply(baos, fromName, toName, rfun) 
-			baos.toByteArray
+			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
     }
   }
 

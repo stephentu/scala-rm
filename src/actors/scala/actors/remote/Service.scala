@@ -103,9 +103,7 @@ trait Connection
 
 trait ByteConnection extends Connection {
 
-  def send(data: Array[Byte]): Unit
-
-  def send(data0: Array[Byte], data1: Array[Byte]): Unit
+  def send(data: ByteSequence): Unit
 
   protected val receiveCallback: BytesReceiveCallback
 
@@ -123,9 +121,9 @@ trait ByteConnection extends Connection {
 
 trait MessageConnection extends Connection {
 
-  def send(f: Serializer => Array[Byte]): Unit 
+  def send(f: Serializer => ByteSequence): Unit 
 
-  def send(msg: Array[Byte]) { send { _: Serializer => msg } }
+  def send(msg: ByteSequence) { send { _: Serializer => msg } }
 
   def activeSerializer: Serializer
 

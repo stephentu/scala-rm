@@ -52,35 +52,15 @@ class BlockingServiceProvider extends ServiceProvider {
       so.close()
     }
 
-    private def send0(data: Array[Byte]) {
-      dataout.writeInt(data.length)
-      dataout.write(data)
-    }
-
     override def newAlreadyTerminatedException() = new ConnectionAlreadyClosedException
 
-    override def send(data: Array[Byte]) {
+    override def send(seq: ByteSequence) {
       terminateLock.synchronized {
         ensureAlive()
         try {
-          send0(data)
-          dataout.flush()
-        } catch {
-          case e: IOException => 
-            Debug.error(this + ": caught " + e.getMessage)
-            Debug.doError { e.printStackTrace }
-            terminateBottom()
-        }
-      }
-    }
-
-    override def send(data0: Array[Byte], data1: Array[Byte]) {
-      terminateLock.synchronized {
-        ensureAlive()
-        try {
-          send0(data0)
-          send0(data1)
-          dataout.flush()
+					dataout.writeInt(seq.length)
+					dataout.write(seq.bytes, seq.offset, seq.length)
+          dataout.flush() // TODO: do we need to flush every message?
         } catch {
           case e: IOException => 
             Debug.error(this + ": caught " + e.getMessage)

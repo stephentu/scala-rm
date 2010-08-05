@@ -7,20 +7,17 @@
 \*                                                                      */
 
 
-
 package scala.actors
 package remote
 
-import java.io.ByteArrayOutputStream
-
 /**
- * This class gives us access to the underlying buffer of
- * ByteArrayOutputStream, so that we can avoid a copy.
- *
- * TODO: reimplement ByteArrayOutputStream methods to NOT be thread-safe,
- * since we don't use ExposingByteArrayOutputStream concurrently.
+ * Explicit container for a (sub)-sequence of bytes
  */
-class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOutputStream(i) {
-	def this() = this(32)
-	def getUnderlyingByteArray = this.buf
+private[remote] case class ByteSequence(val bytes: Array[Byte], 
+																			  val offset: Int, 
+																				val length: Int) {
+	def this(bytes: Array[Byte]) = this(bytes, 0, bytes.length)
+	assert(bytes ne null)
+	assert(offset >= 0 && offset < bytes.length)
+	assert(length >= 0 && length <= bytes.length - offset)
 }

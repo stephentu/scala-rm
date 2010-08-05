@@ -67,7 +67,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
    * the time send() was called (due to things like not finishing handshake
    * yet, etc)
    */
-  private val sendQueue = new Queue[Serializer => Array[Byte]]
+  private val sendQueue = new Queue[Serializer => ByteSequence]
   private val primitiveSerializer = new PrimitiveSerializer
 
   // bootstrap in CTOR
@@ -84,7 +84,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
     // send class name of serializer to remote side
     //Debug.info(this + ": sending serializer name: " + serializer.get.bootstrapClassName)
-    byteConn.send(serializer.get.bootstrapClassName.getBytes)
+    byteConn.send(new ByteSequence(serializer.get.bootstrapClassName.getBytes))
 
     if (serializer.get.isHandshaking) {
       // if serializer requires handshake, place in handshake mode...
@@ -115,7 +115,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
         Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
-        byteConn.send(data)
+        byteConn.send(new ByteSequence(data))
       }
     }
     serializer.get.handleNextEvent(evt).foreach { evt =>
@@ -202,7 +202,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 
   private val EmptyArray = new Array[Byte](0)
 
-  def send(msg: Serializer => Array[Byte]) {
+  def send(msg: Serializer => ByteSequence) {
     ensureAlive()
     if (isWaitingForSerializer || isHandshaking) {
       val repeat = withoutTermination {

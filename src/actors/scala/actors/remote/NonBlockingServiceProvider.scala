@@ -165,11 +165,11 @@ class NonBlockingServiceProvider extends ServiceProvider {
 
     object SendBufPool extends VaryingSizeByteBufferPool
 
-    private def encodeToByteBuffer(unenc: Array[Byte]): ByteBuffer = {
-      val len = unenc.length
+    private def encodeToByteBuffer(seq: ByteSequence): ByteBuffer = {
+      val len = seq.length
       val buf = SendBufPool.take(len + 4)
       buf.putInt(len)
-      buf.put(unenc)
+      buf.put(seq.bytes, seq.offset, seq.length)
       buf.flip()
       buf
     }
@@ -376,7 +376,7 @@ class NonBlockingServiceProvider extends ServiceProvider {
         def releaseResources(): Unit  
       }
 
-      class WriteLoopTask1(b0: Array[Byte]) extends WriteLoopTask {
+      class WriteLoopTask1(b0: ByteSequence) extends WriteLoopTask {
         private var b0_bb: ByteBuffer = _
         override def doWrite(socketChannel: SocketChannel) = {
           if (b0_bb eq null) b0_bb = encodeToByteBuffer(b0)
@@ -388,26 +388,26 @@ class NonBlockingServiceProvider extends ServiceProvider {
         }
       }
 
-      class WriteLoopTask2(b0: Array[Byte], b1: Array[Byte])
-        extends WriteLoopTask {
+      //class WriteLoopTask2(b0: Array[Byte], b1: Array[Byte])
+      //  extends WriteLoopTask {
 
-        private var bbs: Array[ByteBuffer] = _
-        override def doWrite(socketChannel: SocketChannel) = {
-          if (bbs eq null) {
-            bbs = new Array[ByteBuffer](2)
-            bbs(0) = encodeToByteBuffer(b0)
-            bbs(1) = encodeToByteBuffer(b1)
-          }
-          socketChannel.write(bbs)
-        }
-        override def isFinished = (bbs ne null) && (bbs(0).remaining == 0) && (bbs(1).remaining == 0) 
-        override def releaseResources() {
-          if (bbs ne null) {
-            SendBufPool.release(bbs(0))
-            SendBufPool.release(bbs(1))
-          }
-        }
-      }
+      //  private var bbs: Array[ByteBuffer] = _
+      //  override def doWrite(socketChannel: SocketChannel) = {
+      //    if (bbs eq null) {
+      //      bbs = new Array[ByteBuffer](2)
+      //      bbs(0) = encodeToByteBuffer(b0)
+      //      bbs(1) = encodeToByteBuffer(b1)
+      //    }
+      //    socketChannel.write(bbs)
+      //  }
+      //  override def isFinished = (bbs ne null) && (bbs(0).remaining == 0) && (bbs(1).remaining == 0) 
+      //  override def releaseResources() {
+      //    if (bbs ne null) {
+      //      SendBufPool.release(bbs(0))
+      //      SendBufPool.release(bbs(1))
+      //    }
+      //  }
+      //}
 
       protected val so = socketChannel.socket
 
@@ -463,19 +463,11 @@ class NonBlockingServiceProvider extends ServiceProvider {
         //}
       }
 
-      override def send(bytes: Array[Byte]) {
+      override def send(seq: ByteSequence) {
         //Debug.error(this + ": send(a0)")
         ensureAlive()
-        writeQueue.offer(new WriteLoopTask1(bytes))
+        writeQueue.offer(new WriteLoopTask1(seq))
         //Debug.error(this + ": send(a0) - offered")
-        if (socketChannel.isConnected) setWriteMode()
-      }
-
-      override def send(bytes0: Array[Byte], bytes1: Array[Byte]) {
-        //Debug.error(this + ": send(a0, a1)")
-        ensureAlive()
-        writeQueue.offer(new WriteLoopTask2(bytes0, bytes1))
-        //Debug.error(this + ": send(a0, a1) - offered")
         if (socketChannel.isConnected) setWriteMode()
       }
 
