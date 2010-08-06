@@ -58,8 +58,25 @@ class BlockingServiceProvider extends ServiceProvider {
       terminateLock.synchronized {
         ensureAlive()
         try {
-					dataout.writeInt(seq.length)
-					dataout.write(seq.bytes, seq.offset, seq.length)
+          if (seq.isDiscardable && seq.offset >= 4) {
+            // optimize this case: place 4 bytes of the integer length before
+            // the sequence, and just write the bytes in one call
+            val b = seq.bytes
+            val o = seq.offset
+            val l = seq.length
+
+            b(o - 4) = ((l >>> 24) & 0xff).toByte
+            b(o - 3) = ((l >>> 16) & 0xff).toByte
+            b(o - 2) = ((l >>> 8) & 0xff).toByte
+            b(o - 1) = ((l & 0xff)).toByte
+
+            dataout.write(seq.bytes, seq.offset - 4, seq.length + 4)
+          } else {
+            // TODO: should we do an array copy here to avoid an extra socket
+            // write, or should we just leave this case
+            dataout.writeInt(seq.length)
+            dataout.write(seq.bytes, seq.offset, seq.length)
+          }
           dataout.flush() // TODO: do we need to flush every message?
         } catch {
           case e: IOException => 

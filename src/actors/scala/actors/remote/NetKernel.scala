@@ -114,35 +114,39 @@ private[remote] object NetKernel {
   def asyncSend(conn: MessageConnection, toName: String, fromName: Option[String], msg: AnyRef) {
     conn.send { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
+      baos.writeZeros(4)
       val wireMsg = serializer.intercept(msg)
       serializer.writeAsyncSend(baos, fromName.orNull, toName, wireMsg)
-			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
+			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
   }
 
   def syncSend(conn: MessageConnection, toName: String, fromName: String, msg: AnyRef, session: String) {
     conn.send { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
+      baos.writeZeros(4)
       val wireMsg = serializer.intercept(msg)
       serializer.writeSyncSend(baos, fromName, toName, wireMsg, session)
-			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
+			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
   }
 
   def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String) {
     conn.send { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
+      baos.writeZeros(4)
       val wireMsg = serializer.intercept(msg)
       serializer.writeSyncReply(baos, toName, wireMsg, session)
-			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
+			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
   }
 
   def remoteApply(conn: MessageConnection, toName: String, fromName: String, rfun: RemoteFunction) {
     conn.send { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
+      baos.writeZeros(4)
       serializer.writeRemoteApply(baos, fromName, toName, rfun) 
-			ByteSequence(baos.getUnderlyingByteArray, 0, baos.size)
+			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
   }
 
