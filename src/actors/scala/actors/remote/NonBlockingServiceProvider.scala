@@ -168,8 +168,23 @@ class NonBlockingServiceProvider extends ServiceProvider {
     private def encodeToByteBuffer(seq: ByteSequence): ByteBuffer = {
       val len = seq.length
       val buf = SendBufPool.take(len + 4)
-      buf.putInt(len)
-      buf.put(seq.bytes, seq.offset, seq.length)
+
+      if (seq.isDiscardable && seq.offset >= 4) {
+        val b = seq.bytes
+        val o = seq.offset
+        val l = seq.length
+
+        b(o - 4) = ((l >>> 24) & 0xff).toByte
+        b(o - 3) = ((l >>> 16) & 0xff).toByte
+        b(o - 2) = ((l >>> 8) & 0xff).toByte
+        b(o - 1) = ((l & 0xff)).toByte
+
+        buf.put(seq.bytes, seq.offset - 4, seq.length + 4)
+      } else {
+        buf.putInt(len)
+        buf.put(seq.bytes, seq.offset, seq.length)
+      }
+
       buf.flip()
       buf
     }
