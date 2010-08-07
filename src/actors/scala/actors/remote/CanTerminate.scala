@@ -13,7 +13,7 @@ package remote
 /**
  * Can only be terminated once
  */
-trait CanTerminate {
+private[remote] trait CanTerminate {
 
   final def terminateTop()    { doTerminate(false) }
   final def terminateBottom() { doTerminate(true)  }

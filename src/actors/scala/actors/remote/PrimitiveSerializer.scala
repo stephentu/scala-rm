@@ -13,7 +13,7 @@ package remote
 
 import java.io._
 
-object PrimitiveSerializer {
+private[remote] object PrimitiveSerializer {
   final val BYTE_TAG    = 1
   final val SHORT_TAG   = 2
   final val INT_TAG     = 3
@@ -26,9 +26,9 @@ object PrimitiveSerializer {
   final val BYTES_TAG   = 10 // so is byte array
 }
 
-class NonPrimitiveClassException(clz: Class[_]) extends Exception
+private[remote] class NonPrimitiveClassException(clz: Class[_]) extends Exception
 
-class PrimitiveSerializer {
+private[remote] class PrimitiveSerializer {
 
 	import PrimitiveSerializer._
 
@@ -53,7 +53,7 @@ class PrimitiveSerializer {
 		underlying
 	}
 
-	// TODO: varint encoding
+	// TODO: varint decoding
 	def deserialize(bytes: Array[Byte]) = {
 		val is  = new ByteArrayInputStream(bytes)
 		val dis = new DataInputStream(is)

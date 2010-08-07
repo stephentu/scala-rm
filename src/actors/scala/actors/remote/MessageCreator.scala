@@ -12,13 +12,10 @@ package scala.actors
 package remote
 
 /**
- * This trait defines factory methods for the envelope messages used by the
- * network kernel. Exposing these types allows implementors of serializers
- * greater control over how the messages are being sent over the wire. Note
- * that, even though the return types on the factories are of
- * <code>AnyRef</code> (which is done to give greater flexibility), the
- * network kernel is expecting messages which implement the appropriately
- * named interfaces.
+ * This trait defines factory methods for some control messages used by the
+ * network kernel. Currently, these control messages are used only for the
+ * remote starting service, to allow users to run this service which send messages
+ * in their serializer of choice.
  */
 trait MessageCreator {
 
@@ -26,11 +23,15 @@ trait MessageCreator {
 
   def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: String): AnyRef
 
+  def newRemoteStartResult(errorMessage: Option[String]): AnyRef
+
   protected def doIntercept: PartialFunction[AnyRef, AnyRef] = {
     case RemoteStartInvoke(actorClass) => 
       newRemoteStartInvoke(actorClass)
     case RemoteStartInvokeAndListen(actorClass, port, name) =>
       newRemoteStartInvokeAndListen(actorClass, port, name)
+    case RemoteStartResult(errorMessage) =>
+      newRemoteStartResult(errorMessage)
   }
 
   /**
@@ -56,4 +57,7 @@ trait DefaultMessageCreator { _: MessageCreator =>
 
   override def newRemoteStartInvokeAndListen(actorClass: String, port: Int, name: String) =
     DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name)
+
+  override def newRemoteStartResult(errorMessage: Option[String]) =
+    DefaultRemoteStartResultImpl(errorMessage)
 }

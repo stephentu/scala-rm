@@ -19,7 +19,7 @@ import java.lang.{Math => JMath}
  * This class gives us access to the underlying buffer of
  * ByteArrayOutputStream, so that we can avoid a copy 
  */
-class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOutputStream(i) {
+private[remote] class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOutputStream(i) {
 	def this() = this(32)
 	def getUnderlyingByteArray = this.buf
 

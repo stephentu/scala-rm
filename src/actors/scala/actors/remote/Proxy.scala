@@ -220,6 +220,16 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
                                   override val name: Symbol,
                                   @transient config: Configuration) extends Proxy {
 
+  assert(config ne null) /** config != null from default ctor (NOT from serialized form though) */
+
+  // save enough of the configuration to recreate it, if seralized 
+
+  private val _selectMode = config.selectMode
+  private val _numRetries = config.numRetries
+  // IMPLEMENTATION limitation: can only reconstruct serializer remotely which
+  // have a no-arg ctor
+  private val _serializerClassName = config.cachedSerializer.getClass.getName
+
   @transient @volatile
   private var _conn: MessageConnection = _
 
@@ -238,10 +248,24 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
     }
   }
 
-  private def getConfig = 
+  private lazy val getConfig = 
     if (config eq null) 
-      RemoteActor.defaultConfig 
-    else config
+      new Configuration {
+        override val selectMode = _selectMode
+        override val aliveMode  = _selectMode /** Shouldn't be used though */
+        override val numRetries = _numRetries
+
+        override def newSerializer() = {
+          // TODO: this needs to be sandboxed somehow
+          val clz = Class.forName(_serializerClassName)
+          if (classOf[Serializer].isAssignableFrom(clz)) {
+            clz.asInstanceOf[Class[Serializer]].newInstance
+          } else
+            throw new ClassCastException(_serializerClassName)
+        }
+      }
+    else 
+      config
 
   override def numRetries = 
     getConfig.numRetries
@@ -260,8 +284,7 @@ private[remote] class ConnectionProxy(override val remoteNode: Node,
                                       override val name: Symbol,
                                       _conn: MessageConnection) extends Proxy {
 
-  @transient @volatile
-  private var _fail = false
+  @volatile private var _fail = false
 
   override def conn = {
     if (_fail)
@@ -312,9 +335,9 @@ sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Uni
     "<ExitFun>("+reason.toString+")"
 }
 
-sealed trait ProxyCommand
-case class SendTo(a: OutputChannel[Any], msg: Any) extends ProxyCommand
-case class StartSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand
-case class FinishSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand
-case class LocalApply0(rfun: RemoteFunction, a: AbstractActor) extends ProxyCommand
-case class RemoteApply0(actor: AbstractActor, rfun: RemoteFunction) extends ProxyCommand
+private[remote] sealed trait ProxyCommand
+private[remote] case class SendTo(a: OutputChannel[Any], msg: Any) extends ProxyCommand
+private[remote] case class StartSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand
+private[remote] case class FinishSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand
+private[remote] case class LocalApply0(rfun: RemoteFunction, a: AbstractActor) extends ProxyCommand
+private[remote] case class RemoteApply0(actor: AbstractActor, rfun: RemoteFunction) extends ProxyCommand

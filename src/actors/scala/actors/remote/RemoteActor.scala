@@ -40,15 +40,29 @@ import java.util.concurrent.ConcurrentHashMap
  *  }}}
  *
  *  There are several relevant points to make about remote actors:
- *    (1) The configuration of remote actors is done via a
+ *  <ul>
+ *    <li>The configuration of remote actors is done via a
  *    <code>Configuration</code> object. Most of publically accessible methods
  *    in <code>RemoteActor</code> take an implicit <code>Configuration</code>
  *    as a parameter. See the documentation for <code>Configuration</code>
- *    for more information on the configurable parameters.
+ *    for more information on the configurable parameters. By default,
+ *    <code>DefaultConfiguration</code> is used (that is, if no explicit
+ *    configuration is made by the user). This sets up blocking network mode,
+ *    in addition to using Java serialization.<br/>
+ *    Blocking network mode is recommended when the number of network connections 
+ *    made is small (no less than 1000), since it uses the standard one thread per 
+ *    connection model. If more connections are expected, then non-blocking network mode
+ *    is recommended, since it multiplexes all connections in a small,
+ *    fixed-size thread pool, backed by Java NIO.</li>
  *
- *    (2) The type returned for a remote actor is a <code>RemoteProxy</code>.
+ *    <li>The type returned for a remote actor is a <code>RemoteProxy</code>.
  *    See the details below for the difference in semantics between a
- *    <code>RemoteProxy</code>, and a regular <code>Actor</code>.
+ *    <code>RemoteProxy</code>, and a regular <code>Actor</code>.</li>
+ *
+ *    <li>The classes in <code>RemoteActor</code> make use of the
+ *    <code>Debug</code> facility located in the <code>actors</code> package,
+ *    so to enable debug output, use <code>Debug.level</code>.</li>
+ *  </ul>
  *
  * @author Philipp Haller
  * @author Stephen Tu
@@ -81,12 +95,13 @@ object RemoteActor {
    * called. For instance, suppose that the network is up and a send
    * operation is successfully issued. Then, suppose the network connectivity
    * goes down between the time after the write request is issued and before
-   * the write request is acutally performed. There is no way to catch this
-   * sort of exception, at least in the current API. 
+   * the write request is acutally performed. The current API does not expose
+   * a way to capture this particular error, althought this will be addressed
+   * in future releases.
    *
    * Thus, when using <code>NonBlocking</code> mode, if a guarantee is needed
    * that a message is delivered, standard techniques of ACKs and timeouts
-   * must be used.
+   * should be used.
    */
   type RemoteProxy = AbstractActor
 
@@ -100,24 +115,23 @@ object RemoteActor {
    * }
    * }}}
    *
-   * Note that importing this into scope conflicts with
-   * <code>Actor.actor</code>, so a common usage pattern is:
+   * Example usages:
    * {{{
-   * import scala.actor._
-   * import Actor._
-   * import remote._
-   * import RemoteActor.{actor => remoteActor, _}
-   *
    * val localActor  = actor {
-   *   // ...
+   *   // actor behavior ...
    * }
    * 
    * val remoteActor = remoteActor(9000, 'anActor) {
-   *   // ...
+   *   // remote actor behavior ...
    * }
    * }}}
+   *
+   * @param port  The TCP port to listen on
+   * @param name  The name to register this actor under 
+   * @param body  The behavior of the actor
+   * @param cfg   The configuration passed to <code>alive</code>
    */
-  def actor(port: Int, name: Symbol)(body: => Unit)(implicit cfg: Configuration): Actor = {
+  def remoteActor(port: Int, name: Symbol)(body: => Unit)(implicit cfg: Configuration): Actor = {
     Actor.actor {
       alive(port)
       register(name, Actor.self)
@@ -150,19 +164,41 @@ object RemoteActor {
    */
   private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
-  private var _ctrl: Actor = _
+  private var _ctrl: ControllerActor = _
 
-  def startRemoteStartListener()(implicit cfg: Configuration) {
-    startRemoteStartListener(ControllerActor.defaultPort)
+  /**
+   * Enable the remote start functionality service, exposed on port 11723.
+   * The <code>Configuration</code> instance here is used to configure not
+   * only the listening mode of the remote start service, but also the
+   * <code>Serializer</code> used to pass control messages around, in addition
+   * to the listening mode of any new actors started by this service via
+   * <code>remoteStart</code>.
+   *
+   * @param cfg   The configuration used to determine how the remote start
+   *              service listens (<code>aliveMode</code>), and how newly
+   *              spawned actors listen (<code>aliveMode</code).
+   */
+  def enableRemoteStart()(implicit cfg: Configuration) {
+    enableRemoteStart(ControllerActor.defaultPort)
   }
 
   /**
-   * TODO: Comment
+   * Enable the remote start functionality service, exposed on the provided
+   * <code>port</code>. If the service is already running on
+   * <code>port</code>, then this method does nothing.
+   * 
+   * @param port  The port to start the remote start service on.
+   * @param cfg   The configuration used to determine how the remote start
+   *              service listens (<code>aliveMode</code>), and how newly
+   *              spawned actors listen (<code>aliveMode</code).
    */
-  def startRemoteStartListener(port: Int)(implicit cfg: Configuration) {
+  def enableRemoteStart(port: Int)(implicit cfg: Configuration) {
+    Node.checkPort(port)
     synchronized {
       if (_ctrl eq null)
         _ctrl = new ControllerActor(port, ControllerSymbol)
+      else if (_ctrl.port != port)
+        throw new IllegalArgumentException("Remote start service already running on port: " + _ctrl.port)
     }
   }
 
@@ -175,8 +211,7 @@ object RemoteActor {
     }
   }
 
-
-  private var cl: ClassLoader = null
+  @volatile private var cl: ClassLoader = null
 
   @deprecated("Configure a JavaSerializer by hand instead")
   def classLoader: ClassLoader = cl
@@ -228,8 +263,11 @@ object RemoteActor {
    * usage pattern would reuse the same resources.
    *
    * Note: If explicit termination is set to <code>true</code>, the JVM will
-   * not shutdown (because of remaining threads running) until
+   * not shutdown (because of remaining threads running) until 
    * <code>shutdown</code> is invoked by the program.
+   *
+   * @param isExplicit  <code>true</code> if explicit termination is desired,
+   *                    <code>false</code> otherwise
    */
   def setExplicitShutdown(isExplicit: Boolean) {
     explicitlyTerminate = isExplicit
@@ -237,37 +275,35 @@ object RemoteActor {
 
   private var _defaultConfig: Configuration = Configuration.DefaultConfig
 
-  /**
-   * Specify the <code>Configuration</code> object used by the network kernel
-   * when there is no <code>Configuration</code> object accessible in lexical
-   * scope. 
-   *
-   * Currently this is only used to configure the connections of remote proxy
-   * handles which are explicitly sent (not the handles which are accessed via
-   * <code>sender</code>, which are tied to the connection and are epheremal).
-   */
-  def setDefaultConfig(config: Configuration) {
-    _defaultConfig = config
-  }
-
-  private[remote] def defaultConfig = _defaultConfig
-
   private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
+
+  @inline private def checkName(s: Symbol) =
+    if (s.name.isEmpty)
+      throw new IllegalArgumentException("S cannot contain an empty name")
 
   /**
    * Registers <code>actor</code> to be selectable remotely via
    * <code>name</code>. 
    *
    * Note: There are two limitations to the mutability of the
-   * <code>name</code>. The first is that only one <code>name</code> can be
+   * <code>name</code>. 
+
+   * (1) The first is that only one <code>name</code> can be
    * valid at a time (distinct actors cannot register with the same
-   * <code>name</code> at the same time). The second is that once an
-   * <code>actor</code> registers with a <code>name</code>, then that
-   * <code>actor</code> cannot register with a different name again until
-   * <code>unregister</code> is called first.
+   * <code>name</code> at the same time). 
+   * 
+   * (2) The second is that once an  <code>actor</code> registers 
+   * with a <code>name</code>, then that <code>actor</code> cannot 
+   * register with a different name again until <code>unregister</code> 
+   * is called first.
+   *
+   * @param name  The unique name for which to identify actor remotely. Cannot
+   *              be an empty Symbol.
+   * @param actor The actor to be identified via name
    */
   @throws(classOf[NameAlreadyRegisteredException])
   def register(name: Symbol, actor: OutputChannel[Any]) {
+    checkName(name)
     val existing = actors.putIfAbsent(name, actor)
     if (existing ne null) {
       if (existing != actor)
@@ -285,7 +321,10 @@ object RemoteActor {
   }
 
   /**
-   * TODO: comment
+   * Unregisters <code>actor</code> from being selectable remotely. If
+   * <code>actor</code> is currently not registered, this method is a no-op.
+   *
+   * @param actor   The actor to be unregistered
    */
   def unregister(actor: OutputChannel[Any]) {
     actor.channelName.foreach(name => {
@@ -367,7 +406,7 @@ object RemoteActor {
   /**
    * Makes <code>actor</code> remotely accessible on TCP port
    * <code>port</code>. An <code>actor</code> can be remotely accessible via
-   * more than one port.
+   * more than one port (via the same name).
    *
    * Implementation Detail: The current implementation does not provide
    * port-level isolation. This means that any port actually can be used to
@@ -375,7 +414,13 @@ object RemoteActor {
    * change, meaning you should not (1) rely on <code>alive</code> to give
    * isolation to actors, and (2) should not only call <code>alive</code> once
    * and rely on that port to handle every incoming request for correctness.
+   *
+   * @param port  The TCP port to listen on
+   * @param actor The actor to listen on port
+   * @param cfg   The configuration object used to determine how to spawn a
+   *              new listener (<code>aliveMode</code>)
    */
+  @throws(classOf[InconsistentServiceException])
   def alive(port: Int, actor: Actor)(implicit cfg: Configuration) {
     alive0(port, actor, true)
   }
@@ -383,6 +428,17 @@ object RemoteActor {
   /**
    * Makes <code>self</code> remotely accessible on TCP port
    * <code>port</code>. Is equivalent to <code>alive(port, self)</code>. 
+   * Uses <code>aliveMode</code> from the <code>Configuration</code> to
+   * determine which network mode to spawn a listener, if one is not already
+   * alive on <code>port</code>. 
+   *
+   * However, if a listener is currently alive on <code>port</code> in a
+   * difference mode, then a <code>InconsistentServiceException</code>
+   * exception is thrown.
+
+   * @param port  The TCP port to listen on
+   * @param cfg   The configuration object used to determine how to spawn a
+   *              new listener (<code>aliveMode</code>)
    */
   @throws(classOf[InconsistentServiceException])
   def alive(port: Int)(implicit cfg: Configuration) {
@@ -422,14 +478,60 @@ object RemoteActor {
     }
   }
 
+  /**
+   * Start the actor of class <code>A</code> on the node identified by
+   * <code>host</code>, with the remote start service running on the default
+   * port 11723. Uses the <code>Configuration</code> to configure how to
+   * connect to the starting service, in addition to the
+   * <code>Serializer</code> used to pass the service control messages.
+   *
+   * Note: This method blocks until the remote side has given a success or
+   * failure response, or a timeout occurs (of one minute).
+   *
+   * Note: This method does NOT <code>register</code> or call
+   * <code>alive</code> on the newly started actor. Used one of the other
+   * overloaded <code>remoteStart</code> methods which accept a port and name to do
+   * that. 
+   *
+   * @param host  The hostname of the remote node to start
+   * @param cfg   The configuration object used to determine how to connect to
+   *              (<code>selectMode</code>) the remote start listener, and how
+   *              to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
+   */
   def remoteStart[A <: Actor](host: String)(implicit m: Manifest[A], cfg: Configuration) {
     remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.getName)
   }
 
+  /**
+   * Start the actor of class <code>A</code> on the node identified by
+   * <code>Node</code>
+   *
+   * @param node  The node identifying the remote start service
+   * @param cfg   The configuration object used to determine how to connect to
+   *              (<code>selectMode</code>) the remote start listener, and how
+   *              to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
+   */
   def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration) {
     remoteStart(node, m.erasure.getName)
   }
 
+  /**
+   * Start the actor of class name <code>actorClass</code> on the node
+   * identified by <code>host</code>, with the remote start service running on
+   * default port 11723.
+   *
+   * @param host        The hostname of the remote node to start
+   * @param actorClass  The class name of the actor to start remotely
+   * @param cfg         The configuration object used to determine how to connect to
+   *                    (<code>selectMode</code>) the remote start listener, and how
+   *                    to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
+   */
   def remoteStart(host: String, actorClass: String)(implicit cfg: Configuration) {
     remoteStart(Node(host, ControllerActor.defaultPort), actorClass)
   }
@@ -439,25 +541,84 @@ object RemoteActor {
    * the given remote node. The port of the <code>node</code> argument is used
    * to contact the <code>ControllerActor</code> listening on
    * <code>node</code>.
+   *
+   * @param node        The node identifying the remote start service
+   * @param actorClass  The class name of the actor to start remotely
+   * @param cfg         The configuration object used to determine how to connect to
+   *                    (<code>selectMode</code>) the remote start listener, and how
+   *                    to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
    */
   def remoteStart(node: Node, actorClass: String)(implicit cfg: Configuration) {
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? RemoteStartInvoke(actorClass) match {
-      case RemoteStartResult(None) => // success, do nothing
-      case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
-      case _ => throw new RuntimeException("Failed")
+    remoteController !? (60000, RemoteStartInvoke(actorClass)) match {
+      case Some(RemoteStartResult(None))    => // success, do nothing
+      case Some(RemoteStartResult(Some(e))) => throw new RuntimeException(e)
+      case Some(_) => throw new RuntimeException("Failed: Invalid response")
+      case None    => throw new RuntimeException("Timedout")
     }
   }
 
+  /**
+   * Start a new instance of <code>A</code> on <code>host</code> with the
+   * start service listener running on port 11723, and make <code>A</code>
+   * alive on <code>port</code>, registered with <code>name</code>.
+   *
+   * @param host  The hostname of the remote node to start
+   * @param port  The port to make the newly started remote actor listen on
+   * @param name  The name to register to the newly started remote actor
+   * @param cfg   The configuration object used to determine how to connect to
+   *              (<code>selectMode</code>) the remote start listener, and how
+   *              to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
+   */
+  def remoteStart[A <: Actor](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy = {
+    checkName(name)
+    Node.checkPort(port, true)
+    remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.getName, port, name)
+  }
 
-  def remoteStartAndListen[A <: Actor](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy =
-    remoteStartAndListen(Node(host, ControllerActor.defaultPort), m.erasure.getName, port, name)
+  /**
+   * Start a new instance of <code>actorClass</code> on <code>host</code> with the
+   * start service listener running on port 11723, and make <code>actorClass</code>
+   * alive on <code>port</code>, registered with <code>name</code>.
+   *
+   * @param host        The hostname of the remote node to start
+   * @param actorClass  The class name of the actor to start remotely
+   * @param port        The port to make the newly started remote actor listen on
+   * @param name        The name to register to the newly started remote actor
+   * @param cfg         The configuration object used to determine how to connect to
+   *                    (<code>selectMode</code>) the remote start listener, and how
+   *                    to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
+   */
+  def remoteStart(host: String, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
+    checkName(name)
+    Node.checkPort(port, true)
+    remoteStart(Node(host, ControllerActor.defaultPort), actorClass, port, name)
+  }
 
-  def remoteStartAndListen(host: String, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy =
-    remoteStartAndListen(Node(host, ControllerActor.defaultPort), actorClass, port, name)
-
-  def remoteStartAndListen[A <: Actor](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy =
-    remoteStartAndListen(node, m.erasure.getName, port, name)
+  /**
+   * Start a new instance of <code>A</code> on <code>node</code>, and make
+   * <code>A</code> alive on <code>port</code>, registered with <code>name</code>.
+   *
+   * @param node  The node identifying the remote start service
+   * @param port  The port to make the newly started remote actor listen on
+   * @param name  The name to register to the newly started remote actor
+   * @param cfg   The configuration object used to determine how to connect to
+   *              (<code>selectMode</code>) the remote start listener, and how
+   *              to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
+   */
+  def remoteStart[A <: Actor](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy = {
+    checkName(name)
+    Node.checkPort(port, true)
+    remoteStart(node, m.erasure.getName, port, name)
+  }
 
   /**
    * Start a new instance of an actor of class <code>actorClass</code> on the
@@ -468,13 +629,26 @@ object RemoteActor {
    * with the network kernel, so the code within <code>actorClass</code>
    * does not need to make calls to <code>alive</code> and
    * <code>register</code> to achieve the desired effect.
+   *
+   * @param node        The node identifying the remote start service
+   * @param actorClass  The class name of the actor to start remotely
+   * @param port        The port to make the newly started remote actor listen on
+   * @param name        The name to register to the newly started remote actor
+   * @param cfg         The configuration object used to determine how to connect to
+   *                    (<code>selectMode</code>) the remote start listener, and how
+   *                    to send control messages (<code>newSerializer</code>).
+   *
+   * @see   Configuration
    */
-  def remoteStartAndListen(node: Node, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
+  def remoteStart(node: Node, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
+    checkName(name)
+    Node.checkPort(port, true)
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? RemoteStartInvokeAndListen(actorClass, port, name.name) match {
-      case RemoteStartResult(None) => // success, do nothing
-      case RemoteStartResult(Some(e)) => throw new RuntimeException(e)
-      case _ => throw new RuntimeException("Failed")
+    remoteController !? (60000, RemoteStartInvokeAndListen(actorClass, port, name.name)) match {
+      case Some(RemoteStartResult(None))    => // success, do nothing
+      case Some(RemoteStartResult(Some(e))) => throw new RuntimeException(e)
+      case Some(_) => throw new RuntimeException("Failed: invalid response")
+      case None    => throw new RuntimeException("Timedout")
     }
     select(Node(node.address, port), name)
   }
@@ -486,6 +660,12 @@ object RemoteActor {
    * call(s) to <code>alive</code>), a random port is selected. If
    * <code>thisActor</code> is not currently registered under any name, a
    * random name is chosen.
+   *
+   * @param   thisActor   The actor to return a remote proxy handle to
+   *
+   * @returns A serializable handle to <code>thisActor</code>
+   *
+   * @see     Configuration
    */
   def remoteActorFor(thisActor: Actor)(implicit cfg: Configuration): RemoteProxy = {
     // need to establish a port for this actor to listen on, so that the proxy
@@ -520,12 +700,30 @@ object RemoteActor {
 
   /**
    * Returns (a proxy for) the actor registered under
-   * <code>sym</code> on <code>node</code>. Note that if you call select
-   * outside of an actor, you cannot rely on explicit termination to shutdown.
+   * <code>sym</code> on <code>node</code>. Note that if you call
+   * <code>select</code> outside of an actor, you cannot rely on explicit 
+   * termination to shutdown. Use <code>remoteActorAt</code> to select a
+   * remote actor out of an actor
+   *
+   * Implementation limitation: If <code>sym</code> is not running on
+   * <code>node</code>, there is currently no notification of this sent back
+   * to the caller. This is an issue that will be addressed in future
+   * releases.
+   *
+   * @param   node  The node of the remote actor to select
+   * @param   sym   The unique identifier of the remote actor to select
+   * @param   cfg   The configuration object used to determine how the remote
+   *                actor should be select (<code>selectMode</code>), and how
+   *                messages sent to the remote actor should be serialized
+   *                (<code>newSerializer</code>).
+   *
+   * @returns A serializable remote handle to the remote proxy.
+   *
+   * @see     remoteActorAt
+   * @see     Configuration
    */
-  @throws(classOf[InconsistentSerializerException])
-  @throws(classOf[InconsistentServiceException])
   def select(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
+    checkName(sym)
     Debug.info("select(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
     val thisActor = Actor.self
     remoteActors.synchronized {
@@ -544,31 +742,39 @@ object RemoteActor {
    * shutdown if no other actors are using remote services (and said actor is
    * not explicitly listening via <code>alive</code>, and explicit termination
    * is not set).
+   *
+   * @param   node  The node of the remote actor to select
+   * @param   sym   The unique identifier of the remote actor to select
+   * @param   cfg   The configuration object used to determine how the remote
+   *                actor should be select (<code>selectMode</code>), and how
+   *                messages sent to the remote actor should be serialized
+   *                (<code>newSerializer</code>).
+   *
+   * @returns A serializable remote handle to the remote proxy.
+   *
+   * @see     select
+   * @see     Configuration
    */
-  @throws(classOf[InconsistentSerializerException])
-  @throws(classOf[InconsistentServiceException])
   def remoteActorAt(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
+    checkName(sym)
     Debug.info("remoteActorAt(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
     new ConfigProxy(node, sym, cfg)
   }
 
   /**
    * Shutdown the network kernel explicitly. Only necessary when
-   * <code>setExplicitTermination(true)</code> has been called.
+   * <code>setExplicitTermination(true)</code> has been called. This method
+   * also has the effect of stopping the remote start listener, if it had been
+   * started.
    *
-   * Because this method may block until write buffers are drained, use
-   * <code>releaseResourcesInActor</code> to shut down the network kernel from
-   * within an actor.
+   * @see setExplicitTermination
+   * @see enableRemoteStart
    */
   def shutdown() {
     stopRemoteStartListener()
     NetKernel.releaseResources()
   }
 }
-
-
-case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
-  extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
 case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
   extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)

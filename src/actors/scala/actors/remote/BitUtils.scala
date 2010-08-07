@@ -11,7 +11,7 @@
 package scala.actors
 package remote
 
-object BitUtils {
+private[remote] object BitUtils {
   private def newShortWord() = new Array[Byte](2)
   private def newWord() = new Array[Byte](4)
   private def newLongWord() = new Array[Byte](8)

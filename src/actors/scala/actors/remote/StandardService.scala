@@ -12,14 +12,14 @@ package remote
 
 import scala.collection.mutable.{ HashMap, Queue }
 
-object ConnectionStatus {
+private[remote] object ConnectionStatus {
   val WaitingForSerializer = 0x1
   val Handshaking          = 0x2
   val Established          = 0x3
   val Terminated           = 0x4
 }
 
-class DefaultMessageConnection(byteConn: ByteConnection, 
+private[remote] class DefaultMessageConnection(byteConn: ByteConnection, 
                                var serializer: Option[Serializer],
                                override val receiveCallback: MessageReceiveCallback,
                                isServer: Boolean,
@@ -152,13 +152,17 @@ class DefaultMessageConnection(byteConn: ByteConnection,
       if (isWaitingForSerializer) {
         try {
           val clzName = new String(nextMessage())
+
           //Debug.info(this + ": going to create serializer of clz " + clzName)
-          val _serializer = Class.forName(clzName, true, config.classLoader)
-            .newInstance.asInstanceOf[Serializer]
-          serializer = Some(_serializer)
+          val clz = Class.forName(clzName, true, config.classLoader)
+          if (classOf[Serializer].isAssignableFrom(clz)) {
+            serializer = Some(clz.asInstanceOf[Class[Serializer]].newInstance)
+          } else 
+            throw new ClassCastException(clzName)
+
 
           // same logic as in bootstrapClient()
-          if (_serializer.isHandshaking) {
+          if (serializer.get.isHandshaking) {
             terminateLock.synchronized {
               if (terminateInitiated) return
               status = Handshaking
@@ -247,7 +251,7 @@ class DefaultMessageConnection(byteConn: ByteConnection,
 		serializer.get.read(nextMessage())
 }
 
-class StandardService extends Service {
+private[remote] class StandardService extends Service {
 
   override def serviceProviderFor(mode: ServiceMode.Value) = mode match {
     case ServiceMode.NonBlocking => new NonBlockingServiceProvider

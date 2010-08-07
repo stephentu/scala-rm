@@ -20,7 +20,7 @@ import java.util.concurrent.{ ConcurrentHashMap, Executors }
 import scala.collection.mutable.HashMap
 
 
-class BlockingServiceProvider extends ServiceProvider {
+private[remote] class BlockingServiceProvider extends ServiceProvider {
 
   private val executor = Executors.newCachedThreadPool()
 
@@ -29,8 +29,7 @@ class BlockingServiceProvider extends ServiceProvider {
       override val isEphemeral: Boolean,
       override val receiveCallback: BytesReceiveCallback)
     extends Runnable
-    with    ByteConnection 
-    with    EncodingHelpers {
+    with    ByteConnection {
 
     override def mode = ServiceMode.Blocking
 

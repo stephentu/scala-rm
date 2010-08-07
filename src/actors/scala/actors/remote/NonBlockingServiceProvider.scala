@@ -26,7 +26,7 @@ import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
 import scala.concurrent.SyncVar
 
 
-object InterestOpUtil {
+private[remote] object InterestOpUtil {
     // for debug purposes
     sealed trait InterestOp {
       val op: Int
@@ -54,14 +54,14 @@ object InterestOpUtil {
     def enumerateSet(ops: Int) = Ops.filter(_.isInterested(ops))
 }
 
-object NonBlockingServiceProvider {
+private[remote] object NonBlockingServiceProvider {
   val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 2
   val NumListenerLoops   = 1 /* Runtime.getRuntime.availableProcessors */
 
   val ReadBufSize        = 8192
 }
 
-class VaryingSizeByteBufferPool {
+private[remote] class VaryingSizeByteBufferPool {
 
   private val comparator = new Comparator[ByteBuffer] {
     override def compare(b1: ByteBuffer, b2: ByteBuffer): Int = b2.capacity - b1.capacity // max heap
@@ -95,7 +95,7 @@ class VaryingSizeByteBufferPool {
 
 }
 
-class FixedSizeByteBufferPool(fixedSize: Int) {
+private[remote] class FixedSizeByteBufferPool(fixedSize: Int) {
   //assert(fixedSize > 0)
   private val bufferQueue = new ArrayBuffer[ByteBuffer]
 
@@ -112,7 +112,7 @@ class FixedSizeByteBufferPool(fixedSize: Int) {
 
 }
 
-class NonBlockingServiceProvider extends ServiceProvider {
+private[remote] class NonBlockingServiceProvider extends ServiceProvider {
 
   import NonBlockingServiceProvider._
 

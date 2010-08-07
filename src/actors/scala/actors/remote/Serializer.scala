@@ -17,44 +17,80 @@ class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
 }
 
+/**
+ * Base trait for all events that a serializer is concerned with in a
+ * handshake
+ */
 sealed trait HandshakeEvent
+
+/**
+ * Base trait for all events that a serializer can respond to in a handshake
+ */
 sealed trait ReceivableEvent extends HandshakeEvent
+
+/**
+ * Base trait for all valid responses that a serializer can make in a
+ * handshake
+ */
 sealed trait TriggerableEvent extends HandshakeEvent
 
 /**
  * Indicates that a handshake is beginning with remote node <code>node</code>.
+ *
+ * @see ReceivableEvent
+ * @see Serializer
  */
 case class StartEvent(node: Node) extends ReceivableEvent
 
 /**
  * Indicates that message <code>msg</code> was received from the remote end.
+ *
+ * @see ReceivableEvent
+ * @see Serializer
  */
 case class RecvEvent(msg: Any) extends ReceivableEvent
 
 /**
  * Indicates to the network layer to send <code>msgs</code> to the remote end.
+ *
+ * @see TriggerableEvent
+ * @see Serializer
  */
 case class SendEvent(msgs: Any*) extends TriggerableEvent
 
 /**
  * Indicates to the network layer to send <code>msgs</code> to the remote end,
  * followed by completion of the handshake.
+ *
+ * @see TriggerableEvent
+ * @see SendEvent
+ * @see Success
+ * @see Serializer
  */
 case class SendWithSuccessEvent(msgs: Any*) extends TriggerableEvent
 
 /**
  * Indicates to the network layer to send <code>msgs</code> to the remote end,
  * followed by a failure of the handshake for reason <code>reason</code>.
+ *
+ * @see TriggerableEvent
+ * @see SendEvent
+ * @see Error
+ * @see Serializer
  */
 case class SendWithErrorEvent(reason: String, msgs: Any*) extends TriggerableEvent
 
 /**
  * Indicates a success of the handshake
+ *
+ * @see TriggerableEvent
  */
 case object Success extends TriggerableEvent
 
 /**
  * Indicates a failure of the handshake for reason <code>reason</code>.
+ *
+ * @see TriggerableEvent
  */
 case class Error(reason: String) extends TriggerableEvent
 
@@ -88,8 +124,11 @@ case class Error(reason: String) extends TriggerableEvent
  * a single serializer instance.
  *
  * In order to provide as much control over the message serialization as
- * possible, Serializers must also supply envelope message factory methods.
- * See the documentation for <code>MessageCreator</code>.
+ * possible, Serializers must also supply envelope message factory methods,
+ * which write control messages into output streams.
+ *
+ * @see NetKernelMessage
+ * @see MessageCreator
  */
 abstract class Serializer extends MessageCreator {
 
@@ -117,21 +156,117 @@ abstract class Serializer extends MessageCreator {
    * be simple messages (primitives, Strings, and byte arrays). See
    * <code>PrimitiveSerializer</code> for a specification of exactly what kind
    * of messages are allowed.
+   *
+   * This method should not throw any exceptions. To signal an error in the
+   * handshake, use <code>Error</code>.
+   *
+   * For non-blocking modes, <code>handleNextEvent</code> runs right in the
+   * same thread as the NIO multiplexing event loop. Therefore, it should not
+   * perform very expensive operations, since it will block the event loop,
+   * causing other connections to possibly starve.
+   *
+   * @see ReceivableEvent
+   * @see TriggerableEvent
+   * @see PrimitiveSerializer
    */
   def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]]
 
   // Message serialization
 
+  /**
+   * Write the necessary sequence of bytes to <code>outputStream</code> to
+   * indicate a <code>AsyncSend</code> command to the other side.
+   *
+   * @param outputStream  The output stream to write the command to. This is
+   *                      backed by a byte array, so there is no need to wrap
+   *                      a BufferedOutputStream around
+   *                      <code>outputStream</code>.
+   * @param senderName    The sender of the message. Can be null
+   * @param receiverName  The receiver of the message. Can NOT be null
+   * @param message       The message being sent. Is typed <code>AnyRef</code>
+   *                      for flexibility. An exception should be thrown if
+   *                      <code>message</code> cannot be serialized by this
+   *                      serializers.
+   * 
+   * @see   AsyncSend
+   */
   def writeAsyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef): Unit
 
+  /**
+   * Write the necessary sequence of bytes to <code>outputStream</code> to
+   * indicate a <code>SyncSend</code> command to the other side.
+   *
+   * @param outputStream  The output stream to write the command to. This is
+   *                      backed by a byte array, so there is no need to wrap
+   *                      a BufferedOutputStream around
+   *                      <code>outputStream</code>.
+   * @param senderName    The sender of the message. Can NOT be null
+   * @param receiverName  The receiver of the message. Can NOT be null
+   * @param message       The message being sent. Is typed <code>AnyRef</code>
+   *                      for flexibility. An exception should be thrown if
+   *                      <code>message</code> cannot be serialized by this
+   *                      serializers.
+   * @param session       The session id for the message. Can NOT be null
+   * 
+   * @see   SyncSend
+   */
   def writeSyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef, session: String): Unit
 
+  /**
+   * Write the necessary sequence of bytes to <code>outputStream</code> to
+   * indicate a <code>SyncSend</code> command to the other side.
+   *
+   * @param outputStream  The output stream to write the command to. This is
+   *                      backed by a byte array, so there is no need to wrap
+   *                      a BufferedOutputStream around
+   *                      <code>outputStream</code>.
+   * @param receiverName  The receiver of the message. Can NOT be null
+   * @param message       The message being sent. Is typed <code>AnyRef</code>
+   *                      for flexibility. An exception should be thrown if
+   *                      <code>message</code> cannot be serialized by this
+   *                      serializers.
+   * @param session       The session id for the message. Can NOT be null
+   * 
+   * @see   SyncReply
+   */
   def writeSyncReply(outputStream: OutputStream, receiverName: String, message: AnyRef, session: String): Unit
 
+  /**
+   * Write the necessary sequence of bytes to <code>outputStream</code> to
+   * indicate a <code>RemoteApply</code> command to the other side.
+   *
+   * @param outputStream  The output stream to write the command to. This is
+   *                      backed by a byte array, so there is no need to wrap
+   *                      a BufferedOutputStream around
+   *                      <code>outputStream</code>.
+   * @param senderName    The sender of the message. Can NOT be null
+   * @param receiverName  The receiver of the message. Can NOT be null
+   * @param rfun          The <code>RemoteFunction</code> to be applied
+   * 
+   * @see   RemoteApply
+   * @see   RemoteFunction
+   */
   def writeRemoteApply(outputStream: OutputStream, senderName: String, receiverName: String, rfun: RemoteFunction): Unit
 
-  // Message deserialization
+  // message deserialization
 
+  /**
+   * Interpret a sequence of bytes, written by the other side, and turn it
+   * into a <code>NetKernelMessage</code> to be processed by the network
+   * kernel. The bytes here are exactly as was written by the other end.
+   *
+   * @param   bytes   The sequence of bytes sent from the other side, exactly
+   *                  how it was written. Note that the entire byte array is
+   *                  the message.
+   *
+   * @returns The control message to forward to the network kernel
+   *
+   * @see     NetKernelMessage
+   * @see     writeAsyncSend
+   * @see     writeSyncSend
+   * @see     writeSyncReply
+   * @see     writeRemoteApply
+   */
   def read(bytes: Array[Byte]): NetKernelMessage
 
   /**
@@ -140,11 +275,15 @@ abstract class Serializer extends MessageCreator {
    * <code>getClass.getName</code>. Implementations which want to separate out
    * the client side logic from the server side logic can supply the class
    * name of the server side serializer.
+   *
+   * @returns Class name of the <code>Serializer</code> to bootstrap remotely
    */
   def bootstrapClassName: String = 
     getClass.getName
 
-  /** Unique identifier used for this serializer */
+  /** 
+   * Unique identifier used for this serializer 
+   */
   val uniqueId: Long
 
   /** 
@@ -163,10 +302,12 @@ abstract class Serializer extends MessageCreator {
 
 }
 
-class NonHandshakingSerializerException extends Exception
+private[remote] class NonHandshakingSerializerException extends Exception
 
 /**
  * Convenience trait for Serializers which do not participate in a handshake
+ *
+ * @see Serializer
  */
 trait NonHandshakingSerializer { _: Serializer =>
   override val isHandshaking = false
@@ -178,6 +319,8 @@ trait NonHandshakingSerializer { _: Serializer =>
 /**
  * Convenience trait for Serializers which participate in a simple
  * <code>uniqueId</code> exchange handshake. 
+ *
+ * @see Serializer
  */
 trait IdResolvingSerializer { _: Serializer =>
   override val isHandshaking = true

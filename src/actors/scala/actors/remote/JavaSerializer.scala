@@ -34,7 +34,7 @@ extends ObjectInputStream(in) {
     }
 }
 
-object JavaSerializer {
+private[remote] object JavaSerializer {
   final val ASYNC_SEND   = 0x0
   final val SYNC_SEND    = 0x1
   final val SYNC_REPLY   = 0x2
@@ -42,7 +42,9 @@ object JavaSerializer {
 }
 
 /**
- *  @author Philipp Haller
+ * The default Java serializer.
+ *
+ * @author Philipp Haller
  */
 class JavaSerializer(cl: ClassLoader) 
   extends Serializer
@@ -51,6 +53,9 @@ class JavaSerializer(cl: ClassLoader)
 
   import JavaSerializer._
 
+  /**
+   * No argument constructor, using a regular class loader
+   */
   def this() = this(null)
 
   override val uniqueId = 1679081588L
@@ -58,6 +63,12 @@ class JavaSerializer(cl: ClassLoader)
   private def newObjectInputStream(is: InputStream) = 
     if (cl eq null) new ObjectInputStream(is)
     else new CustomObjectInputStream(is, cl)
+
+  // For performance reasons, all the write[...] methods do not use the
+  // control messages (ie DefaultAsyncSendImpl). Instead, we just write the
+  // data directly into the outputStream, and decode it on the other end.
+  // Var-int encoding however has not been implemented, and should be done for
+  // even better performance
 
   override def writeAsyncSend(outputStream: OutputStream, senderName: String, receiverName: String, message: AnyRef) {
     val os = new DataOutputStream(outputStream)
@@ -117,6 +128,8 @@ class JavaSerializer(cl: ClassLoader)
       case REMOTE_APPLY =>
         val senderName = readString(is)
         val receiverName = readString(is)
+        // TODO: Don't bother serializing the function, just send a function
+        // tag
         val function = readObject(is).asInstanceOf[RemoteFunction]
         RemoteApply(senderName, receiverName, function)
     }
@@ -139,7 +152,7 @@ class JavaSerializer(cl: ClassLoader)
     }
   }
 
-  // TODO: varint encoding
+  // TODO: varint decoding
   private def readString(is: DataInputStream): String = {
     val len = is.readInt()
     if (len == 0) null

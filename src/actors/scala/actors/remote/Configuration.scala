@@ -11,6 +11,10 @@
 package scala.actors
 package remote
 
+/**
+ * This object contains the implicit <code>Configuration</code> 
+ * object which is the one used by default.
+ */
 object Configuration {
   /**
    * This object is the default configuration in scope.
@@ -22,7 +26,20 @@ object Configuration {
  * This trait is responsible for containing the parameters necessary to
  * configure network activities for remote actors. Users not wishing to
  * customize the behavior of remote actors do not need to worry about this
- * trait, since a default one exists.
+ * trait, since a default one exists. In order to help make configuration less
+ * verbose, there are helper traits <code>HasJavaSerializer</code>,
+ * <code>HasBlockingMode</code>, and <code>HasNonBlockingMode</code> which can
+ * be mixed-in as such:
+ * {{{
+ * implicit val config = new Configuration with HasNonBlockingMode {
+ *   // use the sandboxed class loader
+ *   override def newSerializer = new JavaSerializer(classLoader) 
+ * 
+ *   override val numRetries    = 3   // Make 3 attempts to send messages before giving up 
+ *
+ *   override def classLoader   = ... // my special sandboxed class loader
+ * }
+ * }}}
  */
 trait Configuration {
 
@@ -45,7 +62,8 @@ trait Configuration {
    * constructor. The <code>Serializer</code> returned here must be the one to
    * use on the client side. This method is called once for each unique
    * connection, so if the <code>Serializer</code> returned from this method
-   * contains state, it should return a new instance each time.
+   * contains state, it should return a new instance each time (since it will
+   * be used in a concurrent manner).
    */
   def newSerializer(): Serializer
 

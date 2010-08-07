@@ -16,19 +16,26 @@ import java.nio.ByteBuffer
 import scala.collection.mutable.{ HashMap, ListBuffer }
 
 /**
- * Mode of operation. Can be blocking or non-blocking
+ * Mode of operation. Can be blocking or non-blocking. This mode of operation
+ * corresponds to how the network operations should behave. In the current
+ * implementation, <code>Blocking</code> implies all network socket
+ * reads/writes block the current thread (using regular Java IO), and
+ * </code>NonBlocking</code> implies all network reads/writes happen
+ * asynchronously (using Java NIO). 
+ * 
+ * @see Configuration
+ * @see RemoteActor#alive
+ * @see RemoteActor#select
  */
 object ServiceMode extends Enumeration {
   val Blocking, NonBlocking = Value
 }
 
-trait HasServiceMode {
+private[remote] trait HasServiceMode {
   def mode: ServiceMode.Value
 }
 
-trait Listener 
-  extends HasServiceMode 
-  with    CanTerminate {
+private[remote] trait Listener extends HasServiceMode with CanTerminate {
 
   def port: Int
 
@@ -45,9 +52,7 @@ trait Listener
   }
 }
 
-trait Connection 
-  extends HasServiceMode 
-  with    CanTerminate {
+private[remote] trait Connection extends HasServiceMode with CanTerminate {
 
   /**
    * Returns the (canonical) remote node
@@ -101,7 +106,7 @@ trait Connection
 
 }
 
-trait ByteConnection extends Connection {
+private[remote] trait ByteConnection extends Connection {
 
   def send(data: ByteSequence): Unit
 
@@ -119,7 +124,7 @@ trait ByteConnection extends Connection {
 
 }
 
-trait MessageConnection extends Connection {
+private[remote] trait MessageConnection extends Connection {
 
   def send(f: Serializer => ByteSequence): Unit 
 
@@ -141,46 +146,14 @@ trait MessageConnection extends Connection {
 
 }
 
-trait ServiceProvider extends HasServiceMode with CanTerminate {
+private[remote] trait ServiceProvider extends HasServiceMode with CanTerminate {
   def connect(node: Node, receiveCallback: BytesReceiveCallback): ByteConnection
   def listen(port: Int, 
              connectionCallback: ConnectionCallback[ByteConnection], 
              receiveCallback: BytesReceiveCallback): Listener
 }
 
-trait EncodingHelpers {
-
-  /**
-   * Takes an unencoded byte array, and returns an encoded
-   * version of the data, suitable for sending over the wire.
-   * Default encoding is to simply prepend the length of the
-   * unencoded message as a 4-byte int.
-   */
-  protected def encodeToArray(unenc: Array[Byte]): Array[Byte] = {
-    // TODO: handle overflow
-    val baos    = new ByteArrayOutputStream(unenc.length + 4)
-    val dataout = new DataOutputStream(baos)
-    dataout.writeInt(unenc.length)
-    dataout.write(unenc)
-    baos.toByteArray
-  }
-
-  protected def encodeToByteBuffer(unenc: Array[Byte]): ByteBuffer = {
-    // TODO: handle overflow
-    val buf = ByteBuffer.allocate(unenc.length + 4)
-    buf.putInt(unenc.length)
-    buf.put(unenc)
-    buf.rewind()
-    buf
-  }
-
-}
-
-/**
- * @version 0.9.10
- * @author Philipp Haller
- */
-abstract class Service extends CanTerminate {
+private[remote] abstract class Service extends CanTerminate {
 
   protected def serviceProviderFor(mode: ServiceMode.Value): ServiceProvider
 

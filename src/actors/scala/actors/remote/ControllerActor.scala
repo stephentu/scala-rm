@@ -18,61 +18,26 @@ import RemoteActor._
 
 import java.io.IOException
 
-object RemoteStartInvoke {
-  def apply(actorClass: String): RemoteStartInvoke = 
-    DefaultRemoteStartInvokeImpl(actorClass)
-  def unapply(r: RemoteStartInvoke): Option[(String)] = Some((r.actorClass))
-}
 
-trait RemoteStartInvoke {
-  def actorClass: String
-}
-
-case class DefaultRemoteStartInvokeImpl(override val actorClass: String) extends RemoteStartInvoke
-
-object RemoteStartInvokeAndListen {
-  def apply(actorClass: String, port: Int, name: String): RemoteStartInvokeAndListen =
-    DefaultRemoteStartInvokeAndListenImpl(actorClass, port, name)
-  def unapply(r: RemoteStartInvokeAndListen): Option[(String, Int, String)] = 
-    Some((r.actorClass, r.port, r.name))
-}
-
-trait RemoteStartInvokeAndListen {
-  def actorClass: String
-  def port: Int
-  def name: String
-}
-
-case class DefaultRemoteStartInvokeAndListenImpl(override val actorClass: String,
-                                                 override val port: Int,
-                                                 override val name: String)
-  extends RemoteStartInvokeAndListen
-
-object RemoteStartResult {
-  def apply(errorMessage: Option[String]): RemoteStartResult = 
-    DefaultRemoteStartResultImpl(errorMessage)
-  def unapply(r: RemoteStartResult): Option[(Option[String])] =
-    Some((r.errorMessage))
-}
-
-trait RemoteStartResult {
-  def success: Boolean = errorMessage.isEmpty
-  def errorMessage: Option[String]
-}
-
-case class DefaultRemoteStartResultImpl(override val errorMessage: Option[String]) extends RemoteStartResult
-
-object ControllerActor {
+private[remote] object ControllerActor {
   val defaultPort = 11723 
   val defaultMode = ServiceMode.Blocking
 }
 
-private[remote] class ControllerActor(port: Int, thisSym: Symbol)(implicit cfg: Configuration) extends Actor {
+/**
+ * The remote starting service is just implemented as a remote actor.
+ */
+private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit cfg: Configuration) extends Actor {
 
   import ControllerActor._
 
-  private def newActor(actorClass: String): Actor =
-    Class.forName(actorClass, true, cfg.classLoader).asInstanceOf[Class[Actor]].newInstance()
+  private def newActor(actorClass: String): Actor = {
+    val clz = Class.forName(actorClass, true, cfg.classLoader)
+    if (classOf[Actor].isAssignableFrom(clz)) {
+      clz.asInstanceOf[Class[Actor]].newInstance()
+    } else
+      throw new ClassCastException(actorClass)
+  }
 
   override def exceptionHandler: PartialFunction[Exception, Unit] = {
     case e: Exception =>
