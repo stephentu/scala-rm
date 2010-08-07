@@ -12,17 +12,15 @@ package scala.actors
 package remote
 
 object ConnectPolicy extends Enumeration {
-  val NoWait,          /** Don't wait at all for a connection to be established */
-      WaitEstablished, /** Wait until the connection  */
-      WaitHandshake,   /** Wait until the serializers have successfully handshaked */
-      WaitVerified     /** Wait until the remote actor has been located on the other node */
-      = Value
+  val NoWait,              /** Don't wait at all for a connection to be established */
+      WaitEstablished,     /** Wait until the connection  */
+      WaitHandshake,       /** Wait until the serializers have successfully handshaked */
+      WaitVerified = Value /** Wait until the remote actor has been located on the other node */
 }
 
 object SendPolicy extends Enumeration {
-  val NoWait,      /** Don't wait at all for a message to be written */
-      WaitWritten, /** Wait until the bytes have been written to the network */
-      = Value
+  val NoWait,             /** Don't wait at all for a message to be written */
+      WaitWritten = Value /** Wait until the bytes have been written to the network */
 }
 
 /**
@@ -130,6 +128,7 @@ class DefaultConfiguration
   with    HasJavaSerializer
   with    HasDefaultMessageCreator
   with    HasBlockingMode 
+  with    HasDefaultPolicies
 
 /**
  * A default configuration for remote actors in <code>NonBlocking</code> mode.
@@ -142,6 +141,7 @@ class DefaultNonBlockingConfiguration
   with    HasJavaSerializer
   with    HasDefaultMessageCreator
   with    HasNonBlockingMode 
+  with    HasDefaultPolicies
 
 /**
  * A convenient mix-in to use Java serialization
@@ -168,4 +168,9 @@ trait HasNonBlockingMode { _: Configuration =>
 
 trait HasDefaultMessageCreator { _: Configuration =>
   override def newMessageCreator() = new DefaultMessageCreator
+}
+
+trait HasDefaultPolicies { _: Configuration =>
+  override val connectPolicy = ConnectPolicy.NoWait
+  override val sendPolicy    = SendPolicy.NoWait
 }

@@ -89,15 +89,22 @@ private[remote] abstract class Proxy extends AbstractActor
 
   private def tryRemoteAction(a: Option[AbstractActor])(f: MessageConnection => Unit) {
     var triesLeft = numRetries + 1
+    var success = false
     assert(triesLeft > 0)
-    while (triesLeft > 0) {
+    while (!success && triesLeft > 0) {
       triesLeft -= 1
-      val usingConn = conn(a)
-      try { f(usingConn) } catch {
-        case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
-          Debug.error(this + ": Caught exception: " + e.getMessage)
+      var usingConn: MessageConnection = null 
+      try { 
+        usingConn = conn(a)
+        assert(usingConn ne null)
+        f(usingConn)
+        success = true
+      } catch {
+        case e: Exception =>
+          Debug.error(this + ": tryRemoteAction(): Caught exception: " + e.getMessage)
           Debug.doError { e.printStackTrace() }
-          terminateConn(usingConn)
+          if (usingConn ne null)
+            terminateConn(usingConn)
           if (triesLeft == 0)
             throw e
       }
@@ -109,7 +116,9 @@ private[remote] abstract class Proxy extends AbstractActor
       case cmd @ RemoteApply0(actor, rfun) =>
         Debug.info("cmd@Apply0: " + cmd)
         tryRemoteAction(Some(actor)) { usingConn =>
-          NetKernel.remoteApply(usingConn, name.name, actor, rfun)
+          // TODO: not sure if the cast is safe- will we wever receive a
+          // RemoteApply0 request from a non reactor?
+          NetKernel.remoteApply(usingConn, name.name, actor.asInstanceOf[Reactor[Any]], rfun)
         }
       case cmd @ LocalApply0(rfun @ ExitFun(_), target) =>
         Debug.info("cmd@LocalApply0: " + cmd)
@@ -234,24 +243,27 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
 
   override def conn(a: Option[AbstractActor]) = {
     val testConn = _conn
-    if (testConn ne null)
-      testConn
-    else 
-      synchronized {
-        if (_conn ne null) _conn
-        else {
-          // try to (re-)initialize connection from the NetKernel
-          val tmpConn = NetKernel.getConnectionFor(remoteNode, getConfig)
-          NetKernel.locateRequest(tmpConn, name.name, a.filter(_.isInstanceOf[Reactor]).map(_.asInstanceOf[Reactor]))
-          _conn = tmpConn 
-          _conn
-        }
-      }
+    if (testConn ne null) testConn
+    else {
+      // try to (re-)initialize connection from the NetKernel
+      val tmpConn = NetKernel.getConnectionFor(remoteNode, getConfig)
+      NetKernel.locateRequest(tmpConn, 
+                              name.name, 
+                              a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
+                              new ErrorCallbackFuture((t: Throwable) => {
+                                Debug.error(t.getMessage)
+                                Debug.doError { t.printStackTrace() }
+                                _conn = null
+                              }))
+      _conn = tmpConn
+      tmpConn
+    }
   }
 
   private lazy val getConfig = 
     if (config eq null) 
-      new Configuration with HasDefaultMessageCreator {
+      new Configuration with HasDefaultMessageCreator
+                        with HasDefaultPolicies /* TODO: Save policies */ {
         override val selectMode = _selectMode
         override val aliveMode  = _selectMode /** Shouldn't be used though */
         override val numRetries = _numRetries
@@ -273,7 +285,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
 
   override def terminateConn(usingConn: MessageConnection) {
     usingConn.terminateBottom()
-    synchronized { _conn = null }
+    _conn = null
   }
 
 }

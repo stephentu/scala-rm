@@ -173,9 +173,9 @@ abstract class Serializer {
 
   // Message serialization
 
-  def writeLocateRequest(outputStream: OutputStream, receiverName: String): Unit
+  def writeLocateRequest(outputStream: OutputStream, sessionId: Long, receiverName: String): Unit
 
-  def writeLocateResponse(outputStream: OutputStream, receiverName: String, found: Boolean): Unit
+  def writeLocateResponse(outputStream: OutputStream, sessionId: Long, receiverName: String, found: Boolean): Unit
 
   /**
    * Write the necessary sequence of bytes to <code>outputStream</code> to

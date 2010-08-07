@@ -595,7 +595,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         try { 
 
           socketChannel.finishConnect()
-          ftch.foreach(_.finishSuccessfully())
+          ftch.finishSuccessfully()
 
           // check write queue. if it is not empty try to put in write mode
           // otherwise, put us in read mode
@@ -618,7 +618,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
           case e: IOException => 
             Debug.error(this + ": caught IOException in doFinishConnect: " + e.getMessage)       
             Debug.doError { e.printStackTrace }
-            ftch.foreach(_.finishWithError(e))
+            ftch.finishWithError(e)
             terminateBottom()
         }
       }

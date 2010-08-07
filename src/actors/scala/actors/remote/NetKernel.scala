@@ -11,9 +11,10 @@ package scala.actors
 package remote
 
 import scala.collection.mutable.{ HashMap, HashSet }
+import scala.util.Random
+
 import java.io._
-import java.util.concurrent.{ ConcurrentHashMap, ConcurrentLinkedQueue, 
-                              CountDownLatch, TimeUnit }
+import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
 
 // TODO: make package private?
 case object Terminate
@@ -44,6 +45,7 @@ private[remote] object NetKernel {
   def getConnectionFor(node: Node, cfg: Configuration) = {
     // Check the serializers to see if they match
     def checkConn(testConn: MessageConnection) = {
+      // check serializers
       if (cfg.cachedSerializer != testConn.activeSerializer)
         throw new InconsistentSerializerException(testConn.activeSerializer, cfg.cachedSerializer)
       if (cfg.connectPolicy == ConnectPolicy.WaitEstablished)
@@ -141,29 +143,31 @@ private[remote] object NetKernel {
 	// TODO: don't expose baos, expose a locked version where reset() throws an
 	// exception
 
-  @inline private def makeFuture(from: Option[Reactor], blockingCond: Boolean): Option[Future] = {
+  @inline private def makeFuture(from: Option[Reactor[Any]], blockingCond: Boolean): Option[Future] = {
     if (blockingCond)
       Some(new BlockingFuture)
     else
-      from.map(f => new ErrorCallbackFuture((t: Throwable) => {
-        if (t.isInstanceOf[Exception]) {
-          val ex = t.asInstanceOf[Exception]
-          if (f.exceptionHandler.isDefinedAt(ex))
-            f.exceptionHandler(ex)
-        } else {
-          Debug.error("Got throwable error: " + t)
-          Debug.doError { t.printStackTrace() }
-        }
-      }))
+      from.filter(f => !f.isInstanceOf[ActorProxy]) // ActorProxy has no exception handler (no way for user to specify one)
+          .map(f => new ErrorCallbackFuture((t: Throwable) => {
+            if (t.isInstanceOf[Exception]) {
+              val ex = t.asInstanceOf[Exception]
+              if (f.exceptionHandler.isDefinedAt(ex))
+                f.exceptionHandler(ex)
+            } else {
+              Debug.error("Got unhandlable error: " + t)
+              Debug.doError { t.printStackTrace() }
+            }
+          }))
   }
 
-  @inline private def makeSendFuture(from: Reactor, sendPolicy: SendPolicy.Value) = 
+  @inline private def makeSendFuture(from: Option[Reactor[Any]], sendPolicy: SendPolicy.Value) = 
     makeFuture(from, sendPolicy == SendPolicy.WaitWritten)
 
-  @inline private def makeLocateFuture(from: Reactor, connectPolicy: ConnectPolicy.Value) =
+  @inline private def makeLocateFuture(from: Option[Reactor[Any]], connectPolicy: ConnectPolicy.Value) =
     makeFuture(from, connectPolicy == ConnectPolicy.WaitVerified)
 
-  def asyncSend(conn: MessageConnection, toName: String, from: Option[Reactor], msg: AnyRef) {
+  def asyncSend(conn: MessageConnection, toName: String, from: Option[Reactor[Any]], msg: AnyRef) {
+    Debug.info("asyncSend(): to: %s, from: %s, msg: %s".format(toName, from, msg))
     val fromName = from.map(f => RemoteActor.getOrCreateName(f).name)
     val config = conn.config
     val ftch = makeSendFuture(from, config.sendPolicy)
@@ -176,38 +180,39 @@ private[remote] object NetKernel {
     ftch.map(_.await(config.waitTimeout))
   }
 
-  def syncSend(conn: MessageConnection, toName: String, from: Reactor, msg: AnyRef, session: String) {
+  def syncSend(conn: MessageConnection, toName: String, from: Reactor[Any], msg: AnyRef, session: String) {
+    Debug.info("syncSend(): to: %s, from: %s, msg: %s, session: %s".format(toName, from, msg, session))
     val fromName = RemoteActor.getOrCreateName(from).name
     val config = conn.config
     val ftch = makeSendFuture(Some(from), config.sendPolicy)
-    conn.send(Some(ftch)) { serializer: Serializer =>
+    conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
-      val wireMsg = serializer.intercept(msg)
-      serializer.writeSyncSend(baos, fromName, toName, wireMsg, session)
+      serializer.writeSyncSend(baos, fromName, toName, msg, session)
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
     ftch.map(_.await(config.waitTimeout))
   }
 
   def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String) {
+    Debug.info("syncSend(): to: %s, msg: %s, session: %s".format(toName, msg, session))
     val config = conn.config
     val ftch = makeSendFuture(None, config.sendPolicy)
     conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
-      val wireMsg = serializer.intercept(msg)
-      serializer.writeSyncReply(baos, toName, wireMsg, session)
+      serializer.writeSyncReply(baos, toName, msg, session)
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
     ftch.map(_.await(config.waitTimeout))
   }
 
-  def remoteApply(conn: MessageConnection, toName: String, from: Reactor, rfun: RemoteFunction) {
+  def remoteApply(conn: MessageConnection, toName: String, from: Reactor[Any], rfun: RemoteFunction) {
+    Debug.info("remoteApply(): to: %s, from: %s, rfun: %s".format(toName, from, rfun))
     val fromName = RemoteActor.getOrCreateName(from).name
     val config = conn.config
     val ftch = makeSendFuture(Some(from), config.sendPolicy)
-    conn.send(Some(ftch)) { serializer: Serializer =>
+    conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
       serializer.writeRemoteApply(baos, fromName, toName, rfun) 
@@ -216,42 +221,45 @@ private[remote] object NetKernel {
     ftch.map(_.await(config.waitTimeout))
   }
 
-  private val requestFutures = new ConcurrentHashMap[String, ConcurrentLinkedQueue[Future]]
+  private val requestFutures = new ConcurrentHashMap[Long, (Future, Option[Future])]
 
-  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor]) {
+  private final val random = new Random
+
+  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: Future) {
+    Debug.info("locateRequest(): receiverName: %s, from: %s".format(receiverName, from))
     val config = conn.config
     val ftch = makeLocateFuture(from, config.connectPolicy)
-    ftch.foreach(f => {
-      val queue0 = requestFutures.get(receiverName)
-      val queue = 
-        if (queue0 ne null) queue0
-        else {
-          val newQueue = new ConcurrentLinkedQueue[Future]
-          val q = requestFutures.putIfAbsent(receiverName, newQueue)
-          if (q ne null) q
-          else newQueue
-        }
-      queue.offer(f)
+    val requestId = random.nextLong()
+    requestFutures.put(requestId, (errorFtch, ftch))
+    val connFtch = new ErrorCallbackFuture((t: Throwable) => {
+      Debug.info("finishing errorFtch with error")
+      errorFtch.finishWithError(t)
+      Debug.info("finishing ftch with error")
+      ftch.foreach(_.finishWithError(t))
     })
-    conn.send(ftch) { serializer: Serializer =>
+    conn.send(Some(connFtch)) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
-      serializer.writeLocateRequest(baos, receiverName) 
+      serializer.writeLocateRequest(baos, requestId, receiverName) 
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
+    Debug.info("blocking on ftch: " + ftch)
     ftch.map(_.await(config.waitTimeout))
   }
 
   private val processMsgFunc = processMsg _
 
-  private val msgConnCallback = (listener: Listener, msgConn: MessageConnection) => {
-  }
+  private val msgConnCallback = (listener: Listener, msgConn: MessageConnection) => {}
 
   private final val NoSender = new Proxy {
-    override def remoteNode    = throw new RuntimeException("NoSender")
-    override def name          = throw new RuntimeException("NoSender")
-    override def conn          = throw new RuntimeException("NoSender")
-    override def numRetries    = throw new RuntimeException("NoSender") 
+    override def remoteNode = 
+      throw new RuntimeException("NoSender")
+    override def name = 
+      throw new RuntimeException("NoSender")
+    override def conn(a: Option[AbstractActor]) = 
+      throw new RuntimeException("NoSender")
+    override def numRetries =
+      throw new RuntimeException("NoSender")
 
     override def terminateConn(usingConn: MessageConnection) { 
       throw new RuntimeException("NoSender")
@@ -292,31 +300,30 @@ private[remote] object NetKernel {
   }
 
   private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
+    Debug.info("processMsg: " + msg)
     msg match {
-      case LocateRequest(receiverName) =>
+      case LocateRequest(sessionId, receiverName) =>
         val found = RemoteActor.getActor(Symbol(receiverName)) ne null
         conn.send(None) { serializer: Serializer => 
           val baos = new ExposingByteArrayOutputStream(BufSize)
           baos.writeZeros(4)
-          serializer.writeLocateResponse(baos, receiverName, found) 
+          serializer.writeLocateResponse(baos, sessionId, receiverName, found) 
           new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
         }
-      case LocateResponse(receiverName, found) =>
-        val futures = requestFutures.get(receiverName)
-        if (futures ne null) {
-          var continue = false
-          while (continue) {
-            val ftch = futures.poll()
-            if (ftch eq null)
-              continue = false
-            else {
-              if (found)
-                ftch.finishWithSuccess()
-              else
-                ftch.finishWithError(new RuntimeException("Actor " + receiverName + " was not found"))
-            }
+      case LocateResponse(sessionId, receiverName, found) =>
+        val future = requestFutures.remove(sessionId)
+        if (future ne null)
+          if (found) {
+            future._1.finishSuccessfully()
+            future._2.foreach(_.finishSuccessfully())
+          } else {
+            Debug.info("finishing future._1: " + future._1)
+            future._1.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName)))
+            Debug.info("finishing future._2: " + future._2)
+            future._2.foreach(_.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName))))
           }
-        }
+        else
+          Debug.error("Lost LocateResponse: " + msg)
       case _ =>
         def mkProxy(senderName: String) = 
           new ConnectionProxy(conn.remoteNode, Symbol(senderName), conn)

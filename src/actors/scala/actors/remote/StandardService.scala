@@ -73,8 +73,18 @@ private[remote] class DefaultMessageConnection(
   private val sendQueue = new Queue[(Serializer => ByteSequence, Option[Future])]
   private val primitiveSerializer = new PrimitiveSerializer
 
+  private val callbackFtch = new ErrorCallbackFuture((e: Throwable) => {
+    handshakeFuture.finishWithError(e)
+  })
+
+  private val EmptyArray = new Array[Byte](0)
+
   // bootstrap in CTOR
   bootstrap()
+
+  // WARNING: do not place any variable declarations after this point, because
+  // bootstrap runs in the ctor, so any decls below will not be initialized at
+  // that point
 
   assert(status != 0)
 
@@ -91,14 +101,10 @@ private[remote] class DefaultMessageConnection(
       // otherwise, in established mode (ready to send messages)
       status = Established 
 
-      if (config.connectPolicy == ConnectPolicy.WaitHandshake)
-        connectFuture.finishSuccessfully()
+      handshakeFuture.finishSuccessfully()
     }
   }
 
-  private val callbackFtch = new ErrorCallbackFuture((e: Throwable) => {
-    handshakeFuture.finishWithError(e)
-  })
 
   private def handleNextEvent(evt: ReceivableEvent) {
     assert(isHandshaking)
@@ -113,7 +119,7 @@ private[remote] class DefaultMessageConnection(
         // TODO: preallocate space for the primitiveSerializer's byte array
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
         Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
-        byteConn.send(new ByteSequence(data), callbackFtch)
+        byteConn.send(new ByteSequence(data), Some(callbackFtch))
       }
     }
     serializer.handleNextEvent(evt).foreach { evt =>
@@ -130,7 +136,7 @@ private[remote] class DefaultMessageConnection(
           if (!sendQueue.isEmpty) {
             sendQueue.foreach { case (msg, ftch) =>
               Debug.info(this + ": sending " + msg + " from sendQueue")
-              byteConn.send(msg, ftch)
+              byteConn.send(msg(serializer), ftch)
             }
             sendQueue.clear()
             terminateLock.notifyAll()
@@ -171,8 +177,6 @@ private[remote] class DefaultMessageConnection(
     }
   }
 
-  private val EmptyArray = new Array[Byte](0)
-
   override def send(ftch: Option[Future])(msg: Serializer => ByteSequence) {
     ensureAlive()
     if (isHandshaking) {
@@ -182,7 +186,7 @@ private[remote] class DefaultMessageConnection(
             throw new IllegalStateException("Cannot send on terminated channel")
           case Handshaking =>
             //Debug.info(this + ": send() - queuing up msg")
-            sendQueue += (msg, ftch) // queue it up
+            sendQueue += ((msg, ftch)) // queue it up
             false // no need to repeat
           case Established =>
             // we connected somewhere in between checking and grabbing
@@ -191,7 +195,7 @@ private[remote] class DefaultMessageConnection(
         }
       }
       if (repeat) 
-        send(msg, ftch)
+        send(ftch)(msg)
     } else 
       // call send immediately
       byteConn.send(msg(activeSerializer), ftch)
@@ -213,7 +217,7 @@ private[remote] class DefaultMessageConnection(
     primitiveSerializer.deserialize(nextMessage())
 
   @inline private def nextSerializerMessage() =
-		serializer.get.read(nextMessage())
+		serializer.read(nextMessage())
 }
 
 private[remote] class StandardService extends Service {

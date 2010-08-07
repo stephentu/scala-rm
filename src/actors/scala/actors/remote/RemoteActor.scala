@@ -786,3 +786,6 @@ case class InconsistentSerializerException(expected: Serializer, actual: Seriali
 
 case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
   extends Exception("Name " + sym + " is already registered for channel " + a)
+
+case class NoSuchRemoteActorException(name: Symbol)
+	extends Exception("No such remote actor: " + name)

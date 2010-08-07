@@ -12,20 +12,20 @@ package scala.actors
 package remote
 
 import java.util.concurrent.{ CountDownLatch, TimeUnit }
-import java.util.concurrent.AtomicBoolean
+import java.util.concurrent.atomic.AtomicBoolean
 
-private[remote] trait Future {
+private[remote] trait Future { self =>
   def await(timeout: Long): Unit
   def awaitWithOption(timeout: Long): Option[Throwable]
   def finishSuccessfully(): Unit
   def finishWithError(t: Throwable): Unit 
-  def chainWith(that: Future): Future = {
+  def chainWith(that: Future): Future = new Future {
     override def await(timeout: Long) {
-      this.await(timeout)
+      self.await(timeout)
       that.await(timeout)
     }
     override def awaitWithOption(timeout: Long) = {
-      this.awaitWithOption(timeout) orElse that.awaitWithOption(timeout)
+      self.awaitWithOption(timeout) orElse that.awaitWithOption(timeout)
     }
     override def finishSuccessfully() {
       throw new RuntimeException("Cannot finish chain futures")
@@ -75,7 +75,6 @@ private[remote] class BlockingFuture extends Future {
     } else
       throw new IllegalStateException("Already set")
   }
-
 
 }
 

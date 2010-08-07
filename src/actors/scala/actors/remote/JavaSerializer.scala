@@ -50,7 +50,6 @@ private[remote] object JavaSerializer {
  */
 class JavaSerializer(cl: ClassLoader) 
   extends Serializer
-  with    DefaultMessageCreator
   with    IdResolvingSerializer {
 
   import JavaSerializer._
@@ -66,15 +65,17 @@ class JavaSerializer(cl: ClassLoader)
     if (cl eq null) new ObjectInputStream(is)
     else new CustomObjectInputStream(is, cl)
 
-  override def writeLocateRequest(outputStream: OutputStream, receiverName: String) {
+  override def writeLocateRequest(outputStream: OutputStream, sessionId: Long, receiverName: String) {
     val os = new DataOutputStream(outputStream)
     writeTag(os, LOCATE_REQ)
+    writeLong(os, sessionId)
     writeString(os, receiverName)
   }
 
-  override def writeLocateResponse(outputStream: OutputStream, receiverName: String, found: Boolean) {
+  override def writeLocateResponse(outputStream: OutputStream, sessionId: Long, receiverName: String, found: Boolean) {
     val os = new DataOutputStream(outputStream)
     writeTag(os, LOCATE_RESP)
+    writeLong(os, sessionId)
     writeString(os, receiverName)
     writeBoolean(os, found)
   }
@@ -125,12 +126,14 @@ class JavaSerializer(cl: ClassLoader)
     val tag = readTag(is) 
     tag match {
       case LOCATE_REQ =>
+        val sessionId = readLong(is)
         val receiverName = readString(is)
-        LocateRequest(receiverName)
+        LocateRequest(sessionId, receiverName)
       case LOCATE_RESP =>
+        val sessionId = readLong(is)
         val receiverName = readString(is)
         val found = readBoolean(is)
-        LocateResponse(receiverName, found)
+        LocateResponse(sessionId, receiverName, found)
       case ASYNC_SEND =>
         val senderName = readString(is)
         val receiverName = readString(is)
@@ -191,6 +194,15 @@ class JavaSerializer(cl: ClassLoader)
       new String(bytes)
     }
   }
+
+  // TODO: varint encoding
+  private def writeLong(os: DataOutputStream, l: Long) {
+    os.writeLong(l)
+  }
+
+  // TODO: varint decoding
+  private def readLong(is: DataInputStream): Long =
+    is.readLong()
 
   private def writeObject(os: DataOutputStream, o: AnyRef) {
     val out = new ObjectOutputStream(os)

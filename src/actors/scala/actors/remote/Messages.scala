@@ -30,32 +30,36 @@ package remote
 sealed trait NetKernelMessage
 
 object LocateRequest {
-  def apply(receiverName: String): LocateRequest =
-    DefaultLocateRequestImpl(receiverName)
-  def unapply(r: LocateRequest): Option[(String)] =
-    Some(r.receiverName)
+  def apply(sessionId: Long, receiverName: String): LocateRequest =
+    DefaultLocateRequestImpl(sessionId, receiverName)
+  def unapply(r: LocateRequest): Option[(Long, String)] =
+    Some(r.sessionId, r.receiverName)
 }
 
 trait LocateRequest extends NetKernelMessage {
+	def sessionId: Long
   def receiverName: String
 }
 
-case class DefaultLocateRequestImpl(override val receiverName: String)
+case class DefaultLocateRequestImpl(override val sessionId: Long,
+																		override val receiverName: String)
   extends LocateRequest
   
 object LocateResponse {
-  def apply(receiverName: String, found: Boolean): LocateResponse =
-    DefaultLocateResponseImpl(receiverName, found)
-  def unapply(r: LocateResponse): Option[(String, Boolean)] =
-    Some(r.receiverName, r.found)
+  def apply(sessionId: Long, receiverName: String, found: Boolean): LocateResponse =
+    DefaultLocateResponseImpl(sessionId, receiverName, found)
+  def unapply(r: LocateResponse): Option[(Long, String, Boolean)] =
+    Some(r.sessionId, r.receiverName, r.found)
 }
 
 trait LocateResponse extends NetKernelMessage {
+	def sessionId: Long
   def receiverName: String
   def found: Boolean
 }
 
-case class DefaultLocateResponseImpl(override val receiverName: String,
+case class DefaultLocateResponseImpl(override val sessionId: Long,
+																		 override val receiverName: String,
                                      override val found: Boolean)
   extends LocateResponse
 
