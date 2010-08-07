@@ -270,8 +270,9 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         socketChannel: SocketChannel,
         receiveCallback: BytesReceiveCallback)
       extends NonBlockingServiceConnection(socketChannel, receiveCallback) {
-        override val isEphemeral = false
-      }
+        override val isEphemeral   = false
+        override val connectFuture = new BlockingFuture
+    }
 
 
     class ReceivedNonBlockingServiceConnection(
@@ -281,7 +282,8 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
 
       override lazy val remoteNode = Node(so.getInetAddress.getHostName, so.getPort) 
 
-      override val isEphemeral = true
+      override val isEphemeral     = true
+      override val connectFuture   = NoOpFuture
     }
 
     abstract class NonBlockingServiceConnection(
@@ -385,44 +387,47 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
 
       }
 
+      /**
+       * Not thread safe tasks
+       */
       abstract class WriteLoopTask {
         def doWrite(socketChannel: SocketChannel): Long 
         def isFinished: Boolean
-        def releaseResources(): Unit  
       }
 
-      class WriteLoopTask1(b0: ByteSequence) extends WriteLoopTask {
+      class WriteLoopTask1(b0: ByteSequence, ftch: Option[Future]) extends WriteLoopTask {
+
         private var b0_bb: ByteBuffer = _
+        private var _isFinished       = false
+
         override def doWrite(socketChannel: SocketChannel) = {
-          if (b0_bb eq null) b0_bb = encodeToByteBuffer(b0)
-          socketChannel.write(b0_bb)
+          if (b0_bb eq null) 
+            b0_bb = encodeToByteBuffer(b0)
+          val bytesWritten =
+            try {
+              socketChannel.write(b0_bb)
+            } catch {
+              case e: IOException =>
+                // cleanup
+                releaseResources() // don't leak a byte buffer on error
+                ftch.foreach(_.finishWithError(e))
+                throw e
+            }
+          if (b0_bb.remaining == 0) { // done
+            releaseResources()
+            ftch.foreach(_.finishSuccessfully())
+            _isFinished = true
+          }
+          bytesWritten
         }
-        override def isFinished = (b0_bb ne null) && (b0_bb.remaining == 0)
-        override def releaseResources() {
-          if (b0_bb ne null) SendBufPool.release(b0_bb)
+        override def isFinished = _isFinished 
+        @inline private def releaseResources() {
+          if (b0_bb ne null) {
+            SendBufPool.release(b0_bb)
+            b0_bb = null
+          }
         }
       }
-
-      //class WriteLoopTask2(b0: Array[Byte], b1: Array[Byte])
-      //  extends WriteLoopTask {
-
-      //  private var bbs: Array[ByteBuffer] = _
-      //  override def doWrite(socketChannel: SocketChannel) = {
-      //    if (bbs eq null) {
-      //      bbs = new Array[ByteBuffer](2)
-      //      bbs(0) = encodeToByteBuffer(b0)
-      //      bbs(1) = encodeToByteBuffer(b1)
-      //    }
-      //    socketChannel.write(bbs)
-      //  }
-      //  override def isFinished = (bbs ne null) && (bbs(0).remaining == 0) && (bbs(1).remaining == 0) 
-      //  override def releaseResources() {
-      //    if (bbs ne null) {
-      //      SendBufPool.release(bbs(0))
-      //      SendBufPool.release(bbs(1))
-      //    }
-      //  }
-      //}
 
       protected val so = socketChannel.socket
 
@@ -478,10 +483,10 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         //}
       }
 
-      override def send(seq: ByteSequence) {
+      override def send(seq: ByteSequence, ftch: Option[Future]) {
         //Debug.error(this + ": send(a0)")
         ensureAlive()
-        writeQueue.offer(new WriteLoopTask1(seq))
+        writeQueue.offer(new WriteLoopTask1(seq, ftch))
         //Debug.error(this + ": send(a0) - offered")
         if (socketChannel.isConnected) setWriteMode()
       }
@@ -556,10 +561,10 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
                 hasWrittenBytes = true
 
               if (nextWrite.isFinished) {
-                val head = writeQueue.poll() // remove the write from the queue
+                writeQueue.poll() // remove the write from the queue
                 //assert(bytesWritten > 0 && hasWrittenBytes)
                 //assert((head ne null) && (head == nextWrite))
-                head.releaseResources()
+                //head.releaseResources()
               } else if (bytesWritten == 0) {
                 numEmptyWrites += 1
                 if (hasWrittenBytes)
@@ -586,9 +591,11 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
       }
 
       def doFinishConnect(key: SelectionKey) {
+        val ftch = key.attachment.asInstanceOf[NonBlockingServiceConnection].connectFuture
         try { 
 
           socketChannel.finishConnect()
+          ftch.foreach(_.finishSuccessfully())
 
           // check write queue. if it is not empty try to put in write mode
           // otherwise, put us in read mode
@@ -611,6 +618,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
           case e: IOException => 
             Debug.error(this + ": caught IOException in doFinishConnect: " + e.getMessage)       
             Debug.doError { e.printStackTrace }
+            ftch.foreach(_.finishWithError(e))
             terminateBottom()
         }
       }

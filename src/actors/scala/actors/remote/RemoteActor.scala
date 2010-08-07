@@ -551,8 +551,9 @@ object RemoteActor {
    * @see   Configuration
    */
   def remoteStart(node: Node, actorClass: String)(implicit cfg: Configuration) {
+    val c = cfg.newMessageCreator()
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? (60000, RemoteStartInvoke(actorClass)) match {
+    remoteController !? (60000, c.newRemoteStartInvoke(actorClass)) match {
       case Some(RemoteStartResult(None))    => // success, do nothing
       case Some(RemoteStartResult(Some(e))) => throw new RuntimeException(e)
       case Some(_) => throw new RuntimeException("Failed: Invalid response")
@@ -644,7 +645,8 @@ object RemoteActor {
     checkName(name)
     Node.checkPort(port, true)
     val remoteController = select(node, ControllerSymbol)
-    remoteController !? (60000, RemoteStartInvokeAndListen(actorClass, port, name.name)) match {
+    val c = cfg.newMessageCreator()
+    remoteController !? (60000, c.newRemoteStartInvokeAndListen(actorClass, port, name.name)) match {
       case Some(RemoteStartResult(None))    => // success, do nothing
       case Some(RemoteStartResult(Some(e))) => throw new RuntimeException(e)
       case Some(_) => throw new RuntimeException("Failed: invalid response")
@@ -778,6 +780,9 @@ object RemoteActor {
 
 case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
   extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)
+
+case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
+  extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
 case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
   extends Exception("Name " + sym + " is already registered for channel " + a)

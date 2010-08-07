@@ -20,7 +20,7 @@ import java.io.{ ObjectInputStream, ObjectOutputStream,
 /**
  * This class is necessary so that <code>sender.receiver</code> can return a
  * type of <code>actor</code> which properly responds to messages. This
- * implementation just delegates
+ * implementation just delegates back to the proxy.
  */
 private[remote] class ProxyActor(val p: Proxy) extends Actor {
   override def start() = { throw new RuntimeException("Should never call start() on a ProxyActor") }
@@ -80,19 +80,19 @@ private[remote] abstract class Proxy extends AbstractActor
 
   override def receiver = new ProxyActor(this)
 
-  protected def conn: MessageConnection
+  protected def conn(a: Option[AbstractActor]): MessageConnection
   protected def terminateConn(usingConn: MessageConnection): Unit 
   protected def numRetries: Int   
 
   override def start() = { throw new RuntimeException("Should never call start() on a Proxy") }
   override def act()     { throw new RuntimeException("Should never call act() on a Proxy")   }
 
-  private def tryRemoteAction(f: MessageConnection => Unit) {
+  private def tryRemoteAction(a: Option[AbstractActor])(f: MessageConnection => Unit) {
     var triesLeft = numRetries + 1
     assert(triesLeft > 0)
     while (triesLeft > 0) {
       triesLeft -= 1
-      val usingConn = conn
+      val usingConn = conn(a)
       try { f(usingConn) } catch {
         case e @ ((_: IOException) | (_: AlreadyTerminatedException)) =>
           Debug.error(this + ": Caught exception: " + e.getMessage)
@@ -108,8 +108,8 @@ private[remote] abstract class Proxy extends AbstractActor
     m match {
       case cmd @ RemoteApply0(actor, rfun) =>
         Debug.info("cmd@Apply0: " + cmd)
-        tryRemoteAction { usingConn =>
-          NetKernel.remoteApply(usingConn, name.name, RemoteActor.getOrCreateName(actor).name, rfun)
+        tryRemoteAction(Some(actor)) { usingConn =>
+          NetKernel.remoteApply(usingConn, name.name, actor, rfun)
         }
       case cmd @ LocalApply0(rfun @ ExitFun(_), target) =>
         Debug.info("cmd@LocalApply0: " + cmd)
@@ -159,7 +159,7 @@ private[remote] abstract class Proxy extends AbstractActor
             // send back response - the sender (from) field is null here,
             // because you cannot reply to a request-response cycle more
             // than once.
-            tryRemoteAction { usingConn => 
+            tryRemoteAction(None) { usingConn => 
               NetKernel.syncReply(usingConn, name.name, msg, sid.name)
             }
           case None =>
@@ -177,16 +177,15 @@ private[remote] abstract class Proxy extends AbstractActor
         sender match {
           case (_: Actor) | null =>  /** Comes from !, or send(m, null) */
             Debug.info(this + ": async send: sender: " + sender)
-            val fromName = if (sender eq null) None else Some(RemoteActor.getOrCreateName(sender))
-            tryRemoteAction { usingConn =>
-              NetKernel.asyncSend(usingConn, name.name, fromName.map(_.name), msg)
+            tryRemoteAction(Option(sender.asInstanceOf[AbstractActor])) { usingConn =>
+              NetKernel.asyncSend(usingConn, name.name, Option(sender.asInstanceOf[Actor]), msg)
             }
           case _ =>                  /** Comes from !! and !? */
             Debug.info(this + ": sync send: sender: " + sender)
             val session = RemoteActor.newChannel(sender)
             Debug.info(this + ": mapped " + session + " -> " + sender)
-            tryRemoteAction { usingConn =>
-              NetKernel.syncSend(usingConn, name.name, RemoteActor.getOrCreateName(sender.receiver).name, msg, session.name)
+            tryRemoteAction(Some(sender.receiver)) { usingConn =>
+              NetKernel.syncSend(usingConn, name.name, sender.receiver, msg, session.name)
             }
         }
       case e =>
@@ -233,24 +232,26 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
   @transient @volatile
   private var _conn: MessageConnection = _
 
-  override def conn = {
+  override def conn(a: Option[AbstractActor]) = {
     val testConn = _conn
-    if (testConn ne null) testConn
-    else {
+    if (testConn ne null)
+      testConn
+    else 
       synchronized {
         if (_conn ne null) _conn
         else {
           // try to (re-)initialize connection from the NetKernel
-          _conn = NetKernel.getConnectionFor(remoteNode, getConfig)
+          val tmpConn = NetKernel.getConnectionFor(remoteNode, getConfig)
+          NetKernel.locateRequest(tmpConn, name.name, a.filter(_.isInstanceOf[Reactor]).map(_.asInstanceOf[Reactor]))
+          _conn = tmpConn 
           _conn
         }
       }
-    }
   }
 
   private lazy val getConfig = 
     if (config eq null) 
-      new Configuration {
+      new Configuration with HasDefaultMessageCreator {
         override val selectMode = _selectMode
         override val aliveMode  = _selectMode /** Shouldn't be used though */
         override val numRetries = _numRetries
@@ -286,7 +287,7 @@ private[remote] class ConnectionProxy(override val remoteNode: Node,
 
   @volatile private var _fail = false
 
-  override def conn = {
+  override def conn(a: Option[AbstractActor]) = {
     if (_fail)
       // TODO: change exception type
       throw new RuntimeException("Connection failed")

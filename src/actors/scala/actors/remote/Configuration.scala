@@ -11,6 +11,20 @@
 package scala.actors
 package remote
 
+object ConnectPolicy extends Enumeration {
+  val NoWait,          /** Don't wait at all for a connection to be established */
+      WaitEstablished, /** Wait until the connection  */
+      WaitHandshake,   /** Wait until the serializers have successfully handshaked */
+      WaitVerified     /** Wait until the remote actor has been located on the other node */
+      = Value
+}
+
+object SendPolicy extends Enumeration {
+  val NoWait,      /** Don't wait at all for a message to be written */
+      WaitWritten, /** Wait until the bytes have been written to the network */
+      = Value
+}
+
 /**
  * This object contains the implicit <code>Configuration</code> 
  * object which is the one used by default.
@@ -55,6 +69,12 @@ trait Configuration {
    */
   val selectMode: ServiceMode.Value 
 
+  val connectPolicy: ConnectPolicy.Value
+
+  val sendPolicy: SendPolicy.Value
+
+  val waitTimeout = 30000 /** 30 seconds */
+
   /**
    * Returns a new <code>Serializer</code> to be used when spawning a new
    * connection. Note that this <code>Serializer<code> must be locatable by
@@ -66,6 +86,8 @@ trait Configuration {
    * be used in a concurrent manner).
    */
   def newSerializer(): Serializer
+
+  def newMessageCreator(): MessageCreator
 
   /**
    * Contains the number of retries that should be automatically attempted (ie
@@ -106,6 +128,7 @@ trait Configuration {
 class DefaultConfiguration 
   extends Configuration
   with    HasJavaSerializer
+  with    HasDefaultMessageCreator
   with    HasBlockingMode 
 
 /**
@@ -117,6 +140,7 @@ class DefaultConfiguration
 class DefaultNonBlockingConfiguration
   extends Configuration
   with    HasJavaSerializer
+  with    HasDefaultMessageCreator
   with    HasNonBlockingMode 
 
 /**
@@ -140,4 +164,8 @@ trait HasBlockingMode { _: Configuration =>
 trait HasNonBlockingMode { _: Configuration =>
   override val aliveMode  = ServiceMode.NonBlocking
   override val selectMode = ServiceMode.NonBlocking
+}
+
+trait HasDefaultMessageCreator { _: Configuration =>
+  override def newMessageCreator() = new DefaultMessageCreator
 }

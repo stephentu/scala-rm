@@ -130,7 +130,7 @@ case class Error(reason: String) extends TriggerableEvent
  * @see NetKernelMessage
  * @see MessageCreator
  */
-abstract class Serializer extends MessageCreator {
+abstract class Serializer {
 
   // Handshake management 
 
@@ -172,6 +172,10 @@ abstract class Serializer extends MessageCreator {
   def handleNextEvent: PartialFunction[ReceivableEvent, Option[TriggerableEvent]]
 
   // Message serialization
+
+  def writeLocateRequest(outputStream: OutputStream, receiverName: String): Unit
+
+  def writeLocateResponse(outputStream: OutputStream, receiverName: String, found: Boolean): Unit
 
   /**
    * Write the necessary sequence of bytes to <code>outputStream</code> to

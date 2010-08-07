@@ -25,32 +25,13 @@ trait MessageCreator {
 
   def newRemoteStartResult(errorMessage: Option[String]): AnyRef
 
-  protected def doIntercept: PartialFunction[AnyRef, AnyRef] = {
-    case RemoteStartInvoke(actorClass) => 
-      newRemoteStartInvoke(actorClass)
-    case RemoteStartInvokeAndListen(actorClass, port, name) =>
-      newRemoteStartInvokeAndListen(actorClass, port, name)
-    case RemoteStartResult(errorMessage) =>
-      newRemoteStartResult(errorMessage)
-  }
-
-  /**
-   * Intercept is called for every non-envelope message. Its current use case
-   * is so the remote start actor does not have to have a handle to the
-   * Serializer when returning responses.
-   */
-  def intercept(m: AnyRef) =
-    if (doIntercept.isDefinedAt(m)) 
-      doIntercept(m)
-    else
-      m
 }
 
 /**
  * Provides implementations of each of the remote start actor messages, as standard
  * Scala case classes.
  */
-trait DefaultMessageCreator { _: MessageCreator =>
+class DefaultMessageCreator extends MessageCreator { 
 
   override def newRemoteStartInvoke(actorClass: String) = 
     DefaultRemoteStartInvokeImpl(actorClass)

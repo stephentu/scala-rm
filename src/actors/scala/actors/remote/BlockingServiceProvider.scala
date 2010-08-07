@@ -39,6 +39,8 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
     override val remoteNode = Node(so.getInetAddress.getHostName,  so.getPort) 
     override val localNode  = Node(so.getLocalAddress.getHostName, so.getLocalPort)
 
+    override val connectFuture = NoOpFuture /** Connection already established */
+
     @volatile
     private var terminated = false
 
@@ -53,7 +55,7 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
 
     override def newAlreadyTerminatedException() = new ConnectionAlreadyClosedException
 
-    override def send(seq: ByteSequence) {
+    override def send(seq: ByteSequence, ftch: Option[Future]) {
       terminateLock.synchronized {
         ensureAlive()
         try {
@@ -77,8 +79,10 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
             dataout.write(seq.bytes, seq.offset, seq.length)
           }
           dataout.flush() // TODO: do we need to flush every message?
+          ftch.foreach(_.finishSuccessfully())
         } catch {
           case e: IOException => 
+            ftch.foreach(_.finishWithError(e))
             Debug.error(this + ": caught " + e.getMessage)
             Debug.doError { e.printStackTrace }
             terminateBottom()
@@ -86,18 +90,17 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
       }
     }
 
+    private final val EmptyArray = new Array[Byte](0)
+
     override def run() {
       try {
         while (!terminated) {
           val length = datain.readInt()
           if (length == 0) {
-            receiveBytes(new Array[Byte](0))
+            receiveBytes(EmptyArray)
           } else if (length < 0) {
             throw new IllegalStateException("received negative length message size header")
           } else {
-            // TODO: need to split up into some buf size chunks, so
-            // somebody can't send 0x0fffffff as a message size and eat up
-            // lots of memory
             val bytes = new Array[Byte](length)
             datain.readFully(bytes, 0, length)
             receiveBytes(bytes)
@@ -176,24 +179,26 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
 
   override def newAlreadyTerminatedException() = new ProviderAlreadyClosedException
 
-  override def connect(node: Node, receiveCallback: BytesReceiveCallback) = terminateLock.synchronized {
-    ensureAlive()
-    val socket = new Socket
-    socket.setTcpNoDelay(true)
-    socket.connect(new InetSocketAddress(node.address, node.port))
-    val worker = new BlockingServiceWorker(socket, false, receiveCallback)
-    executor.execute(worker)
-    worker
-  }
+  override def connect(node: Node, receiveCallback: BytesReceiveCallback) = 
+    withoutTermination {
+      ensureAlive()
+      val socket = new Socket
+      socket.setTcpNoDelay(true)
+      socket.connect(new InetSocketAddress(node.address, node.port))
+      val worker = new BlockingServiceWorker(socket, false, receiveCallback)
+      executor.execute(worker)
+      worker
+    }
 
   override def listen(port: Int, 
                       connectionCallback: ConnectionCallback[ByteConnection], 
-                      receiveCallback: BytesReceiveCallback) = {
-    ensureAlive()
-    val listener = new BlockingServiceListener(port, connectionCallback, receiveCallback)
-    executor.execute(listener)
-    listener
-  }
+                      receiveCallback: BytesReceiveCallback) = 
+    withoutTermination {
+      ensureAlive()
+      val listener = new BlockingServiceListener(port, connectionCallback, receiveCallback)
+      executor.execute(listener)
+      listener
+    }
 
   override def doTerminateImpl(isBottom: Boolean) {
     executor.shutdownNow() 

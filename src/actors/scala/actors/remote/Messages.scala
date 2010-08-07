@@ -29,6 +29,36 @@ package remote
  */
 sealed trait NetKernelMessage
 
+object LocateRequest {
+  def apply(receiverName: String): LocateRequest =
+    DefaultLocateRequestImpl(receiverName)
+  def unapply(r: LocateRequest): Option[(String)] =
+    Some(r.receiverName)
+}
+
+trait LocateRequest extends NetKernelMessage {
+  def receiverName: String
+}
+
+case class DefaultLocateRequestImpl(override val receiverName: String)
+  extends LocateRequest
+  
+object LocateResponse {
+  def apply(receiverName: String, found: Boolean): LocateResponse =
+    DefaultLocateResponseImpl(receiverName, found)
+  def unapply(r: LocateResponse): Option[(String, Boolean)] =
+    Some(r.receiverName, r.found)
+}
+
+trait LocateResponse extends NetKernelMessage {
+  def receiverName: String
+  def found: Boolean
+}
+
+case class DefaultLocateResponseImpl(override val receiverName: String,
+                                     override val found: Boolean)
+  extends LocateResponse
+
 /**
  * Provides factory methods for default (case class) implementations of the
  * <code>AsyncSend</code> interface.

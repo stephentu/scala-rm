@@ -35,10 +35,12 @@ extends ObjectInputStream(in) {
 }
 
 private[remote] object JavaSerializer {
-  final val ASYNC_SEND   = 0x0
-  final val SYNC_SEND    = 0x1
-  final val SYNC_REPLY   = 0x2
-  final val REMOTE_APPLY = 0x3
+  final val LOCATE_REQ   = 0x0
+  final val LOCATE_RESP  = 0x1
+  final val ASYNC_SEND   = 0x2
+  final val SYNC_SEND    = 0x3
+  final val SYNC_REPLY   = 0x4
+  final val REMOTE_APPLY = 0x5
 }
 
 /**
@@ -63,6 +65,19 @@ class JavaSerializer(cl: ClassLoader)
   private def newObjectInputStream(is: InputStream) = 
     if (cl eq null) new ObjectInputStream(is)
     else new CustomObjectInputStream(is, cl)
+
+  override def writeLocateRequest(outputStream: OutputStream, receiverName: String) {
+    val os = new DataOutputStream(outputStream)
+    writeTag(os, LOCATE_REQ)
+    writeString(os, receiverName)
+  }
+
+  override def writeLocateResponse(outputStream: OutputStream, receiverName: String, found: Boolean) {
+    val os = new DataOutputStream(outputStream)
+    writeTag(os, LOCATE_RESP)
+    writeString(os, receiverName)
+    writeBoolean(os, found)
+  }
 
   // For performance reasons, all the write[...] methods do not use the
   // control messages (ie DefaultAsyncSendImpl). Instead, we just write the
@@ -109,6 +124,13 @@ class JavaSerializer(cl: ClassLoader)
     val is = new DataInputStream(bais)
     val tag = readTag(is) 
     tag match {
+      case LOCATE_REQ =>
+        val receiverName = readString(is)
+        LocateRequest(receiverName)
+      case LOCATE_RESP =>
+        val receiverName = readString(is)
+        val found = readBoolean(is)
+        LocateResponse(receiverName, found)
       case ASYNC_SEND =>
         val senderName = readString(is)
         val receiverName = readString(is)
@@ -134,6 +156,13 @@ class JavaSerializer(cl: ClassLoader)
         RemoteApply(senderName, receiverName, function)
     }
   }
+
+  private def writeBoolean(os: DataOutputStream, b: Boolean) {
+    os.writeByte(if (b) 1 else 0)
+  }
+
+  private def readBoolean(is: DataInputStream): Boolean = 
+    if (is.readByte() == 0) false else true
 
   private def writeTag(os: DataOutputStream, t: Int) {
     os.writeByte(t)

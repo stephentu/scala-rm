@@ -13,17 +13,17 @@ package remote
 import scala.collection.mutable.{ HashMap, Queue }
 
 private[remote] object ConnectionStatus {
-  val WaitingForSerializer = 0x1
-  val Handshaking          = 0x2
-  val Established          = 0x3
-  val Terminated           = 0x4
+  val Handshaking = 0x1
+  val Established = 0x2
+  val Terminated  = 0x3
 }
 
-private[remote] class DefaultMessageConnection(byteConn: ByteConnection, 
-                               var serializer: Option[Serializer],
+private[remote] class DefaultMessageConnection(
+                               byteConn: ByteConnection, 
+                               serializer: Serializer,
                                override val receiveCallback: MessageReceiveCallback,
                                isServer: Boolean,
-                               config: Configuration)
+                               override val config: Configuration)
   extends MessageConnection {
 
   import ConnectionStatus._
@@ -47,16 +47,19 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
   }
 
   override def mode             = byteConn.mode
-  override def activeSerializer = serializer.get
+  override def activeSerializer = serializer
   override def toString         = "<DefaultMessageConnection using: " + byteConn + ">"
     
   @volatile private var _status = 0
   def status = _status
   private def status_=(newStatus: Int) { _status = newStatus }
 
-  def isWaitingForSerializer = status == WaitingForSerializer
   def isHandshaking          = status == Handshaking
   def isEstablished          = status == Established
+
+  override val connectFuture = byteConn.connectFuture
+
+  override val handshakeFuture = new BlockingFuture
 
   /**
    * Messages which we have received, for processing
@@ -67,41 +70,35 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
    * the time send() was called (due to things like not finishing handshake
    * yet, etc)
    */
-  private val sendQueue = new Queue[Serializer => ByteSequence]
+  private val sendQueue = new Queue[(Serializer => ByteSequence, Option[Future])]
   private val primitiveSerializer = new PrimitiveSerializer
 
   // bootstrap in CTOR
-  if (isServer)
-    bootstrapServer()
-  else
-    bootstrapClient()
+  bootstrap()
 
   assert(status != 0)
 
-  private def bootstrapClient() {
-    // clients start out with a serializer defined
-    assert(serializer.isDefined)
+  private def bootstrap() {
+    require(serializer ne null)
 
-    // send class name of serializer to remote side
-    //Debug.info(this + ": sending serializer name: " + serializer.get.bootstrapClassName)
-    byteConn.send(new ByteSequence(serializer.get.bootstrapClassName.getBytes))
-
-    if (serializer.get.isHandshaking) {
+    if (serializer.isHandshaking) {
       // if serializer requires handshake, place in handshake mode...
       status = Handshaking
 
       // ... and initialize it
       handleNextEvent(StartEvent(remoteNode))
-    } else 
+    } else {
       // otherwise, in established mode (ready to send messages)
       status = Established 
+
+      if (config.connectPolicy == ConnectPolicy.WaitHandshake)
+        connectFuture.finishSuccessfully()
+    }
   }
 
-  private def bootstrapServer() {
-    // servers start out with no serializer defined
-    assert(!serializer.isDefined)
-    status = WaitingForSerializer
-  }
+  private val callbackFtch = new ErrorCallbackFuture((e: Throwable) => {
+    handshakeFuture.finishWithError(e)
+  })
 
   private def handleNextEvent(evt: ReceivableEvent) {
     assert(isHandshaking)
@@ -113,32 +110,40 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
         case _ => Seq()
       }) foreach { msg =>
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
+        // TODO: preallocate space for the primitiveSerializer's byte array
         val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
         Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
-        byteConn.send(new ByteSequence(data))
+        byteConn.send(new ByteSequence(data), callbackFtch)
       }
     }
-    serializer.get.handleNextEvent(evt).foreach { evt =>
+    serializer.handleNextEvent(evt).foreach { evt =>
       sendIfNecessary(evt)
       evt match {
         case SendEvent(_*) =>
         case SendWithSuccessEvent(_*) | Success =>
           // done
           status = Established
+
+          Debug.info(this + ": handshake completed")
+          handshakeFuture.finishSuccessfully()
+
           if (!sendQueue.isEmpty) {
-            sendQueue.foreach { f =>
-              val msg = f(serializer.get)
+            sendQueue.foreach { case (msg, ftch) =>
               Debug.info(this + ": sending " + msg + " from sendQueue")
-              byteConn.send(msg)
+              byteConn.send(msg, ftch)
             }
             sendQueue.clear()
             terminateLock.notifyAll()
           }
-          Debug.info(this + ": handshake completed")
+
         case SendWithErrorEvent(reason, _*) =>
-          throw new IllegalHandshakeStateException(reason)
+          val ex = new IllegalHandshakeStateException(reason)
+          handshakeFuture.finishWithError(ex)
+          throw ex
         case Error(reason) =>
-          throw new IllegalHandshakeStateException(reason)
+          val ex = new IllegalHandshakeStateException(reason)
+          handshakeFuture.finishWithError(ex)
+          throw ex
       }
     }
   }
@@ -149,45 +154,7 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
     //Debug.info(this + ": received " + bytes.length + " bytes")
     messageQueue += bytes
     while (hasNextAction) {
-      if (isWaitingForSerializer) {
-        try {
-          val clzName = new String(nextMessage())
-
-          //Debug.info(this + ": going to create serializer of clz " + clzName)
-          val clz = Class.forName(clzName, true, config.classLoader)
-          if (classOf[Serializer].isAssignableFrom(clz)) {
-            serializer = Some(clz.asInstanceOf[Class[Serializer]].newInstance)
-          } else 
-            throw new ClassCastException(clzName)
-
-
-          // same logic as in bootstrapClient()
-          if (serializer.get.isHandshaking) {
-            terminateLock.synchronized {
-              if (terminateInitiated) return
-              status = Handshaking
-              handleNextEvent(StartEvent(remoteNode))
-            }
-          } else 
-            terminateLock.synchronized {
-              if (terminateInitiated) return
-              status = Established 
-            }
-        } catch {
-          case e: InstantiationException =>
-            Debug.error(this + ": could not instantiate class: " + e.getMessage)
-            Debug.doError { e.printStackTrace }
-            terminateBottom()
-          case e: ClassNotFoundException =>
-            Debug.error(this + ": could not find class: " + e.getMessage)
-            Debug.doError { e.printStackTrace }
-            terminateBottom()
-          case e: ClassCastException =>
-            Debug.error(this + ": could not cast class to Serializer: " + e.getMessage)
-            Debug.doError { e.printStackTrace }
-            terminateBottom()
-        }
-      } else if (isHandshaking) {
+      if (isHandshaking) {
         val msg = nextPrimitiveMessage()
         //Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
         terminateLock.synchronized { 
@@ -197,7 +164,7 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
       } else if (isEstablished) {
         val nextMsg = nextSerializerMessage()
         //Debug.info(this + ": calling receiveMessage with " + nextMsg)
-        receiveMessage(serializer.get, nextMsg)
+        receiveMessage(serializer, nextMsg)
       } else {
         Debug.error(this + ": hasNextAction returned true but no action can be taken")
       }
@@ -206,16 +173,16 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
 
   private val EmptyArray = new Array[Byte](0)
 
-  def send(msg: Serializer => ByteSequence) {
+  override def send(ftch: Option[Future])(msg: Serializer => ByteSequence) {
     ensureAlive()
-    if (isWaitingForSerializer || isHandshaking) {
+    if (isHandshaking) {
       val repeat = withoutTermination {
         status match {
           case Terminated =>
             throw new IllegalStateException("Cannot send on terminated channel")
-          case WaitingForSerializer | Handshaking =>
+          case Handshaking =>
             //Debug.info(this + ": send() - queuing up msg")
-            sendQueue += msg // queue it up
+            sendQueue += (msg, ftch) // queue it up
             false // no need to repeat
           case Established =>
             // we connected somewhere in between checking and grabbing
@@ -223,17 +190,15 @@ private[remote] class DefaultMessageConnection(byteConn: ByteConnection,
             true
         }
       }
-      if (repeat) send(msg)
-    } else {
+      if (repeat) 
+        send(msg, ftch)
+    } else 
       // call send immediately
-      val m = msg(serializer.get)
-      Debug.info(this + ": send() - serializing message: " + m)
-      byteConn.send(m)
-    }
+      byteConn.send(msg(activeSerializer), ftch)
   }
 
   @inline private def hasNextAction = status match {
-    case WaitingForSerializer | Established | Handshaking => hasSimpleMessage
+    case Established | Handshaking => hasSimpleMessage
     case _ => false
   }
 
@@ -266,7 +231,7 @@ private[remote] class StandardService extends Service {
                        config: Configuration,
                        recvCallback: MessageReceiveCallback): MessageConnection = {
     val byteConn = serviceProviderFor0(config.selectMode).connect(node, recvCall0)
-    val msgConn = new DefaultMessageConnection(byteConn, Some(config.newSerializer()), recvCallback, false, config)
+    val msgConn = new DefaultMessageConnection(byteConn, config.newSerializer(), recvCallback, false, config)
     byteConn.attach(msgConn)
     msgConn
   }
@@ -276,7 +241,7 @@ private[remote] class StandardService extends Service {
                       connCallback: ConnectionCallback[MessageConnection], 
                       recvCallback: MessageReceiveCallback): Listener = {
     val byteConnCallback = (listener: Listener, byteConn: ByteConnection) => {
-      val msgConn = new DefaultMessageConnection(byteConn, None, recvCallback, true, config)
+      val msgConn = new DefaultMessageConnection(byteConn, config.newSerializer(), recvCallback, true, config)
       byteConn.attach(msgConn)
 			connCallback(listener, msgConn)	
     }

@@ -31,6 +31,8 @@ private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit c
 
   import ControllerActor._
 
+  private val messageCreator = cfg.newMessageCreator()
+
   private def newActor(actorClass: String): Actor = {
     val clz = Class.forName(actorClass, true, cfg.classLoader)
     if (classOf[Actor].isAssignableFrom(clz)) {
@@ -72,7 +74,7 @@ private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit c
             } catch {
               case e: Exception => Some(e.getMessage)
             }
-          sender ! RemoteStartResult(errorMessage)
+          sender ! messageCreator.newRemoteStartResult(errorMessage)
         case r @ RemoteStartInvoke(actorClass) =>
           /** Just invoke actor class, assume it sets itself up  */
           val errorMessage = 
@@ -84,7 +86,7 @@ private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit c
               case e: Exception => 
                 Some(e.getMessage)
             }
-          sender ! RemoteStartResult(errorMessage)
+          sender ! messageCreator.newRemoteStartResult(errorMessage)
         case Terminate =>
           Debug.info(this + ": Got terminate message")
           unregister(self) /** Explicit unregistration because we use alive0 */

@@ -35,39 +35,12 @@ private[remote] trait HasServiceMode {
   def mode: ServiceMode.Value
 }
 
-private[remote] trait Listener extends HasServiceMode with CanTerminate {
+private[remote] trait HasAttachment {
 
-  def port: Int
-
-  protected val connectionCallback: ConnectionCallback[ByteConnection]
-
-  protected def receiveConnection(conn: ByteConnection) {
-    try {
-      connectionCallback(this, conn)
-    } catch {
-      case e: Exception =>
-        Debug.error("Caught exception calling connectionCallback: " + e.getMessage)
-        Debug.doError { e.printStackTrace }
-    }
-  }
-}
-
-private[remote] trait Connection extends HasServiceMode with CanTerminate {
-
-  /**
-   * Returns the (canonical) remote node
-   */
-  def remoteNode: Node
-
-  /**
-   * Returns the (canonical) local node
-   */
-  def localNode: Node
-
-  def isEphemeral: Boolean
-
-  @volatile private var _attachment: AnyRef = _ 
-  private val attachLock = new Object
+  // We don't use SyncVar for _attachment because this way we can avoid
+  // grabbing a lock once its set (and use the double check locking idiom)
+  @volatile private[this] var _attachment: AnyRef = _ 
+  private[this] val attachLock = new Object
 
   /**
    * Can only attach once. Null attachments forbidden
@@ -106,9 +79,56 @@ private[remote] trait Connection extends HasServiceMode with CanTerminate {
 
 }
 
+private[remote] trait Listener extends HasServiceMode 
+                               with    HasAttachment 
+                               with    CanTerminate {
+
+  def port: Int
+
+  protected val connectionCallback: ConnectionCallback[ByteConnection]
+
+  protected def receiveConnection(conn: ByteConnection) {
+    try {
+      connectionCallback(this, conn)
+    } catch {
+      case e: Exception =>
+        Debug.error("Caught exception calling connectionCallback: " + e.getMessage)
+        Debug.doError { e.printStackTrace }
+    }
+  }
+}
+
+private[remote] trait Connection extends HasServiceMode 
+                                 with    HasAttachment 
+                                 with    CanTerminate {
+
+  /**
+   * Returns the (canonical) remote node
+   */
+  def remoteNode: Node
+
+  /**
+   * Returns the (canonical) local node
+   */
+  def localNode: Node
+
+  def isEphemeral: Boolean
+
+
+  /**
+   * Returns a Future which can be blocked on until the connection is
+   * established. Established means the TCP connection has been setup
+   */
+  def connectFuture: Future
+
+}
+
 private[remote] trait ByteConnection extends Connection {
 
-  def send(data: ByteSequence): Unit
+  /**
+   * 
+   */
+  def send(data: ByteSequence, ftch: Option[Future]): Unit
 
   protected val receiveCallback: BytesReceiveCallback
 
@@ -126,9 +146,13 @@ private[remote] trait ByteConnection extends Connection {
 
 private[remote] trait MessageConnection extends Connection {
 
-  def send(f: Serializer => ByteSequence): Unit 
+  def send(ftch: Option[Future])(msg: Serializer => ByteSequence): Unit
 
-  def send(msg: ByteSequence) { send { _: Serializer => msg } }
+  /**
+   * Returns a future which can be blocked on until the connection's handshake
+   * is finished.
+   */
+  def handshakeFuture: Future
 
   def activeSerializer: Serializer
 
@@ -143,6 +167,9 @@ private[remote] trait MessageConnection extends Connection {
         Debug.doError { e.printStackTrace }
     }
   }
+
+  /** Configuration object used to create this connection */
+  def config: Configuration
 
 }
 
