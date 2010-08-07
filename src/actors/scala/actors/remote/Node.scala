@@ -32,7 +32,7 @@ object Node {
    *                      assumes localhost.
    * @param   port        The port number of the remote machine
    *
-   * @returns The newly created node
+   * @return  The newly created node
    */
   @throws(classOf[IllegalArgumentException])
   def apply(address: String, port: Int): Node = 
@@ -44,7 +44,7 @@ object Node {
    *
    * @param   port        The port number
    *
-   * @returns The newly created node
+   * @return  The newly created node
    */
   @throws(classOf[IllegalArgumentException])
   def apply(port: Int): Node = apply(localhost, port)

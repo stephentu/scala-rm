@@ -663,7 +663,7 @@ object RemoteActor {
    *
    * @param   thisActor   The actor to return a remote proxy handle to
    *
-   * @returns A serializable handle to <code>thisActor</code>
+   * @return  A serializable handle to <code>thisActor</code>
    *
    * @see     Configuration
    */
@@ -717,7 +717,7 @@ object RemoteActor {
    *                messages sent to the remote actor should be serialized
    *                (<code>newSerializer</code>).
    *
-   * @returns A serializable remote handle to the remote proxy.
+   * @return  A serializable remote handle to the remote proxy.
    *
    * @see     remoteActorAt
    * @see     Configuration
@@ -750,7 +750,7 @@ object RemoteActor {
    *                messages sent to the remote actor should be serialized
    *                (<code>newSerializer</code>).
    *
-   * @returns A serializable remote handle to the remote proxy.
+   * @return  A serializable remote handle to the remote proxy.
    *
    * @see     select
    * @see     Configuration

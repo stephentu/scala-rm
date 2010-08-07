@@ -179,7 +179,7 @@ abstract class Serializer extends MessageCreator {
    *
    * @param outputStream  The output stream to write the command to. This is
    *                      backed by a byte array, so there is no need to wrap
-   *                      a BufferedOutputStream around
+   *                      a <code>BufferedOutputStream</code> around
    *                      <code>outputStream</code>.
    * @param senderName    The sender of the message. Can be null
    * @param receiverName  The receiver of the message. Can NOT be null
@@ -198,7 +198,7 @@ abstract class Serializer extends MessageCreator {
    *
    * @param outputStream  The output stream to write the command to. This is
    *                      backed by a byte array, so there is no need to wrap
-   *                      a BufferedOutputStream around
+   *                      a <code>BufferedOutputStream</code> around
    *                      <code>outputStream</code>.
    * @param senderName    The sender of the message. Can NOT be null
    * @param receiverName  The receiver of the message. Can NOT be null
@@ -218,7 +218,7 @@ abstract class Serializer extends MessageCreator {
    *
    * @param outputStream  The output stream to write the command to. This is
    *                      backed by a byte array, so there is no need to wrap
-   *                      a BufferedOutputStream around
+   *                      a <code>BufferedOutputStream</code> around
    *                      <code>outputStream</code>.
    * @param receiverName  The receiver of the message. Can NOT be null
    * @param message       The message being sent. Is typed <code>AnyRef</code>
@@ -237,7 +237,7 @@ abstract class Serializer extends MessageCreator {
    *
    * @param outputStream  The output stream to write the command to. This is
    *                      backed by a byte array, so there is no need to wrap
-   *                      a BufferedOutputStream around
+   *                      a <code>BufferedOutputStream</code> around
    *                      <code>outputStream</code>.
    * @param senderName    The sender of the message. Can NOT be null
    * @param receiverName  The receiver of the message. Can NOT be null
@@ -259,7 +259,7 @@ abstract class Serializer extends MessageCreator {
    *                  how it was written. Note that the entire byte array is
    *                  the message.
    *
-   * @returns The control message to forward to the network kernel
+   * @return  The control message to forward to the network kernel
    *
    * @see     NetKernelMessage
    * @see     writeAsyncSend
@@ -276,7 +276,7 @@ abstract class Serializer extends MessageCreator {
    * the client side logic from the server side logic can supply the class
    * name of the server side serializer.
    *
-   * @returns Class name of the <code>Serializer</code> to bootstrap remotely
+   * @return  Class name of the <code>Serializer</code> to bootstrap remotely
    */
   def bootstrapClassName: String = 
     getClass.getName
