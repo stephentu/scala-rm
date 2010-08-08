@@ -1537,7 +1537,7 @@ BOOTRAPING TEST AND TEST SUITE
     </partest>
   </target>
 
-  <target name="test.remoteactors.run" depends="pack.done">
+  <target name="test.remoteactors" depends="pack.done">
     <partest showlog="yes" erroronfailed="yes" javacmd="${java.home}/bin/java"
              timeout="1200000"
              scalacopts="${scalac.args.optimise}">
@@ -1546,7 +1546,6 @@ BOOTRAPING TEST AND TEST SUITE
         <fileset dir="${partest.dir}/files/lib" includes="*.jar" />
       </compilationpath>
       <runtests  dir="${partest.dir}/files/remoteactors">
-        <include name="run/**/*.scala"/>
         <include name="jvm/**/*.scala"/>
       </runtests>
     </partest>
@@ -1595,7 +1594,7 @@ BOOTRAPING TEST AND TEST SUITE
     </partest>
   </target>
 
-  <target name="test.done" depends="test.suite, test.continuations.suite, test.stability, test.remoteactors.run"/>
+  <target name="test.done" depends="test.suite, test.continuations.suite, test.stability, test.remoteactors"/>
 
 <!-- ===========================================================================
 DISTRIBUTION
