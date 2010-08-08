@@ -81,6 +81,7 @@ private[remote] abstract class Proxy extends AbstractActor
   override def receiver = new ProxyActor(this)
 
   protected def conn(a: Option[AbstractActor]): MessageConnection
+  protected def config: Configuration
   protected def terminateConn(usingConn: MessageConnection): Unit 
   protected def numRetries: Int   
 
@@ -118,7 +119,7 @@ private[remote] abstract class Proxy extends AbstractActor
         tryRemoteAction(Some(actor)) { usingConn =>
           // TODO: not sure if the cast is safe- will we wever receive a
           // RemoteApply0 request from a non reactor?
-          NetKernel.remoteApply(usingConn, name.name, actor.asInstanceOf[Reactor[Any]], rfun)
+          NetKernel.remoteApply(usingConn, name.name, actor.asInstanceOf[Reactor[Any]], rfun, config)
         }
       case cmd @ LocalApply0(rfun @ ExitFun(_), target) =>
         Debug.info("cmd@LocalApply0: " + cmd)
@@ -150,6 +151,12 @@ private[remote] abstract class Proxy extends AbstractActor
     }
   }
 
+  override def !![A](msg: Any, handler: PartialFunction[Any, A]) = {
+    // check connection, before starting a future actor
+    conn(Some(Actor.self(scheduler)))
+    super.!!(msg, handler)
+  }
+
   override def send(msg: Any, sender: OutputChannel[Any]) {
     msg match {
       // local proxy receives response to
@@ -169,7 +176,7 @@ private[remote] abstract class Proxy extends AbstractActor
             // because you cannot reply to a request-response cycle more
             // than once.
             tryRemoteAction(None) { usingConn => 
-              NetKernel.syncReply(usingConn, name.name, msg, sid.name)
+              NetKernel.syncReply(usingConn, name.name, msg, sid.name, config)
             }
           case None =>
             Debug.info(this+": cannot find session for "+ch)
@@ -187,14 +194,14 @@ private[remote] abstract class Proxy extends AbstractActor
           case (_: Actor) | null =>  /** Comes from !, or send(m, null) */
             Debug.info(this + ": async send: sender: " + sender)
             tryRemoteAction(Option(sender.asInstanceOf[AbstractActor])) { usingConn =>
-              NetKernel.asyncSend(usingConn, name.name, Option(sender.asInstanceOf[Actor]), msg)
+              NetKernel.asyncSend(usingConn, name.name, Option(sender.asInstanceOf[Actor]), msg, config)
             }
           case _ =>                  /** Comes from !! and !? */
             Debug.info(this + ": sync send: sender: " + sender)
             val session = RemoteActor.newChannel(sender)
             Debug.info(this + ": mapped " + session + " -> " + sender)
             tryRemoteAction(Some(sender.receiver)) { usingConn =>
-              NetKernel.syncSend(usingConn, name.name, sender.receiver, msg, session.name)
+              NetKernel.syncSend(usingConn, name.name, sender.receiver, msg, session.name, config)
             }
         }
       case e =>
@@ -226,17 +233,17 @@ private[remote] abstract class Proxy extends AbstractActor
 @serializable
 private[remote] class ConfigProxy(override val remoteNode: Node,
                                   override val name: Symbol,
-                                  @transient config: Configuration) extends Proxy {
+                                  @transient _config: Configuration) extends Proxy {
 
-  assert(config ne null) /** config != null from default ctor (NOT from serialized form though) */
+  assert(_config ne null) /** _config != null from default ctor (NOT from serialized form though) */
 
   // save enough of the configuration to recreate it, if seralized 
 
-  private val _selectMode = config.selectMode
-  private val _numRetries = config.numRetries
+  private val _selectMode = _config.selectMode
+  private val _numRetries = _config.numRetries
   // IMPLEMENTATION limitation: can only reconstruct serializer remotely which
   // have a no-arg ctor
-  private val _serializerClassName = config.cachedSerializer.getClass.getName
+  private val _serializerClassName = _config.cachedSerializer.getClass.getName
 
   @transient @volatile
   private var _conn: MessageConnection = _
@@ -246,7 +253,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
     if (testConn ne null) testConn
     else {
       // try to (re-)initialize connection from the NetKernel
-      val tmpConn = NetKernel.getConnectionFor(remoteNode, getConfig)
+      val tmpConn = NetKernel.getConnectionFor(remoteNode, config)
 
       // sanity checks
       if (config.connectPolicy == ConnectPolicy.WaitEstablished ||
@@ -259,21 +266,22 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
 
       NetKernel.locateRequest(tmpConn, 
                               name.name, 
-                              a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[_]]),
+                              a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
                               new ErrorCallbackFuture((t: Throwable) => {
                                 Debug.error(t.getMessage)
                                 Debug.doError { t.printStackTrace() }
                                 _conn = null
-                              }))
+                              }),
+                              config)
       _conn = tmpConn
       tmpConn
     }
   }
 
-  private lazy val getConfig = 
-    if (config eq null) 
+  override lazy val config = 
+    if (_config eq null) 
       new Configuration with HasDefaultMessageCreator
-                        with HasDefaultPolicies /* TODO: Save policies */ {
+                        with HasDefaultPolicy /* TODO: Save connect policy */ {
         override val selectMode = _selectMode
         override val aliveMode  = _selectMode /** Shouldn't be used though */
         override val numRetries = _numRetries
@@ -288,10 +296,10 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
         }
       }
     else 
-      config
+      _config
 
   override def numRetries = 
-    getConfig.numRetries
+    config.numRetries
 
   override def terminateConn(usingConn: MessageConnection) {
     usingConn.terminateBottom()
@@ -310,11 +318,11 @@ private[remote] class ConnectionProxy(override val remoteNode: Node,
   @volatile private var _fail = false
 
   override def conn(a: Option[AbstractActor]) = {
-    if (_fail)
-      // TODO: change exception type
-      throw new RuntimeException("Connection failed")
+    if (_fail) throw new ConnectionAlreadyClosedException
     else _conn
   }
+
+  override val config = _conn.config
 
   override def numRetries = 0 /** Cannot retry */
 

@@ -19,11 +19,6 @@ object ConnectPolicy extends Enumeration {
                              * other node, with an ACK returned */
 }
 
-object SendPolicy extends Enumeration {
-  val NoWait,             /** Don't wait at all for a message to be written */
-      WaitWritten = Value /** Wait until the bytes have been written to the network */
-}
-
 /**
  * This object contains the implicit <code>Configuration</code> 
  * object which is the one used by default.
@@ -68,11 +63,16 @@ trait Configuration {
    */
   val selectMode: ServiceMode.Value 
 
+  /**
+   * Contains the connect policy to utilize when attemping any network operations.
+   */
   val connectPolicy: ConnectPolicy.Value
 
-  val sendPolicy: SendPolicy.Value
-
-  val waitTimeout = 30000 /** 30 seconds */
+  /**
+   * Contains the time (in milliseconds) to wait for any blocking operations
+   * to complete with respect to the connect policy. Default is 10 seconds
+   */
+  val waitTimeout = 10000 /** 10 seconds */
 
   /**
    * Returns a new <code>Serializer</code> to be used when spawning a new
@@ -129,7 +129,7 @@ class DefaultConfiguration
   with    HasJavaSerializer
   with    HasDefaultMessageCreator
   with    HasBlockingMode 
-  with    HasDefaultPolicies
+  with    HasDefaultPolicy
 
 /**
  * A default configuration for remote actors in <code>NonBlocking</code> mode.
@@ -142,7 +142,7 @@ class DefaultNonBlockingConfiguration
   with    HasJavaSerializer
   with    HasDefaultMessageCreator
   with    HasNonBlockingMode 
-  with    HasDefaultPolicies
+  with    HasDefaultPolicy
 
 /**
  * A convenient mix-in to use Java serialization
@@ -171,7 +171,6 @@ trait HasDefaultMessageCreator { _: Configuration =>
   override def newMessageCreator() = new DefaultMessageCreator
 }
 
-trait HasDefaultPolicies { _: Configuration =>
+trait HasDefaultPolicy { _: Configuration =>
   override val connectPolicy = ConnectPolicy.NoWait
-  override val sendPolicy    = SendPolicy.NoWait
 }

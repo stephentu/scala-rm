@@ -171,74 +171,71 @@ private[remote] object NetKernel {
           }))
   }
 
-  @inline private def makeSendFuture(from: Option[Reactor[Any]], sendPolicy: SendPolicy.Value) = 
-    makeFuture(from, sendPolicy == SendPolicy.WaitWritten)
+  @inline private def makeSendFuture(from: Option[Reactor[Any]]) = 
+    makeFuture(from, false)
 
-  @inline private def makeLocateFuture(from: Option[Reactor[Any]], connectPolicy: ConnectPolicy.Value) =
+  @inline private def makeLocateFuture(from: Option[Reactor[Any]], connectPolicy: ConnectPolicy.Value) = {
+    Debug.info("makeLocateFuture(): from %s, connectPolicy %s".format(from, connectPolicy))
     makeFuture(from, connectPolicy == ConnectPolicy.WaitVerified)
+  }
 
-  def asyncSend(conn: MessageConnection, toName: String, from: Option[Reactor[Any]], msg: AnyRef) {
+  def asyncSend(conn: MessageConnection, toName: String, from: Option[Reactor[Any]], msg: AnyRef, config: Configuration) {
     Debug.info("asyncSend(): to: %s, from: %s, msg: %s".format(toName, from, msg))
     val fromName = from.map(f => RemoteActor.getOrCreateName(f).name)
-    val config = conn.config
-    val ftch = makeSendFuture(from, config.sendPolicy)
+    val ftch = makeSendFuture(from)
     conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
       serializer.writeAsyncSend(baos, fromName.orNull, toName, msg)
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
-    ftch.map(_.await(config.waitTimeout))
+    //ftch.map(_.await(config.waitTimeout))
   }
 
-  def syncSend(conn: MessageConnection, toName: String, from: Reactor[Any], msg: AnyRef, session: String) {
+  def syncSend(conn: MessageConnection, toName: String, from: Reactor[Any], msg: AnyRef, session: String, config: Configuration) {
     Debug.info("syncSend(): to: %s, from: %s, msg: %s, session: %s".format(toName, from, msg, session))
     val fromName = RemoteActor.getOrCreateName(from).name
-    val config = conn.config
-    val ftch = makeSendFuture(Some(from), config.sendPolicy)
+    val ftch = makeSendFuture(Some(from))
     conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
       serializer.writeSyncSend(baos, fromName, toName, msg, session)
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
-    ftch.map(_.await(config.waitTimeout))
+    //ftch.map(_.await(config.waitTimeout))
   }
 
-  def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String) {
+  def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String, config: Configuration) {
     Debug.info("syncSend(): to: %s, msg: %s, session: %s".format(toName, msg, session))
-    val config = conn.config
-    val ftch = makeSendFuture(None, config.sendPolicy)
+    val ftch = makeSendFuture(None) /** TODO: can we get this actor? */
     conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
       serializer.writeSyncReply(baos, toName, msg, session)
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
-    ftch.map(_.await(config.waitTimeout))
+    //ftch.map(_.await(config.waitTimeout))
   }
 
-  def remoteApply(conn: MessageConnection, toName: String, from: Reactor[Any], rfun: RemoteFunction) {
+  def remoteApply(conn: MessageConnection, toName: String, from: Reactor[Any], rfun: RemoteFunction, config: Configuration) {
     Debug.info("remoteApply(): to: %s, from: %s, rfun: %s".format(toName, from, rfun))
     val fromName = RemoteActor.getOrCreateName(from).name
-    val config = conn.config
-    val ftch = makeSendFuture(Some(from), config.sendPolicy)
+    val ftch = makeSendFuture(Some(from))
     conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
       serializer.writeRemoteApply(baos, fromName, toName, rfun) 
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
-    ftch.map(_.await(config.waitTimeout))
+    //ftch.map(_.await(config.waitTimeout))
   }
 
   private val requestFutures = new ConcurrentHashMap[Long, (Future, Option[Future])]
 
   private final val random = new Random
 
-  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: Future) {
+  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: Future, config: Configuration) {
     Debug.info("locateRequest(): receiverName: %s, from: %s".format(receiverName, from))
-    val config = conn.config
     val ftch = makeLocateFuture(from, config.connectPolicy)
     val requestId = random.nextLong()
     requestFutures.put(requestId, (errorFtch, ftch))
@@ -268,6 +265,8 @@ private[remote] object NetKernel {
     override def name = 
       throw new RuntimeException("NoSender")
     override def conn(a: Option[AbstractActor]) = 
+      throw new RuntimeException("NoSender")
+    override def config = 
       throw new RuntimeException("NoSender")
     override def numRetries =
       throw new RuntimeException("NoSender")
