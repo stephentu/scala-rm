@@ -33,7 +33,10 @@ private[remote] trait Future { self =>
     override def finishWithError(t: Throwable) {
       throw new RuntimeException("Cannot finish chain futures")
     }
+    override def isFinished =
+      self.isFinished && that.isFinished
   }
+  def isFinished: Boolean
 }
 
 class FutureTimeoutException extends Exception("Future timed out")
@@ -44,7 +47,7 @@ class FutureTimeoutException extends Exception("Future timed out")
 private[remote] class BlockingFuture extends Future {
 
   private val latch      = new CountDownLatch(1) 
-  private val isFinished = new AtomicBoolean(false)
+  private val _isFinished = new AtomicBoolean(false)
 
   @volatile private var ex: Throwable = _
 
@@ -61,7 +64,7 @@ private[remote] class BlockingFuture extends Future {
   }
 
   override def finishSuccessfully() {
-    if (isFinished.compareAndSet(false, true))
+    if (_isFinished.compareAndSet(false, true))
       latch.countDown()
     else 
       throw new IllegalStateException("Already set")
@@ -69,13 +72,15 @@ private[remote] class BlockingFuture extends Future {
 
   override def finishWithError(t: Throwable) {
     require(t ne null)
-    if (isFinished.compareAndSet(false, true)) {
+    if (_isFinished.compareAndSet(false, true)) {
       ex = t
       latch.countDown()
     } else
       throw new IllegalStateException("Already set")
   }
 
+  override def isFinished = 
+    latch.getCount == 0
 }
 
 /**
@@ -87,6 +92,7 @@ private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) extends F
   override def awaitWithOption(timeout: Long) = None
   override def finishSuccessfully() {}
   override def finishWithError(t: Throwable) { callback(t) }
+  override def isFinished = true /** Constructed such that it is finished when it started */
 }
 
 /**
@@ -101,4 +107,5 @@ private[remote] object NoOpFuture extends Future {
   override def finishWithError(t: Throwable) {
     throw new RuntimeException("finishWithError should not be called") 
   }
+  override def isFinished = true
 }

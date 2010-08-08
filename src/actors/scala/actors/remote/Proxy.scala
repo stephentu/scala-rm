@@ -247,9 +247,19 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
     else {
       // try to (re-)initialize connection from the NetKernel
       val tmpConn = NetKernel.getConnectionFor(remoteNode, getConfig)
+
+      // sanity checks
+      if (config.connectPolicy == ConnectPolicy.WaitEstablished ||
+          config.connectPolicy == ConnectPolicy.WaitHandshake ||
+          config.connectPolicy == ConnectPolicy.WaitVerified)
+        assert(tmpConn.connectFuture.isFinished)
+      if (config.connectPolicy == ConnectPolicy.WaitHandshake ||
+          config.connectPolicy == ConnectPolicy.WaitVerified)
+        assert(tmpConn.handshakeFuture.isFinished)
+
       NetKernel.locateRequest(tmpConn, 
                               name.name, 
-                              a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
+                              a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[_]]),
                               new ErrorCallbackFuture((t: Throwable) => {
                                 Debug.error(t.getMessage)
                                 Debug.doError { t.printStackTrace() }

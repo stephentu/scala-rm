@@ -43,18 +43,26 @@ private[remote] object NetKernel {
    */
   @throws(classOf[InconsistentSerializerException])
   def getConnectionFor(node: Node, cfg: Configuration) = {
+
     // Check the serializers to see if they match
     def checkConn(testConn: MessageConnection) = {
+      // sanity check
+      assert(testConn ne null)
+
       // check serializers
       if (cfg.cachedSerializer != testConn.activeSerializer)
         throw new InconsistentSerializerException(testConn.activeSerializer, cfg.cachedSerializer)
+
+      // blocking policies
       if (cfg.connectPolicy == ConnectPolicy.WaitEstablished)
         testConn.connectFuture.await(cfg.waitTimeout)
       else if (cfg.connectPolicy == ConnectPolicy.WaitHandshake ||
                cfg.connectPolicy == ConnectPolicy.WaitVerified)
         testConn.connectFuture chainWith testConn.handshakeFuture await (cfg.waitTimeout)
+
       testConn
     }
+
     val key = (node, cfg.selectMode)
     val testConn = connections.get(key)
     if (testConn ne null)
@@ -62,13 +70,16 @@ private[remote] object NetKernel {
     else {
       val newConn = connections.synchronized {
         val testConn0 = connections.get(key)
-        if (testConn0 ne null) testConn0
+        if (testConn0 ne null) // double check
+          testConn0 // reuse existing
         else {
+          // create new connection
           val conn = _service.connect(node, cfg, processMsgFunc)
           conn beforeTerminate { isBottom =>
-            Debug.info(this + ": removing connection with key: " + key)
+            Debug.info(this + ": removing connection with key from NetKernel: " + key)
             connections.remove(key)
           }
+          // now available to other threads
           connections.put(key, conn)
           conn
         }

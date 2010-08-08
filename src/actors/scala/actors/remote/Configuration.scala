@@ -13,9 +13,10 @@ package remote
 
 object ConnectPolicy extends Enumeration {
   val NoWait,              /** Don't wait at all for a connection to be established */
-      WaitEstablished,     /** Wait until the connection  */
+      WaitEstablished,     /** Wait until the network layer has established a TCP connection */
       WaitHandshake,       /** Wait until the serializers have successfully handshaked */
-      WaitVerified = Value /** Wait until the remote actor has been located on the other node */
+      WaitVerified = Value /** Wait until the remote actor has been located on the 
+                             * other node, with an ACK returned */
 }
 
 object SendPolicy extends Enumeration {
