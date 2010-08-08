@@ -31,16 +31,16 @@ trait DirectRunner {
     setProp("actors.corePoolSize", "16")
   }
 
-  def runTestsForFiles(kindFileGroups: List[FileGroup], kind: String): scala.collection.immutable.Map[String, Int] = {    
-    val len = kindFileGroups.length
+  def runTestsForFiles(kindFiles: List[List[File]], kind: String): scala.collection.immutable.Map[String, Int] = {    
+    val len = kindFiles.length
     val (testsEach, lastFrag) = (len/numActors, len%numActors)
     val last = numActors-1
     val workers = for (i <- List.range(0, numActors)) yield {
-      val toTest = kindFileGroups.slice(i*testsEach, (i+1)*testsEach)
+      val toTest = kindFiles.slice(i*testsEach, (i+1)*testsEach)
       val worker = new Worker(fileManager)
       worker.start()
       if (i == last)
-        worker ! RunTests(kind, (kindFileGroups splitAt (last*testsEach))._2)
+        worker ! RunTests(kind, (kindFiles splitAt (last*testsEach))._2)
       else
         worker ! RunTests(kind, toTest)
       worker
