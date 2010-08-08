@@ -22,7 +22,7 @@ object FileSync {
       flagFile.createNewFile()
   }
 
-  private lazy val flagFiles: Array[File] = {
+  private def flagFiles: Array[File] = {
     val files = System.getProperty("partest.waitfiles")
     if (files eq null)
       throw new Exception("No waitfiles found in partest.waitfiles property")
@@ -31,24 +31,16 @@ object FileSync {
 
   private val timeout = 10000 // 10 seconds
 
-  private def checkIdx(i: Int) {
+  def waitFor(i: Int, waitTime: Int = timeout) {
     val files = flagFiles
     if (i < 0 || i >= files.size)
       throw new IllegalArgumentException("Bad file index: " + i)
-  }
-
-  def waitFor(i: Int, waitTime: Int = timeout) {
-    checkIdx(i)
-    val file = flagFiles(i)
+    val file = files(i)
     val waitUntil = System.currentTimeMillis + waitTime 
     while (System.currentTimeMillis < waitUntil && !file.exists)
       Thread.sleep(500)
     if (!file.exists)
       Console.err.println("TIMEOUT waiting for Wait file " + file.getAbsolutePath) 
-  }
-
-  def waitForFiles(files: Array[Int], waitTime: Int = timeout) {
-    files.foreach(i => waitFor(i, waitTime))
   }
 
 }
