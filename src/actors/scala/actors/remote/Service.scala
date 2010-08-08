@@ -116,10 +116,10 @@ private[remote] trait Connection extends HasServiceMode
 
 
   /**
-   * Returns a Future which can be blocked on until the connection is
+   * Returns a RFuture which can be blocked on until the connection is
    * established. Established means the TCP connection has been setup
    */
-  def connectFuture: Future
+  def connectFuture: RFuture
 
 }
 
@@ -128,7 +128,7 @@ private[remote] trait ByteConnection extends Connection {
   /**
    * 
    */
-  def send(data: ByteSequence, ftch: Option[Future]): Unit
+  def send(data: ByteSequence, ftch: Option[RFuture]): Unit
 
   protected val receiveCallback: BytesReceiveCallback
 
@@ -146,13 +146,13 @@ private[remote] trait ByteConnection extends Connection {
 
 private[remote] trait MessageConnection extends Connection {
 
-  def send(ftch: Option[Future])(msg: Serializer => ByteSequence): Unit
+  def send(ftch: Option[RFuture])(msg: Serializer => ByteSequence): Unit
 
   /**
    * Returns a future which can be blocked on until the connection's handshake
    * is finished.
    */
-  def handshakeFuture: Future
+  def handshakeFuture: RFuture
 
   def activeSerializer: Serializer
 

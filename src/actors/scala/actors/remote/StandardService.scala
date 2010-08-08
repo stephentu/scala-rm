@@ -70,7 +70,7 @@ private[remote] class DefaultMessageConnection(
    * the time send() was called (due to things like not finishing handshake
    * yet, etc)
    */
-  private val sendQueue = new Queue[(Serializer => ByteSequence, Option[Future])]
+  private val sendQueue = new Queue[(Serializer => ByteSequence, Option[RFuture])]
   private val primitiveSerializer = new PrimitiveSerializer
 
   private val callbackFtch = new ErrorCallbackFuture((e: Throwable) => {
@@ -177,7 +177,7 @@ private[remote] class DefaultMessageConnection(
     }
   }
 
-  override def send(ftch: Option[Future])(msg: Serializer => ByteSequence) {
+  override def send(ftch: Option[RFuture])(msg: Serializer => ByteSequence) {
     ensureAlive()
     if (isHandshaking) {
       val repeat = withoutTermination {

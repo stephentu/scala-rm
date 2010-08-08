@@ -395,7 +395,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         def isFinished: Boolean
       }
 
-      class WriteLoopTask1(b0: ByteSequence, ftch: Option[Future]) extends WriteLoopTask {
+      class WriteLoopTask1(b0: ByteSequence, ftch: Option[RFuture]) extends WriteLoopTask {
 
         private var b0_bb: ByteBuffer = _
         private var _isFinished       = false
@@ -483,7 +483,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         //}
       }
 
-      override def send(seq: ByteSequence, ftch: Option[Future]) {
+      override def send(seq: ByteSequence, ftch: Option[RFuture]) {
         //Debug.error(this + ": send(a0)")
         ensureAlive()
         writeQueue.offer(new WriteLoopTask1(seq, ftch))

@@ -154,7 +154,7 @@ private[remote] object NetKernel {
 	// TODO: don't expose baos, expose a locked version where reset() throws an
 	// exception
 
-  @inline private def makeFuture(from: Option[Reactor[Any]], blockingCond: Boolean): Option[Future] = {
+  @inline private def makeFuture(from: Option[Reactor[Any]], blockingCond: Boolean): Option[RFuture] = {
     if (blockingCond)
       Some(new BlockingFuture)
     else
@@ -230,11 +230,11 @@ private[remote] object NetKernel {
     //ftch.map(_.await(config.waitTimeout))
   }
 
-  private val requestFutures = new ConcurrentHashMap[Long, (Future, Option[Future])]
+  private val requestFutures = new ConcurrentHashMap[Long, (RFuture, Option[RFuture])]
 
   private final val random = new Random
 
-  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: Future, config: Configuration) {
+  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: RFuture, config: Configuration) {
     Debug.info("locateRequest(): receiverName: %s, from: %s".format(receiverName, from))
     val ftch = makeLocateFuture(from, config.connectPolicy)
     val requestId = random.nextLong()

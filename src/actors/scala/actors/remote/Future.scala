@@ -14,12 +14,12 @@ package remote
 import java.util.concurrent.{ CountDownLatch, TimeUnit }
 import java.util.concurrent.atomic.AtomicBoolean
 
-private[remote] trait Future { self =>
+private[remote] trait RFuture { self =>
   def await(timeout: Long): Unit
   def awaitWithOption(timeout: Long): Option[Throwable]
   def finishSuccessfully(): Unit
   def finishWithError(t: Throwable): Unit 
-  def chainWith(that: Future): Future = new Future {
+  def chainWith(that: RFuture): RFuture = new RFuture {
     override def await(timeout: Long) {
       self.await(timeout)
       that.await(timeout)
@@ -44,7 +44,7 @@ class FutureTimeoutException extends Exception("Future timed out")
 /**
  * Simple lock-free future class based on CountDownLatch
  */
-private[remote] class BlockingFuture extends Future {
+private[remote] class BlockingFuture extends RFuture {
 
   private val latch      = new CountDownLatch(1) 
   private val _isFinished = new AtomicBoolean(false)
@@ -84,10 +84,10 @@ private[remote] class BlockingFuture extends Future {
 }
 
 /**
- * Future which assumes that the action will succeed, so awaits are no-ops,
+ * RFuture which assumes that the action will succeed, so awaits are no-ops,
  * and only if something does go wrong does callback get executed
  */
-private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) extends Future {
+private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) extends RFuture {
   override def await(timeout: Long) {}
   override def awaitWithOption(timeout: Long) = None
   override def finishSuccessfully() {}
@@ -96,9 +96,9 @@ private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) extends F
 }
 
 /**
- * Future which represents an operation which has already completed
+ * RFuture which represents an operation which has already completed
  */
-private[remote] object NoOpFuture extends Future {
+private[remote] object NoOpFuture extends RFuture {
   override def await(timeout: Long) {}
   override def awaitWithOption(timeout: Long) = None
   override def finishSuccessfully() {

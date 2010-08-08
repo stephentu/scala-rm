@@ -55,7 +55,7 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
 
     override def newAlreadyTerminatedException() = new ConnectionAlreadyClosedException
 
-    override def send(seq: ByteSequence, ftch: Option[Future]) {
+    override def send(seq: ByteSequence, ftch: Option[RFuture]) {
       terminateLock.synchronized {
         ensureAlive()
         try {
