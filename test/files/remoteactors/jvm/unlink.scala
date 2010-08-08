@@ -18,7 +18,7 @@ object Test {
     implicit val config = new DefaultNonBlockingConfiguration
 
     val latch = new CountDownLatch(1)
-    val master = remoteActor(9003, 'master) {
+    val master = remoteActor(9004, 'master) {
       latch.countDown()
       react {
         case DO_CRITICAL =>
@@ -32,7 +32,7 @@ object Test {
     latch.await()
 
     val slave = actor {
-      val handle = select(Node(null, 9003), 'master)
+      val handle = select(Node(null, 9004), 'master)
       link(handle)
       handle ! DO_CRITICAL
       react {
