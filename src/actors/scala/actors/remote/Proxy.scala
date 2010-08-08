@@ -16,6 +16,7 @@ import java.util.WeakHashMap
 import java.lang.ref.WeakReference
 import java.io.{ ObjectInputStream, ObjectOutputStream, 
                  IOException, NotSerializableException }
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * This class is necessary so that <code>sender.receiver</code> can return a
@@ -264,16 +265,27 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
           config.connectPolicy == ConnectPolicy.WaitVerified)
         assert(tmpConn.handshakeFuture.isFinished)
 
+      val self = this
+      @volatile var error = false 
+
       NetKernel.locateRequest(tmpConn, 
                               name.name, 
                               a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
                               new ErrorCallbackFuture((t: Throwable) => {
                                 Debug.error(t.getMessage)
                                 Debug.doError { t.printStackTrace() }
-                                _conn = null
+                                self.synchronized {
+                                  Debug.info("_conn = null")
+                                  error = true
+                                  _conn = null
+                                }
                               }),
                               config)
-      _conn = tmpConn
+     
+      self.synchronized {
+        if (!error)
+          _conn = tmpConn
+      }
       tmpConn
     }
   }
