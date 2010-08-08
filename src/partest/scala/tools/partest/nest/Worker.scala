@@ -28,7 +28,7 @@ import scala.collection.Map
 
 import scala.tools.nsc.interactive.{BuildManager, RefinedBuildManager}
 
-case class RunTests(kind: String, files: List[List[File]])
+case class RunTests(kind: String, files: List[File])
 case class Results(results: ImmMap[String, Int], logs: List[LogFile], outdirs: List[File])
 
 case class LogContext(file: LogFile, writers: Option[(StringWriter, PrintWriter)])
@@ -303,7 +303,7 @@ class Worker(val fileManager: FileManager) extends Actor {
    * @param kind  The test kind (pos, neg, run, etc.)
    * @param files The list of test files
    */
-  def runTests(kind: String, files: List[List[File]])(topcont: ImmMap[String, Int] => Unit) {
+  def runTests(kind: String, files: List[File])(topcont: ImmMap[String, Int] => Unit) {
     val compileMgr = new CompileManager(fileManager)
     var errors = 0
     var succeeded = true
@@ -964,49 +964,39 @@ class Worker(val fileManager: FileManager) extends Actor {
       }
     }
 
-    val numFileGroups = files.size
-    if (numFileGroups == 0)
+    val numFiles = files.size
+    if (numFiles == 0)
       reportAll(ImmMap(), topcont)
 
     // maps canonical file names to the test result (0: OK, 1: FAILED, 2: TIMOUT)
     var status = new HashMap[String, Int]
 
-    NestUI.verbose(files.toString)
-    var fileGroupCnt = 1
-    var filesSoFar = 0
-    var needsInit = true
-    Actor.loopWhile(fileGroupCnt <= numFileGroups) {
+    var fileCnt = 1
+    Actor.loopWhile(fileCnt <= numFiles) {
       val parent = self
-      val thisFileGroup = files(fileGroupCnt-1)
-      NestUI.verbose("On file group: " + fileGroupCnt)
-      NestUI.verbose("this file group has " + thisFileGroup.size + " files")
-      if (needsInit) {
-        NestUI.verbose("initing file group: " + fileGroupCnt)
-        for (fileCnt <- List.range(1, thisFileGroup.size + 1)) {
-          actor {
-            val testFile = thisFileGroup(fileCnt-1)
-            NestUI.verbose("actor is on file group " + fileGroupCnt + " and testFile " + fileCnt)
-            val ontimeout = new TimerTask {
-              def run() = parent ! Timeout(testFile)
-            }
-            timer.schedule(ontimeout, fileManager.timeout.toLong)
 
-            val context = try {
-              processSingleFile(testFile)
-            } catch {
-              case t: Throwable =>
-                NestUI.verbose("while invoking compiler ("+files+"):")
-                NestUI.verbose("caught "+t)
-                t.printStackTrace
-                if (t.getCause != null)
-                  t.getCause.printStackTrace
-                LogContext(null, None)
-            }
-            parent ! Result(testFile, context)
-          }
+      actor {
+        val testFile = files(fileCnt-1)
+
+        val ontimeout = new TimerTask {
+          def run() = parent ! Timeout(testFile)
         }
-        needsInit = false
+        timer.schedule(ontimeout, fileManager.timeout.toLong)
+
+        val context = try {
+          processSingleFile(testFile)
+        } catch {
+          case t: Throwable =>
+            NestUI.verbose("while invoking compiler ("+files+"):")
+            NestUI.verbose("caught "+t)
+            t.printStackTrace
+            if (t.getCause != null)
+              t.getCause.printStackTrace
+            LogContext(null, None)
+        }
+        parent ! Result(testFile, context)
       }
+
       react {
         case res: TestResult =>
           val path = res.file.getCanonicalPath
@@ -1021,27 +1011,16 @@ class Worker(val fileManager: FileManager) extends Actor {
                   printInfoStart(res.file, wr)
                   succeeded = false
                   reportResult(2, None, Some((swr, wr)))
-                  filesSoFar += 1
-                  NestUI.verbose("parent actor received TIMEOUT")
-                  NestUI.verbose("filesSoFar is now " + filesSoFar)
                 case Result(_, logs) =>
                   status = status + (path -> (if (succeeded) 0 else 1))
                   reportResult(
                     if (succeeded) 0 else 1,
                     if (logs != null) Some(logs.file) else None,
                     if (logs != null) logs.writers else None)
-                  filesSoFar += 1
-                  NestUI.verbose("parent actor received Result")
-                  NestUI.verbose("filesSoFar is now " + filesSoFar)
               }
-              if (fileGroupCnt == numFileGroups && filesSoFar == thisFileGroup.size) {
+              if (fileCnt == numFiles)
                 reportAll(status, topcont)
-              }
-              if (filesSoFar == thisFileGroup.size) {
-                fileGroupCnt += 1
-                needsInit = true
-                filesSoFar = 0
-              }
+              fileCnt += 1
           }
       }
     }

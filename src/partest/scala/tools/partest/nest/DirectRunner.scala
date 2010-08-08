@@ -31,7 +31,7 @@ trait DirectRunner {
     setProp("actors.corePoolSize", "16")
   }
 
-  def runTestsForFiles(kindFiles: List[List[File]], kind: String): scala.collection.immutable.Map[String, Int] = {    
+  def runTestsForFiles(kindFiles: List[File], kind: String): scala.collection.immutable.Map[String, Int] = {    
     val len = kindFiles.length
     val (testsEach, lastFrag) = (len/numActors, len%numActors)
     val last = numActors-1
