@@ -297,12 +297,13 @@ object RemoteActor {
 
    * (1) The first is that only one <code>name</code> can be
    * valid at a time (distinct actors cannot register with the same
-   * <code>name</code> at the same time). 
+   * <code>name</code> at the same time). They can however, register with the
+   * same name at different times.
    * 
-   * (2) The second is that once an  <code>actor</code> registers 
+   * (2) The second is that once an <code>actor</code> registers 
    * with a <code>name</code>, then that <code>actor</code> cannot 
-   * register with a different name again until <code>unregister</code> 
-   * is called first.
+   * register with a different name. Thus, each <code>actor</code> instance
+   * effectively has a unique name throughout its lifetime.
    *
    * Implementation Limitation: Currently names starting with `$` are
    * reserved for internal use.
@@ -330,7 +331,7 @@ object RemoteActor {
     actor.channelName match {
       case Some(prevName) => 
         if (prevName != name)
-          throw new ChannelAlreadyRegisteredException(prevName)
+          throw new ChannelAlreadyRegisteredException(actor, prevName)
       case None =>
         actor.channelName = Some(name)
     }
@@ -345,6 +346,29 @@ object RemoteActor {
    * @see   register
    */
   def unregister(actor: OutputChannel[Any]) {
+    actor match {
+      case typedActor: Actor if (typedActor.getState != Actor.State.Terminated) =>
+        /* Figure out if this actor is an active remote actor */
+        val runHandler = remoteActors.synchronized {
+          remoteActors.contains(typedActor)
+        }
+        if (runHandler) {
+          /* If we're unregistering an active actor, we also want to invoke its
+          * termination handler */
+          removeActorInterest(typedActor)
+          typedActor onTerminate {} // and replace the handler with a no-op
+                                    // so it doesn't get run again
+        } else 
+          /* Since it's not active, just remove its mapping then */
+          unregister0(actor)
+      case _ =>
+        /* Otherwise, just remove its mapping, since it has no termination
+         * handler */
+        unregister0(actor)
+    }
+  }
+
+  @inline private def unregister0(actor: OutputChannel[Any]) {
     actor.channelName.foreach(name => {
       actors.remove(name)
       Debug.info(this + ": successfully removed name " + name + " for " + actor + " from map")
@@ -386,6 +410,7 @@ object RemoteActor {
   }
 
   private[remote] def alive0(port: Int, actor: Actor, addToSet: Boolean)(implicit cfg: Configuration) {
+    Debug.info("alive0(port: %d, actor: %s, addToSet: %s".format(port, actor, addToSet))
     // listen if necessary
     val listener = NetKernel.getListenerFor(port, cfg)
 
@@ -465,10 +490,16 @@ object RemoteActor {
 
   private final val EmptyIntSet = new HashSet[Int]
 
-  private def actorTerminated(actor: Actor) {
+  @inline private def actorTerminated(actor: Actor) {
     Debug.info("actorTerminated(): alive actor " + actor + " terminated")
-    unregister(actor)
+    removeActorInterest(actor)
+  }
 
+  private def removeActorInterest(actor: Actor) {
+    // remove from actor map
+    unregister0(actor)
+
+    // shut down ports if necessary
     portToActors.synchronized {
       // get all the ports this actor was listening on...
       val candidatePorts = actorToPorts.remove(actor).getOrElse(EmptyIntSet)
@@ -489,6 +520,7 @@ object RemoteActor {
         ports.foreach(p => NetKernel.unlisten(p))
     }
 
+    // shut down the service if necessary
     remoteActors.synchronized {
       remoteActors -= actor
       if (!explicitlyTerminate && remoteActors.isEmpty)
@@ -823,8 +855,8 @@ case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
 /**
  * TODO: Comment me
  */
-case class ChannelAlreadyRegisteredException(sym: Symbol)
-  extends Exception("The channel is already registered as " + sym)
+case class ChannelAlreadyRegisteredException(channel: OutputChannel[Any], sym: Symbol)
+  extends Exception("The channel %s is already registered as %s".format(channel, sym))
 
 /**
  * TODO: Comment me

@@ -18,17 +18,23 @@ import java.util.concurrent.atomic.AtomicLong
 import java.lang.{Integer => JInteger}
 
 /**
- * Methods here are now threadsafe
+ * This utility offers methods for creating unique names. All methods here are
+ * thread-safe.
  */
 object FreshNameCreator {
 
-  private val counter = new AtomicLong 
-  private val counters = new ConcurrentHashMap[String, JInteger]
+  private final val counter  = new AtomicLong 
+  private final val counters = new ConcurrentHashMap[String, JInteger]
 
   /**
    * Create a fresh name with the given prefix. It is guaranteed
    * that the returned name has never been returned by a previous
-   * call to this function (provided the prefix does not end in a digit).
+   * call to this function (unless the prefix starts with `ANON$`, which is
+   * currently used by <code>newName</code>.
+   * 
+   * @param  prefix  Prefix to use when generating new names
+   * 
+   * @return A unique name containing <code>prefix</code> as the prefix
    */
   def newName(prefix: String): Symbol = {
     val test = counters.putIfAbsent(prefix, JInteger.valueOf(0))
@@ -50,13 +56,24 @@ object FreshNameCreator {
     }
   }
 
-  private def mkSym(prefix: String, id: Int) = Symbol(prefix + "$" + id)
+  @inline private def mkSym(prefix: String, id: Int) = 
+    Symbol(prefix + "$" + id)
 
-  def newName(): Symbol = Symbol("$" + counter.getAndIncrement() + "$")
+  /**
+   * Returns a new name unique to this JVM instance, which is currently the
+   * concatenation of `ANON$` with a incrementing counter 
+   *
+   * @return  Unique identifier
+   */
+  def newName(): Symbol = Symbol("ANON$" + counter.getAndIncrement())
 
-  private val random = new Random
+  private final val random = new Random
 
-  def newSessionId(): Symbol = {
+  /**
+   * Returns a new session ID that is unique to this host. Currently returns
+   * a concatenation of [`$`, canonical localhost name, `$`, random 64-bit
+   * number]
+   */
+  private[remote] def newSessionId(): Symbol =
     Symbol("$" + Node.localhost + "$" + random.nextLong)
-  }
 }
