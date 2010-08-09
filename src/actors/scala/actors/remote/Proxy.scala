@@ -219,7 +219,17 @@ private[remote] abstract class Proxy extends AbstractActor
   }
 
   override def exit(from: AbstractActor, reason: AnyRef) {
-    handleMessage(RemoteApply0(from, ExitFun(reason.toString)))
+    val reason0 = reason match {
+      case UncaughtException(_, message, _, _, cause) =>
+        /* This is a bit of a hack. UncaughtException, which is thrown when
+         * an actor fails to catch an exception, is not serializable. The
+         * actor, possibly the sender, and the thread fields are all not
+         * serializable. Therefore, set them to null (but keep the message and
+         * cause fields, because those are probably the most useful) */
+        UncaughtException(null, message, null, null, cause)
+      case _ => reason
+    }
+    handleMessage(RemoteApply0(from, ExitFun(reason0)))
   }
 
   override def toString = "<" + name + "@" + remoteNode + ">"

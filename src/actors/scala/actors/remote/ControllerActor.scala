@@ -58,7 +58,7 @@ private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit c
         Debug.doError { e.printStackTrace() }
         exit()
     }
-    register(thisSym, self)
+    register0(thisSym, self)
     Debug.info(this + ": started")
     loop {
       react {
@@ -66,8 +66,8 @@ private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit c
           /** Assume actor class does not set itself up, and we need to register it */
           val errorMessage = 
             try {
-              alive(port)
               val actor = newActor(actorClass)
+              alive(port, actor)
               register(Symbol(name), actor) 
               actor.start()
               None
@@ -99,5 +99,5 @@ private[remote] class ControllerActor(val port: Int, thisSym: Symbol)(implicit c
 
   start() // ctor starts
 
-  override def toString = "<ControllerActor>"
+  override def toString = "<ControllerActor: %d>".format(port)
 }

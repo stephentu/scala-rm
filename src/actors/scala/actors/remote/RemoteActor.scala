@@ -41,6 +41,11 @@ import java.util.concurrent.ConcurrentHashMap
  *
  *  There are several relevant points to make about remote actors:
  *  <ul>
+ *    <li>This release of remote actors is not backwards compatible with
+ *    previous releases. The network protocol is a bit different, in
+ *    order to be more efficient and versatile. It is however, completely
+ *    source compatible.</li>.
+ * 
  *    <li>The configuration of remote actors is done via a
  *    <code>Configuration</code> object. Most of publically accessible methods
  *    in <code>RemoteActor</code> take an implicit <code>Configuration</code>
@@ -80,7 +85,9 @@ object RemoteActor {
    * non-blocking, unless a <code>Configuration</code> object is used with a
    * <code>ServiceMode</code> of <code>NonBlocking</code>. For the default
    * mode of operation (the <code>Blocking</code> mode), send operations block
-   * until the data is written to the wire. However long that takes is
+   * until the data is written to the wire (an exception to this is
+   * <code>!!</code> on a <code>RemoteProxy</code>, which returns immediately
+   * regardless of mode). However long that takes is
    * entirely determined by the Socket API, and not by the network kernel. The
    * advantage to this mode is that if a send operation returns without
    * throwing an exception, then one is guaranteed that the data was actually 
@@ -164,7 +171,7 @@ object RemoteActor {
    */
   private val actorToPorts = new HashMap[Actor, HashSet[Int]]
 
-  private var _ctrl: ControllerActor = _
+  @volatile private var _ctrl: ControllerActor = _
 
   /**
    * Enable the remote start functionality service, exposed on port 11723.
@@ -273,13 +280,13 @@ object RemoteActor {
     explicitlyTerminate = isExplicit
   }
 
-  private var _defaultConfig: Configuration = Configuration.DefaultConfig
-
   private val actors = new ConcurrentHashMap[Symbol, OutputChannel[Any]]
 
   @inline private def checkName(s: Symbol) =
     if (s.name.isEmpty)
       throw new IllegalArgumentException("S cannot contain an empty name")
+    //else if (s.name.startsWith("$"))
+    //  throw new IllegalArgumentException("Names starting with `$` are reserved")
 
   /**
    * Registers <code>actor</code> to be selectable remotely via
@@ -297,24 +304,33 @@ object RemoteActor {
    * register with a different name again until <code>unregister</code> 
    * is called first.
    *
+   * Implementation Limitation: Currently names starting with `$` are
+   * reserved for internal use.
+   *
    * @param name  The unique name for which to identify actor remotely. Cannot
    *              be an empty Symbol.
    * @param actor The actor to be identified via name
    */
   @throws(classOf[NameAlreadyRegisteredException])
+  @throws(classOf[ChannelAlreadyRegisteredException])
+  @throws(classOf[IllegalArgumentException])
   def register(name: Symbol, actor: OutputChannel[Any]) {
     checkName(name)
+    register0(name, actor)
+  }
+
+  private[remote] def register0(name: Symbol, actor: OutputChannel[Any]) {
     val existing = actors.putIfAbsent(name, actor)
     if (existing ne null) {
       if (existing != actor)
-        throw NameAlreadyRegisteredException(name, existing)
+        throw new NameAlreadyRegisteredException(name, existing)
       Debug.warning("re-registering " + name + " to channel " + actor)
-    } else Debug.info(this + ": successfully mapped " + name + " to " + actor)
+    } else 
+      Debug.info(this + ": successfully mapped " + name + " to " + actor)
     actor.channelName match {
       case Some(prevName) => 
         if (prevName != name)
-          // TODO: change exception type
-          throw new IllegalStateException("Channel already registered as: " + prevName)
+          throw new ChannelAlreadyRegisteredException(prevName)
       case None =>
         actor.channelName = Some(name)
     }
@@ -325,6 +341,8 @@ object RemoteActor {
    * <code>actor</code> is currently not registered, this method is a no-op.
    *
    * @param actor   The actor to be unregistered
+   *
+   * @see   register
    */
   def unregister(actor: OutputChannel[Any]) {
     actor.channelName.foreach(name => {
@@ -362,7 +380,7 @@ object RemoteActor {
     sessions.put(ch, name)
   }
 
-  private def watchActor(actor: Actor) {
+  @inline private def watchActor(actor: Actor) {
     // set termination handler on actor
     actor onTerminate { actorTerminated(actor) }
   }
@@ -500,6 +518,7 @@ object RemoteActor {
    *
    * @see   Configuration
    */
+  @throws(classOf[RemoteStartException])
   def remoteStart[A <: Actor](host: String)(implicit m: Manifest[A], cfg: Configuration) {
     remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.getName)
   }
@@ -515,6 +534,7 @@ object RemoteActor {
    *
    * @see   Configuration
    */
+  @throws(classOf[RemoteStartException])
   def remoteStart[A <: Actor](node: Node)(implicit m: Manifest[A], cfg: Configuration) {
     remoteStart(node, m.erasure.getName)
   }
@@ -532,6 +552,7 @@ object RemoteActor {
    *
    * @see   Configuration
    */
+  @throws(classOf[RemoteStartException])
   def remoteStart(host: String, actorClass: String)(implicit cfg: Configuration) {
     remoteStart(Node(host, ControllerActor.defaultPort), actorClass)
   }
@@ -550,14 +571,15 @@ object RemoteActor {
    *
    * @see   Configuration
    */
+  @throws(classOf[RemoteStartException])
   def remoteStart(node: Node, actorClass: String)(implicit cfg: Configuration) {
     val c = cfg.newMessageCreator()
-    val remoteController = select(node, ControllerSymbol)
-    remoteController !? (60000, c.newRemoteStartInvoke(actorClass)) match {
+    val remoteController = select0(node, ControllerSymbol)
+    remoteController !? (cfg.waitTimeout, c.newRemoteStartInvoke(actorClass)) match {
       case Some(RemoteStartResult(None))    => // success, do nothing
-      case Some(RemoteStartResult(Some(e))) => throw new RuntimeException(e)
-      case Some(_) => throw new RuntimeException("Failed: Invalid response")
-      case None    => throw new RuntimeException("Timedout")
+      case Some(RemoteStartResult(Some(e))) => throw new RemoteStartException(e)
+      case Some(_) => throw new RemoteStartException("Failed: Invalid response")
+      case None    => throw new RemoteStartException("Timed-out")
     }
   }
 
@@ -575,11 +597,9 @@ object RemoteActor {
    *
    * @see   Configuration
    */
-  def remoteStart[A <: Actor](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy = {
-    checkName(name)
-    Node.checkPort(port, true)
+  @throws(classOf[RemoteStartException])
+  def remoteStart[A <: Actor](host: String, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy =
     remoteStart(Node(host, ControllerActor.defaultPort), m.erasure.getName, port, name)
-  }
 
   /**
    * Start a new instance of <code>actorClass</code> on <code>host</code> with the
@@ -596,11 +616,9 @@ object RemoteActor {
    *
    * @see   Configuration
    */
-  def remoteStart(host: String, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
-    checkName(name)
-    Node.checkPort(port, true)
+  @throws(classOf[RemoteStartException])
+  def remoteStart(host: String, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy =
     remoteStart(Node(host, ControllerActor.defaultPort), actorClass, port, name)
-  }
 
   /**
    * Start a new instance of <code>A</code> on <code>node</code>, and make
@@ -615,11 +633,9 @@ object RemoteActor {
    *
    * @see   Configuration
    */
-  def remoteStart[A <: Actor](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy = {
-    checkName(name)
-    Node.checkPort(port, true)
+  @throws(classOf[RemoteStartException])
+  def remoteStart[A <: Actor](node: Node, port: Int, name: Symbol)(implicit m: Manifest[A], cfg: Configuration): RemoteProxy =
     remoteStart(node, m.erasure.getName, port, name)
-  }
 
   /**
    * Start a new instance of an actor of class <code>actorClass</code> on the
@@ -641,18 +657,19 @@ object RemoteActor {
    *
    * @see   Configuration
    */
+  @throws(classOf[RemoteStartException])
   def remoteStart(node: Node, actorClass: String, port: Int, name: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     checkName(name)
     Node.checkPort(port, true)
-    val remoteController = select(node, ControllerSymbol)
+    val remoteController = select0(node, ControllerSymbol)
     val c = cfg.newMessageCreator()
-    remoteController !? (60000, c.newRemoteStartInvokeAndListen(actorClass, port, name.name)) match {
+    remoteController !? (cfg.waitTimeout, c.newRemoteStartInvokeAndListen(actorClass, port, name.name)) match {
       case Some(RemoteStartResult(None))    => // success, do nothing
-      case Some(RemoteStartResult(Some(e))) => throw new RuntimeException(e)
-      case Some(_) => throw new RuntimeException("Failed: invalid response")
-      case None    => throw new RuntimeException("Timedout")
+      case Some(RemoteStartResult(Some(e))) => throw new RemoteStartException(e)
+      case Some(_) => throw new RemoteStartException("Failed: invalid response")
+      case None    => throw new RemoteStartException("Timed-out")
     }
-    select(Node(node.address, port), name)
+    select0(Node(node.address, port), name)
   }
 
   /**
@@ -727,12 +744,16 @@ object RemoteActor {
   def select(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     checkName(sym)
     Debug.info("select(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
+    select0(node, sym)
+  }
+
+  private def select0(node: Node, sym: Symbol)(implicit cfg: Configuration) = {
     val thisActor = Actor.self
     remoteActors.synchronized {
       if (remoteActors.add(thisActor))
         watchActor(thisActor)
     }
-    remoteActorAt(node, sym)
+    remoteActorAt0(node, sym)
   }
 
   /**
@@ -760,8 +781,11 @@ object RemoteActor {
   def remoteActorAt(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     checkName(sym)
     Debug.info("remoteActorAt(): node: " + node + " sym: " + sym + " selectMode: " + cfg.selectMode)
-    new ConfigProxy(node, sym, cfg)
+    remoteActorAt0(node, sym)
   }
+
+  @inline private def remoteActorAt0(node: Node, sym: Symbol)(implicit cfg: Configuration) =
+    new ConfigProxy(node, sym, cfg)
 
   /**
    * Shutdown the network kernel explicitly. Only necessary when
@@ -778,14 +802,38 @@ object RemoteActor {
   }
 }
 
+/**
+ * TODO: Comment me
+ */
 case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
   extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)
 
+/**
+ * TODO: Comment me
+ */
 case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
   extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
+/**
+ * TODO: Comment me
+ */
 case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
   extends Exception("Name " + sym + " is already registered for channel " + a)
 
+/**
+ * TODO: Comment me
+ */
+case class ChannelAlreadyRegisteredException(sym: Symbol)
+  extends Exception("The channel is already registered as " + sym)
+
+/**
+ * TODO: Comment me
+ */
 case class NoSuchRemoteActorException(name: Symbol)
 	extends Exception("No such remote actor: " + name)
+
+/**
+ * TODO: Comment me
+ */
+case class RemoteStartException(message: String)
+  extends Exception(message)
