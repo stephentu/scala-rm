@@ -44,6 +44,8 @@ object Test {
 
     enableRemoteStart()
 
+    Thread.sleep(5000) /* Let the remote start service start */
+
     val master = remoteActor(9007, 'master) {
       (1 to numClients).foreach(_ => remoteStart[SendActor]("localhost"))
       while (idGen.get < numClients)
