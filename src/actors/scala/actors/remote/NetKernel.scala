@@ -14,7 +14,8 @@ import scala.collection.mutable.{ HashMap, HashSet }
 import scala.util.Random
 
 import java.io._
-import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, TimeUnit }
+import java.util.concurrent.{ ConcurrentHashMap, CountDownLatch, 
+                              LinkedBlockingQueue, TimeUnit }
 
 // TODO: make package private?
 case object Terminate
@@ -309,17 +310,38 @@ private[remote] object NetKernel {
     override def toString = "<NoSender>"
   }
 
+  // TODO: have N threads process these requests
+  private object locateRequestProc extends Thread("LocateRequestProcThread") {
+    val queue = new LinkedBlockingQueue[(MessageConnection, LocateRequest)]
+    setDaemon(true)
+    start()
+    override def run() {
+      Debug.info(this + ": started")
+      while (true) {
+        try {
+          val (conn, LocateRequest(sessionId, receiverName)) = queue.take()
+          val found = RemoteActor.getActor(Symbol(receiverName)) ne null
+          conn.send(None) { serializer: Serializer => 
+            val baos = new ExposingByteArrayOutputStream(BufSize)
+            baos.writeZeros(4)
+            serializer.writeLocateResponse(baos, sessionId, receiverName, found) 
+            new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+          }
+        } catch {
+          case e: Exception =>
+            Debug.error(this + ": caught exception: " + e.getMessage)
+            Debug.doError { e.printStackTrace() }
+        }
+      }
+    }
+  }
+
   private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
     //Debug.info("processMsg: " + msg)
     msg match {
-      case LocateRequest(sessionId, receiverName) =>
-        val found = RemoteActor.getActor(Symbol(receiverName)) ne null
-        conn.send(None) { serializer: Serializer => 
-          val baos = new ExposingByteArrayOutputStream(BufSize)
-          baos.writeZeros(4)
-          serializer.writeLocateResponse(baos, sessionId, receiverName, found) 
-          new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
-        }
+      case r @ LocateRequest(_, _) =>
+        // offload to work queue so we don't block in receiving thread
+        locateRequestProc.queue.offer((conn, r))
       case LocateResponse(sessionId, receiverName, found) =>
         val future = requestFutures.remove(sessionId)
         if (future ne null)
@@ -335,9 +357,9 @@ private[remote] object NetKernel {
         else
           Debug.error("Lost LocateResponse: " + msg)
       case _ =>
-        def mkProxy(senderName: String) = 
+        @inline def mkProxy(senderName: String) = 
           new ConnectionProxy(conn.remoteNode, Symbol(senderName), conn)
-        def removeOrphan(a: OutputChannel[Any]) {
+        @inline def removeOrphan(a: OutputChannel[Any]) {
           // orphaned actor sitting in hash maps
           Debug.error(this + ": found orphaned (terminated) actor: " + a)
           RemoteActor.unregister(a)
