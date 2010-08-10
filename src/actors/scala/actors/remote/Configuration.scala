@@ -65,14 +65,15 @@ trait Configuration {
 
   /**
    * Contains the connect policy to utilize when attemping any network operations.
+   * Default is <code>ConnectPolicy.NoWait</code>.
    */
-  val connectPolicy: ConnectPolicy.Value
+  val connectPolicy: ConnectPolicy.Value = ConnectPolicy.NoWait
 
   /**
    * Contains the time (in milliseconds) to wait for any blocking operations
    * to complete with respect to the connect policy. Default is 10 seconds
    */
-  val waitTimeout = 10000 /** 10 seconds */
+  val waitTimeout: Int = 10000 /** 10 seconds */
 
   /**
    * Returns a new <code>Serializer</code> to be used when spawning a new

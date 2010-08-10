@@ -103,8 +103,8 @@ private[remote] abstract class Proxy extends AbstractActor
         success = true
       } catch {
         case e: Exception =>
-          Debug.error(this + ": tryRemoteAction(): Caught exception: " + e.getMessage)
-          Debug.doError { e.printStackTrace() }
+          Debug.info(this + ": tryRemoteAction(): Caught exception: " + e.getMessage)
+          Debug.doInfo { e.printStackTrace() }
           if (usingConn ne null)
             terminateConn(usingConn)
           if (triesLeft == 0)
@@ -170,8 +170,8 @@ private[remote] abstract class Proxy extends AbstractActor
             Debug.info(this + ": found session " + sid + " for channel " + ch)
             val msg = resp.asInstanceOf[AnyRef]
 
-            Debug.info("sender: " + sender)
-            Debug.info("sender.receiver: " + sender.receiver)
+            //Debug.info("sender: " + sender)
+            //Debug.info("sender.receiver: " + sender.receiver)
 
             // send back response - the sender (from) field is null here,
             // because you cannot reply to a request-response cycle more
@@ -180,7 +180,7 @@ private[remote] abstract class Proxy extends AbstractActor
               NetKernel.syncReply(usingConn, name.name, msg, sid.name, config)
             }
           case None =>
-            Debug.info(this+": cannot find session for "+ch)
+            Debug.error(this+": cannot find session for "+ch)
         }
 
       // this case is when a proxy object had !, !!, !?, or send called,
@@ -285,7 +285,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
                                 Debug.error(t.getMessage)
                                 Debug.doError { t.printStackTrace() }
                                 self.synchronized {
-                                  Debug.info("_conn = null")
+                                  //Debug.info("_conn = null")
                                   error = true
                                   _conn = null
                                 }

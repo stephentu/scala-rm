@@ -128,7 +128,6 @@ case class Error(reason: String) extends TriggerableEvent
  * which write control messages into output streams.
  *
  * @see NetKernelMessage
- * @see MessageCreator
  */
 abstract class Serializer {
 
@@ -137,7 +136,7 @@ abstract class Serializer {
   /**
    * True if this Serializer needs to participate in a handshake. If
    * <code>isHandshaking</code> is false, <code>handleNextEvent</code> is
-   * never called.
+   * never called (and can thus just be <code>Map.empty</code>).
    */
   val isHandshaking: Boolean
 
@@ -173,8 +172,35 @@ abstract class Serializer {
 
   // Message serialization
 
+  /**
+   * Write the necessary sequence of bytes to <code>outputStream</code> to
+   * indicate a <code>LocateRequest</code> command to the other side.
+   *
+   * @param outputStream  The output stream to write the command to. This is
+   *                      backed by a byte array, so there is no need to wrap
+   *                      a <code>BufferedOutputStream</code> around
+   *                      <code>outputStream</code>.
+   * @param sessionId     The session ID associated with the request.
+   * @param receiverName  The receiver of the message. Can NOT be null
+   * 
+   * @see   LocateRequest
+   */
   def writeLocateRequest(outputStream: OutputStream, sessionId: Long, receiverName: String): Unit
 
+  /**
+   * Write the necessary sequence of bytes to <code>outputStream</code> to
+   * indicate a <code>LocateResponse</code> command to the other side.
+   *
+   * @param outputStream  The output stream to write the command to. This is
+   *                      backed by a byte array, so there is no need to wrap
+   *                      a <code>BufferedOutputStream</code> around
+   *                      <code>outputStream</code>.
+   * @param sessionId     The session ID associated with the request.
+   * @param receiverName  The receiver of the message. Can NOT be null
+   * @param found         True if the request was successful, false otherwise.
+   * 
+   * @see   LocateResponse
+   */
   def writeLocateResponse(outputStream: OutputStream, sessionId: Long, receiverName: String, found: Boolean): Unit
 
   /**
@@ -266,24 +292,14 @@ abstract class Serializer {
    * @return  The control message to forward to the network kernel
    *
    * @see     NetKernelMessage
+   * @see     writeLocateRequest
+   * @see     writeLocateResponse
    * @see     writeAsyncSend
    * @see     writeSyncSend
    * @see     writeSyncReply
    * @see     writeRemoteApply
    */
   def read(bytes: Array[Byte]): NetKernelMessage
-
-  /**
-   * Returns the class name used to bootstrap an equivalent serializer on the
-   * remote side. The default implementation returns
-   * <code>getClass.getName</code>. Implementations which want to separate out
-   * the client side logic from the server side logic can supply the class
-   * name of the server side serializer.
-   *
-   * @return  Class name of the <code>Serializer</code> to bootstrap remotely
-   */
-  def bootstrapClassName: String = 
-    getClass.getName
 
   /** 
    * Unique identifier used for this serializer 

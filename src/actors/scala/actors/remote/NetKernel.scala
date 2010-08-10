@@ -175,12 +175,12 @@ private[remote] object NetKernel {
     makeFuture(from, false)
 
   @inline private def makeLocateFuture(from: Option[Reactor[Any]], connectPolicy: ConnectPolicy.Value) = {
-    Debug.info("makeLocateFuture(): from %s, connectPolicy %s".format(from, connectPolicy))
+    //Debug.info("makeLocateFuture(): from %s, connectPolicy %s".format(from, connectPolicy))
     makeFuture(from, connectPolicy == ConnectPolicy.WaitVerified)
   }
 
   def asyncSend(conn: MessageConnection, toName: String, from: Option[Reactor[Any]], msg: AnyRef, config: Configuration) {
-    Debug.info("asyncSend(): to: %s, from: %s, msg: %s".format(toName, from, msg))
+    //Debug.info("asyncSend(): to: %s, from: %s, msg: %s".format(toName, from, msg))
     val fromName = from.map(f => RemoteActor.getOrCreateName(f).name)
     val ftch = makeSendFuture(from)
     conn.send(ftch) { serializer: Serializer =>
@@ -193,7 +193,7 @@ private[remote] object NetKernel {
   }
 
   def syncSend(conn: MessageConnection, toName: String, from: Reactor[Any], msg: AnyRef, session: String, config: Configuration) {
-    Debug.info("syncSend(): to: %s, from: %s, msg: %s, session: %s".format(toName, from, msg, session))
+    //Debug.info("syncSend(): to: %s, from: %s, msg: %s, session: %s".format(toName, from, msg, session))
     val fromName = RemoteActor.getOrCreateName(from).name
     val ftch = makeSendFuture(Some(from))
     conn.send(ftch) { serializer: Serializer =>
@@ -206,7 +206,7 @@ private[remote] object NetKernel {
   }
 
   def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String, config: Configuration) {
-    Debug.info("syncSend(): to: %s, msg: %s, session: %s".format(toName, msg, session))
+    //Debug.info("syncSend(): to: %s, msg: %s, session: %s".format(toName, msg, session))
     val ftch = makeSendFuture(None) /** TODO: can we get this actor? */
     conn.send(ftch) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
@@ -218,7 +218,7 @@ private[remote] object NetKernel {
   }
 
   def remoteApply(conn: MessageConnection, toName: String, from: Reactor[Any], rfun: RemoteFunction, config: Configuration) {
-    Debug.info("remoteApply(): to: %s, from: %s, rfun: %s".format(toName, from, rfun))
+    //Debug.info("remoteApply(): to: %s, from: %s, rfun: %s".format(toName, from, rfun))
     val fromName = RemoteActor.getOrCreateName(from).name
     val ftch = makeSendFuture(Some(from))
     conn.send(ftch) { serializer: Serializer =>
@@ -235,14 +235,14 @@ private[remote] object NetKernel {
   private final val random = new Random
 
   def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: RFuture, config: Configuration) {
-    Debug.info("locateRequest(): receiverName: %s, from: %s".format(receiverName, from))
+    //Debug.info("locateRequest(): receiverName: %s, from: %s".format(receiverName, from))
     val ftch = makeLocateFuture(from, config.connectPolicy)
     val requestId = random.nextLong()
     requestFutures.put(requestId, (errorFtch, ftch))
     val connFtch = new ErrorCallbackFuture((t: Throwable) => {
-      Debug.info("finishing errorFtch with error")
+      //Debug.info("finishing errorFtch with error")
       errorFtch.finishWithError(t)
-      Debug.info("finishing ftch with error")
+      //Debug.info("finishing ftch with error")
       ftch.foreach(_.finishWithError(t))
     })
     conn.send(Some(connFtch)) { serializer: Serializer =>
@@ -251,7 +251,7 @@ private[remote] object NetKernel {
       serializer.writeLocateRequest(baos, requestId, receiverName) 
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
-    Debug.info("blocking on ftch: " + ftch)
+    //Debug.info("blocking on ftch: " + ftch)
     ftch.map(_.await(config.waitTimeout))
   }
 
@@ -283,7 +283,7 @@ private[remote] object NetKernel {
           // is this an active session?
           RemoteActor.finishChannel(session) match {
             case None =>
-              Debug.info(this + ": lost session: " + session)
+              Debug.error(this + ": lost session: " + session)
             // finishes request-reply cycle
             case Some(replyCh) =>
               Debug.info(this + ": finishing request-reply cycle for session: " + session + " on replyCh " + replyCh)
@@ -310,7 +310,7 @@ private[remote] object NetKernel {
   }
 
   private def processMsg(conn: MessageConnection, serializer: Serializer, msg: AnyRef) {
-    Debug.info("processMsg: " + msg)
+    //Debug.info("processMsg: " + msg)
     msg match {
       case LocateRequest(sessionId, receiverName) =>
         val found = RemoteActor.getActor(Symbol(receiverName)) ne null
@@ -327,9 +327,9 @@ private[remote] object NetKernel {
             future._1.finishSuccessfully()
             future._2.foreach(_.finishSuccessfully())
           } else {
-            Debug.info("finishing future._1: " + future._1)
+            //Debug.info("finishing future._1: " + future._1)
             future._1.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName)))
-            Debug.info("finishing future._2: " + future._2)
+            //Debug.info("finishing future._2: " + future._2)
             future._2.foreach(_.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName))))
           }
         else
@@ -339,7 +339,7 @@ private[remote] object NetKernel {
           new ConnectionProxy(conn.remoteNode, Symbol(senderName), conn)
         def removeOrphan(a: OutputChannel[Any]) {
           // orphaned actor sitting in hash maps
-          Debug.info(this + ": found orphaned (terminated) actor: " + a)
+          Debug.error(this + ": found orphaned (terminated) actor: " + a)
           RemoteActor.unregister(a)
         }
         val (senderName, receiverName) = msg match {
@@ -355,7 +355,7 @@ private[remote] object NetKernel {
         val a = RemoteActor.getActor(Symbol(receiverName))
         if (a eq null)
           // message is lost
-          Debug.info(this+": lost message: " + msg)
+          Debug.error(this+": lost message: " + msg)
         else if (a.isInstanceOf[Actor] && 
                 a.asInstanceOf[Actor].getState == Actor.State.Terminated)
           removeOrphan(a)

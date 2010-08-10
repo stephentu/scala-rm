@@ -29,6 +29,12 @@ package remote
  */
 sealed trait NetKernelMessage
 
+/**
+ * Provides factory methods for default (case class) implementations of the
+ * <code>LocateRequest</code> interface.
+ *
+ * @see DefaultLocateRequestImpl
+ */
 object LocateRequest {
   def apply(sessionId: Long, receiverName: String): LocateRequest =
     DefaultLocateRequestImpl(sessionId, receiverName)
@@ -36,15 +42,36 @@ object LocateRequest {
     Some(r.sessionId, r.receiverName)
 }
 
+/**
+ * <code>LocateRequest</code> is issued by the network layer to locate a named
+ * actor at the remote end
+ */
 trait LocateRequest extends NetKernelMessage {
+	/**
+	 * The session id associated with the request. Only needs to be unique per
+	 * machine
+	 */
 	def sessionId: Long
+
+	/**
+	 * The name of the actor in to be located
+	 */
   def receiverName: String
 }
 
+/**
+ * A simple implementation of the <code>LocateRequest</code> interface
+ */
 case class DefaultLocateRequestImpl(override val sessionId: Long,
 																		override val receiverName: String)
   extends LocateRequest
   
+/**
+ * Provides factory methods for default (case class) implementations of the
+ * <code>LocateResponse</code> interface.
+ *
+ * @see DefaultLocateResponseImpl
+ */
 object LocateResponse {
   def apply(sessionId: Long, receiverName: String, found: Boolean): LocateResponse =
     DefaultLocateResponseImpl(sessionId, receiverName, found)
@@ -52,12 +79,19 @@ object LocateResponse {
     Some(r.sessionId, r.receiverName, r.found)
 }
 
+/**
+ * <code>LocateResponse</code> is the response returned for a
+ * <code>LocateRequest</code>
+ */
 trait LocateResponse extends NetKernelMessage {
 	def sessionId: Long
   def receiverName: String
   def found: Boolean
 }
 
+/**
+ * A simple implementation of the <code>LocateResponse</code> interface
+ */
 case class DefaultLocateResponseImpl(override val sessionId: Long,
 																		 override val receiverName: String,
                                      override val found: Boolean)

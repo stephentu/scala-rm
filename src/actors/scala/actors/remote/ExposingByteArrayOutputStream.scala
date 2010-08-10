@@ -42,6 +42,8 @@ private[remote] class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOut
   //  count = newcount
   //}
 
+  override def toString = "<ExposingByteArrayOutputStream size = %d".format(size)
+
   /**
    * Not thread-safe
    */
