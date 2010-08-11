@@ -832,6 +832,8 @@ object RemoteActor {
     stopRemoteStartListener()
     NetKernel.releaseResources()
   }
+
+  // proxy cache
 }
 
 /**

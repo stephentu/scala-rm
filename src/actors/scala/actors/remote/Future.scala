@@ -84,16 +84,23 @@ private[remote] class BlockingFuture extends RFuture {
 }
 
 /**
- * RFuture which assumes that the action will succeed, so awaits are no-ops,
- * and only if something does go wrong does callback get executed
+ * RFuture where awaits are no-ops, and notification of success/failure is
+ * simply via callbacks 
  */
-private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) extends RFuture {
+private[remote] class CallbackFuture(successCallback: () => Unit,
+                                     errorCallback: Throwable => Unit) extends RFuture {
   override def await(timeout: Long) {}
   override def awaitWithOption(timeout: Long) = None
-  override def finishSuccessfully() {}
-  override def finishWithError(t: Throwable) { callback(t) }
+  override def finishSuccessfully() { successCallback() }
+  override def finishWithError(t: Throwable) { errorCallback(t) }
   override def isFinished = true /** Constructed such that it is finished when it started */
 }
+
+private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) 
+  extends CallbackFuture(() => (), callback) 
+
+private[remote] class SuccessCallbackFuture(callback: () => Unit) 
+  extends CallbackFuture(callback, (_: Throwable) => ()) 
 
 /**
  * RFuture which represents an operation which has already completed

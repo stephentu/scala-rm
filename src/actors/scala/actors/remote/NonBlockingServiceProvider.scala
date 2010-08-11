@@ -294,10 +294,12 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
       // receiving message state management 
       private class MessageState {
 
+        val intArray      = new Array[Byte](4)
+
         var isReadingSize = true
         var messageSize   = 4
         var bytesSoFar    = 0
-        var currentArray  = new Array[Byte](4)
+        var currentArray  = intArray
 
         // returns true iff either EOF was reached, or an exception
         // occured during read
@@ -371,7 +373,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
           isReadingSize = true
           messageSize   = 4
           bytesSoFar    = 0
-          currentArray  = new Array[Byte](4)
+          currentArray  = intArray
         }
 
         def startReadingMessage(size: Int) {

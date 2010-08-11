@@ -80,6 +80,10 @@ private[remote] object NetKernel {
             Debug.info(this + ": removing connection with key from NetKernel: " + key)
             connections.remove(key)
           }
+          // attach a cache of the results of locate requests. Key is name of
+          // remote actor. Value is (true if exists/false otherwise, last
+          // timestamp checked)
+          conn.attach(new ConcurrentHashMap[Symbol, (Boolean, Long)])
           // now available to other threads
           connections.put(key, conn)
           conn
@@ -231,27 +235,42 @@ private[remote] object NetKernel {
     //ftch.map(_.await(config.waitTimeout))
   }
 
-  private val requestFutures = new ConcurrentHashMap[Long, (RFuture, Option[RFuture])]
+  private val requestFutures = new ConcurrentHashMap[Long, RFuture]
 
+  // TODO: i dont think randomness here is really necessary. thus could
+  // probably just use a volatile long for performance
   private final val random = new Random
 
-  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], errorFtch: RFuture, config: Configuration) {
+  def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], proxyFtch: RFuture, config: Configuration) {
     //Debug.info("locateRequest(): receiverName: %s, from: %s".format(receiverName, from))
+
     val ftch = makeLocateFuture(from, config.connectPolicy)
     val requestId = random.nextLong()
-    requestFutures.put(requestId, (errorFtch, ftch))
-    val connFtch = new ErrorCallbackFuture((t: Throwable) => {
-      //Debug.info("finishing errorFtch with error")
-      errorFtch.finishWithError(t)
-      //Debug.info("finishing ftch with error")
+
+    val callback = (t: Throwable) => {
+      proxyFtch.finishWithError(t)
       ftch.foreach(_.finishWithError(t))
+    }
+
+    // map to session
+    requestFutures.put(requestId, new CallbackFuture(() => {
+      proxyFtch.finishSuccessfully()
+      ftch.foreach(_.finishSuccessfully())
+    }, callback))
+
+    // send via network
+    val connFtch = new ErrorCallbackFuture((t: Throwable) => {
+      requestFutures.remove(requestId)
+      callback(t)
     })
+
     conn.send(Some(connFtch)) { serializer: Serializer =>
 			val baos = new ExposingByteArrayOutputStream(BufSize)
       baos.writeZeros(4)
       serializer.writeLocateRequest(baos, requestId, receiverName) 
 			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
     }
+
     //Debug.info("blocking on ftch: " + ftch)
     ftch.map(_.await(config.waitTimeout))
   }
@@ -319,7 +338,8 @@ private[remote] object NetKernel {
       Debug.info(this + ": started")
       while (true) {
         try {
-          val (conn, LocateRequest(sessionId, receiverName)) = queue.take()
+          val (conn, r @ LocateRequest(sessionId, receiverName)) = queue.take()
+          Debug.error(this + ": processing locate request" + r)
           val found = RemoteActor.getActor(Symbol(receiverName)) ne null
           conn.send(None) { serializer: Serializer => 
             val baos = new ExposingByteArrayOutputStream(BufSize)
@@ -340,22 +360,19 @@ private[remote] object NetKernel {
     //Debug.info("processMsg: " + msg)
     msg match {
       case r @ LocateRequest(_, _) =>
+        Debug.error(this + ": locate request: " + r)
         // offload to work queue so we don't block in receiving thread
         locateRequestProc.queue.offer((conn, r))
       case LocateResponse(sessionId, receiverName, found) =>
+        Debug.error(this + ": locate response: " + msg)
         val future = requestFutures.remove(sessionId)
         if (future ne null)
-          if (found) {
-            future._1.finishSuccessfully()
-            future._2.foreach(_.finishSuccessfully())
-          } else {
-            //Debug.info("finishing future._1: " + future._1)
-            future._1.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName)))
-            //Debug.info("finishing future._2: " + future._2)
-            future._2.foreach(_.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName))))
-          }
+          if (found) 
+            future.finishSuccessfully()
+          else 
+            future.finishWithError(new NoSuchRemoteActorException(Symbol(receiverName)))
         else
-          Debug.error("Lost LocateResponse: " + msg)
+          Debug.error("LocateResponse received with no associated request: " + msg)
       case _ =>
         @inline def mkProxy(senderName: String) = 
           new ConnectionProxy(conn.remoteNode, Symbol(senderName), conn)
@@ -364,6 +381,8 @@ private[remote] object NetKernel {
           Debug.error(this + ": found orphaned (terminated) actor: " + a)
           RemoteActor.unregister(a)
         }
+        // TODO: extractors are kind of expensive. move this logic into some
+        // base trait here, and call a method instead
         val (senderName, receiverName) = msg match {
           case AsyncSend(sender, receiver, _) => 
             (Option(sender), receiver) 
@@ -377,11 +396,12 @@ private[remote] object NetKernel {
         val a = RemoteActor.getActor(Symbol(receiverName))
         if (a eq null)
           // message is lost
-          Debug.error(this+": lost message: " + msg)
+          Debug.error(this+": lost message")
         else if (a.isInstanceOf[Actor] && 
                 a.asInstanceOf[Actor].getState == Actor.State.Terminated)
           removeOrphan(a)
         else {
+          // TODO: see above, extractors are expensive
           val cmd = msg match {
             case AsyncSend(_, _, message) => 
               SendTo(a, message) 

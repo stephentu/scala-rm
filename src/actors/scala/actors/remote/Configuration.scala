@@ -70,10 +70,16 @@ trait Configuration {
   val connectPolicy: ConnectPolicy.Value = ConnectPolicy.NoWait
 
   /**
+   * The amount of time to cache name lookups for, per connection, in
+   * milliseconds.
+   */
+  val lookupValidPeriod: Long = 30 * 60 * 1000 /** 30 minutes */
+
+  /**
    * Contains the time (in milliseconds) to wait for any blocking operations
    * to complete with respect to the connect policy. Default is 10 seconds
    */
-  val waitTimeout: Int = 10000 /** 10 seconds */
+  val waitTimeout: Long = 10000 /** 10 seconds */
 
   /**
    * Returns a new <code>Serializer</code> to be used when spawning a new

@@ -54,17 +54,13 @@ private[remote] class DefaultMessageConnection(
   def status = _status
   private def status_=(newStatus: Int) { _status = newStatus }
 
-  def isHandshaking          = status == Handshaking
-  def isEstablished          = status == Established
+  @inline private def isHandshaking = status == Handshaking
+  @inline private def isEstablished = status == Established
 
   override val connectFuture = byteConn.connectFuture
 
   override val handshakeFuture = new BlockingFuture
 
-  /**
-   * Messages which we have received, for processing
-   */
-  private val messageQueue = new Queue[Array[Byte]]
   /**
    * Messages which need to be sent out (in order), but could not have been at
    * the time send() was called (due to things like not finishing handshake
@@ -156,25 +152,20 @@ private[remote] class DefaultMessageConnection(
 
   def receive(bytes: Array[Byte]) {
     assert(status != 0)
-
     //Debug.info(this + ": received " + bytes.length + " bytes")
-    messageQueue += bytes
-    while (hasNextAction) {
-      if (isHandshaking) {
-        val msg = nextPrimitiveMessage()
-        //Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
-        terminateLock.synchronized { 
-          if (terminateInitiated) return
-          handleNextEvent(RecvEvent(msg))
-        }
-      } else if (isEstablished) {
-        val nextMsg = nextSerializerMessage()
-        //Debug.info(this + ": calling receiveMessage with " + nextMsg)
-        receiveMessage(serializer, nextMsg)
-      } else {
-        Debug.error(this + ": hasNextAction returned true but no action can be taken")
+    if (isHandshaking) {
+      val msg = primitiveSerializer.deserialize(bytes)
+      //Debug.info(this + ": receive() - nextPrimitiveMessage(): " + msg)
+      terminateLock.synchronized { 
+        if (terminateInitiated) return
+        handleNextEvent(RecvEvent(msg))
       }
-    }
+    } else if (isEstablished) {
+      val nextMsg = serializer.read(bytes)
+      //Debug.info(this + ": calling receiveMessage with " + nextMsg)
+      receiveMessage(serializer, nextMsg)
+    } else 
+      Debug.error(this + ": received %d bytes but no action can be taken".format(bytes.length))
   }
 
   override def send(ftch: Option[RFuture])(msg: Serializer => ByteSequence) {
@@ -201,23 +192,6 @@ private[remote] class DefaultMessageConnection(
       byteConn.send(msg(activeSerializer), ftch)
   }
 
-  @inline private def hasNextAction = status match {
-    case Established | Handshaking => hasSimpleMessage
-    case _ => false
-  }
-
-  @inline private def hasSimpleMessage = messageQueue.size > 0
-
-  @inline private def nextMessage() = {
-    assert(hasSimpleMessage)
-    messageQueue.dequeue()
-  }
-
-  @inline private def nextPrimitiveMessage() =
-    primitiveSerializer.deserialize(nextMessage())
-
-  @inline private def nextSerializerMessage() =
-		serializer.read(nextMessage())
 }
 
 private[remote] class StandardService extends Service {

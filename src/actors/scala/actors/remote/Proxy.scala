@@ -16,6 +16,7 @@ import java.util.WeakHashMap
 import java.lang.ref.WeakReference
 import java.io.{ ObjectInputStream, ObjectOutputStream, 
                  IOException, NotSerializableException }
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -91,7 +92,7 @@ private[remote] abstract class Proxy extends AbstractActor
 
   private def tryRemoteAction(a: Option[AbstractActor])(f: MessageConnection => Unit) {
     var triesLeft = numRetries + 1
-    var success = false
+    var success   = false
     assert(triesLeft > 0)
     while (!success && triesLeft > 0) {
       triesLeft -= 1
@@ -103,12 +104,14 @@ private[remote] abstract class Proxy extends AbstractActor
         success = true
       } catch {
         case e: Exception =>
-          Debug.info(this + ": tryRemoteAction(): Caught exception: " + e.getMessage)
-          Debug.doInfo { e.printStackTrace() }
+          Debug.error(this + ": tryRemoteAction(): Caught exception: " + e.getMessage)
+          Debug.doError { e.printStackTrace() }
           if (usingConn ne null)
             terminateConn(usingConn)
           if (triesLeft == 0)
             throw e
+          else
+            Debug.error(this + ": as per retry policy, retrying (%d tries left)".format(triesLeft))
       }
     }
   }
@@ -154,6 +157,8 @@ private[remote] abstract class Proxy extends AbstractActor
 
   override def !![A](msg: Any, handler: PartialFunction[Any, A]) = {
     // check connection, before starting a future actor
+    // this allows us to give the same blocking semantics for !! as for other
+    // methods, w.r.t. the connect policy
     conn(Some(Actor.self(scheduler)))
     super.!!(msg, handler)
   }
@@ -237,9 +242,8 @@ private[remote] abstract class Proxy extends AbstractActor
 } 
 
 /**
- * This class explicitly defines <code>writeObject</code> and
- * <code>readObject</code> beacuse the <code>Actor</code> trait does not take
- * care to serialize properly
+ * This class represents a restartable, lazy configurable proxy. It is
+ * serializable also
  */
 @serializable
 private[remote] class ConfigProxy(override val remoteNode: Node,
@@ -248,10 +252,20 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
 
   assert(_config ne null) /** _config != null from default ctor (NOT from serialized form though) */
 
-  // save enough of the configuration to recreate it, if seralized 
+  // save enough of the configuration to recreate it, if serialized. We don't
+  // just serializer the Configuration, because Configuration instances are
+  // most likely NOT serializable (since they can be created very ad-hoc-ly),
+  // and also we don't need ALL the fields of the Configuration
 
-  private val _selectMode = _config.selectMode
-  private val _numRetries = _config.numRetries
+  // TODO: these extra fields make proxies waste more space. write custom
+  // read/write object serializers, so we don't have to save these values in
+  // VALs
+
+  private val _selectMode        = _config.selectMode
+  private val _numRetries        = _config.numRetries
+  private val _connectPolicy     = _config.connectPolicy
+  private val _lookupValidPeriod = _config.lookupValidPeriod
+
   // IMPLEMENTATION limitation: can only reconstruct serializer remotely which
   // have a no-arg ctor
   private val _serializerClassName = _config.cachedSerializer.getClass.getName
@@ -267,46 +281,71 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
       val tmpConn = NetKernel.getConnectionFor(remoteNode, config)
 
       // sanity checks
-      if (config.connectPolicy == ConnectPolicy.WaitEstablished ||
-          config.connectPolicy == ConnectPolicy.WaitHandshake ||
-          config.connectPolicy == ConnectPolicy.WaitVerified)
-        assert(tmpConn.connectFuture.isFinished)
-      if (config.connectPolicy == ConnectPolicy.WaitHandshake ||
-          config.connectPolicy == ConnectPolicy.WaitVerified)
-        assert(tmpConn.handshakeFuture.isFinished)
+      //if (config.connectPolicy == ConnectPolicy.WaitEstablished ||
+      //    config.connectPolicy == ConnectPolicy.WaitHandshake ||
+      //    config.connectPolicy == ConnectPolicy.WaitVerified)
+      //  assert(tmpConn.connectFuture.isFinished)
+      //if (config.connectPolicy == ConnectPolicy.WaitHandshake ||
+      //    config.connectPolicy == ConnectPolicy.WaitVerified)
+      //  assert(tmpConn.handshakeFuture.isFinished)
 
-      val self = this
-      @volatile var error = false 
+      // now, check to see if a locate request for this actor has been made
+      // already
+      val cache = tmpConn.attachment_!.asInstanceOf[ConcurrentHashMap[Symbol, (Boolean, Long)]]
 
-      NetKernel.locateRequest(tmpConn, 
-                              name.name, 
-                              a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
-                              new ErrorCallbackFuture((t: Throwable) => {
-                                Debug.error(t.getMessage)
-                                Debug.doError { t.printStackTrace() }
-                                self.synchronized {
-                                  //Debug.info("_conn = null")
-                                  error = true
-                                  _conn = null
-                                }
-                              }),
-                              config)
-     
-      self.synchronized {
-        if (!error)
+      val tuple = cache.get(name)
+
+      val makeNewRequest = 
+        (tuple eq null) || // no request ever made before
+        (tuple._2 + config.lookupValidPeriod) <= System.currentTimeMillis // the look up has expired
+
+      if (makeNewRequest) {
+        NetKernel.locateRequest(tmpConn, 
+                                name.name, 
+                                a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
+                                new CallbackFuture(() => {
+                                  // on success, cache the lookup result, and
+                                  // set _conn = tmpConn
+                                  cache.put(name, (true, System.currentTimeMillis))
+                                  _conn = tmpConn
+                                },
+                                (t: Throwable) => {
+                                  // on error. cache the lookup result.  no
+                                  // need to set _conn = null since we never sent it
+                                  // to anything valid
+                                  cache.put(name, (false, System.currentTimeMillis))
+                                  Debug.error(t.getMessage)
+                                  Debug.doError { t.printStackTrace() }
+                                }),
+                                config)
+      
+        // NOTE: we don't set _conn = tmpConn here, because we still aren't
+        // sure whether or not the connection is really valid for this proxy.
+        tmpConn
+      } else {
+        if (tuple._1) {
+          // valid lookup, use the result
           _conn = tmpConn
+          tmpConn
+        } else
+          // oops, lookup resolved badly. throw an exception
+          // YES, this means that connections with a policy of NoWait CAN get
+          // immediate exceptions the second time around on a bad connection.
+          // Oh well.
+          throw new NoSuchRemoteActorException(name)
       }
-      tmpConn
     }
   }
 
   override lazy val config = 
     if (_config eq null) 
-      new Configuration with HasDefaultMessageCreator
-                        with HasDefaultPolicy /* TODO: Save connect policy */ {
-        override val selectMode = _selectMode
-        override val aliveMode  = _selectMode /** Shouldn't be used though */
-        override val numRetries = _numRetries
+      new Configuration with HasDefaultMessageCreator {
+
+        override val selectMode        = _selectMode
+        override val aliveMode         = _selectMode /** Should never be called */
+        override val numRetries        = _numRetries
+        override val connectPolicy     = _connectPolicy
+        override val lookupValidPeriod = _lookupValidPeriod
 
         override def newSerializer() = {
           // TODO: this needs to be sandboxed somehow
