@@ -160,22 +160,22 @@ class JavaSerializer(cl: ClassLoader)
     }
   }
 
-  private def writeBoolean(os: DataOutputStream, b: Boolean) {
+  protected def writeBoolean(os: DataOutputStream, b: Boolean) {
     os.writeByte(if (b) 1 else 0)
   }
 
-  private def readBoolean(is: DataInputStream): Boolean = 
+  protected def readBoolean(is: DataInputStream): Boolean = 
     if (is.readByte() == 0) false else true
 
-  private def writeTag(os: DataOutputStream, t: Int) {
+  protected def writeTag(os: DataOutputStream, t: Int) {
     os.writeByte(t)
   }
 
-  private def readTag(is: DataInputStream): Int = 
+  protected def readTag(is: DataInputStream): Int = 
     is.readByte()
 
   // TODO: varint encoding
-  private def writeString(os: DataOutputStream, s: String) {
+  protected def writeString(os: DataOutputStream, s: String) {
     if (s eq null)
       os.writeInt(0)
     else {
@@ -185,7 +185,7 @@ class JavaSerializer(cl: ClassLoader)
   }
 
   // TODO: varint decoding
-  private def readString(is: DataInputStream): String = {
+  protected def readString(is: DataInputStream): String = {
     val len = is.readInt()
     if (len == 0) null
     else {
@@ -196,21 +196,21 @@ class JavaSerializer(cl: ClassLoader)
   }
 
   // TODO: varint encoding
-  private def writeLong(os: DataOutputStream, l: Long) {
+  protected def writeLong(os: DataOutputStream, l: Long) {
     os.writeLong(l)
   }
 
   // TODO: varint decoding
-  private def readLong(is: DataInputStream): Long =
+  protected def readLong(is: DataInputStream): Long =
     is.readLong()
 
-  private def writeObject(os: DataOutputStream, o: AnyRef) {
+  protected def writeObject(os: DataOutputStream, o: AnyRef) {
     val out = new ObjectOutputStream(os)
     out.writeObject(o)
     out.flush()
   }
 
-  private def readObject(is: DataInputStream): AnyRef = {
+  protected def readObject(is: DataInputStream): AnyRef = {
     val in  = newObjectInputStream(is)
     in.readObject()
   }

@@ -71,7 +71,9 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
             b(o - 2) = ((l >>> 8) & 0xff).toByte
             b(o - 1) = ((l & 0xff)).toByte
 
-            dataout.write(seq.bytes, seq.offset - 4, seq.length + 4)
+            //Debug.error("Writing %d bytes to socket".format(l))
+
+            dataout.write(b, o - 4, l + 4)
           } else {
             // TODO: should we do an array copy here to avoid an extra socket
             // write, or should we just leave this case

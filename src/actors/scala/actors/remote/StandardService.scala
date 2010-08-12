@@ -112,10 +112,10 @@ private[remote] class DefaultMessageConnection(
         case _ => Seq()
       }) foreach { msg =>
         //Debug.info(this + ": nextHandshakeMessage: " + msg.asInstanceOf[AnyRef])
-        // TODO: preallocate space for the primitiveSerializer's byte array
-        val data = primitiveSerializer.serialize(msg.asInstanceOf[AnyRef])
-        Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
-        byteConn.send(new ByteSequence(data), Some(callbackFtch))
+        val os = new PreallocatedHeaderByteArrayOutputStream(4, primitiveSerializer.sizeOf(msg) + 4)
+        primitiveSerializer.serialize(msg, os)
+        //Debug.info(this + ": sending in handshake: data: " + java.util.Arrays.toString(data))
+        byteConn.send(os.toDiscardableByteSeq, Some(callbackFtch))
       }
     }
     serializer.handleNextEvent(evt).foreach { evt =>

@@ -33,9 +33,8 @@ private[remote] class PrimitiveSerializer {
 	import PrimitiveSerializer._
 
 	// TODO: varint encoding
-	def serialize(message: Any) = {
-		val os  = new ExposingByteArrayOutputStream(1 + sizeOf(message))
-		val dos = new DataOutputStream(os)
+	def serialize(message: Any, outputStream: OutputStream) {
+		val dos = new DataOutputStream(outputStream)
 		message match {
 			case b: Byte        => dos.writeByte(BYTE_TAG); dos.writeByte(b) 
 			case s: Short       => dos.writeByte(SHORT_TAG); dos.writeShort(s) 
@@ -48,9 +47,6 @@ private[remote] class PrimitiveSerializer {
 			case s: String      => dos.writeByte(STRING_TAG); dos.writeBytes(s) 
 			case b: Array[Byte] => dos.writeByte(BYTES_TAG); dos.write(b)
 		}
-		val underlying = os.getUnderlyingByteArray
-		assert(underlying.length == os.size)
-		underlying
 	}
 
 	// TODO: varint decoding
@@ -78,18 +74,25 @@ private[remote] class PrimitiveSerializer {
 		}
 	}
 
-	private def sizeOf(message: Any) = message match {
-    case b: Byte        => 1
-    case s: Short       => 2
-    case i: Int         => 4
-    case l: Long        => 8
-    case f: Float       => 4
-    case d: Double      => 8
-    case b: Boolean     => 1
-    case c: Char        => 2
-    case s: String      => s.length
-    case b: Array[Byte] => b.length
-		case a: AnyRef      => throw new NonPrimitiveClassException(a.getClass)
-	}
+  /**
+   * Returns the TOTAL (including tag) number of bytes needed to serializer
+   * message
+   */
+	def sizeOf(message: Any) = {
+    val s0 = message match {
+      case b: Byte        => 1
+      case s: Short       => 2
+      case i: Int         => 4
+      case l: Long        => 8
+      case f: Float       => 4
+      case d: Double      => 8
+      case b: Boolean     => 1
+      case c: Char        => 2
+      case s: String      => s.length
+      case b: Array[Byte] => b.length
+      case a: AnyRef      => throw new NonPrimitiveClassException(a.getClass)
+    }
+    1 + s0
+  }
 
 }

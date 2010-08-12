@@ -184,15 +184,17 @@ private[remote] object NetKernel {
     makeFuture(from, connectPolicy == ConnectPolicy.WaitVerified)
   }
 
+  @inline private def makeOutputStream() = 
+    new PreallocatedHeaderByteArrayOutputStream(4, BufSize)
+
   def asyncSend(conn: MessageConnection, toName: String, from: Option[Reactor[Any]], msg: AnyRef, config: Configuration) {
     //Debug.info("asyncSend(): to: %s, from: %s, msg: %s".format(toName, from, msg))
     val fromName = from.map(f => RemoteActor.getOrCreateName(f).name)
     val ftch = makeSendFuture(from)
     conn.send(ftch) { serializer: Serializer =>
-			val baos = new ExposingByteArrayOutputStream(BufSize)
-      baos.writeZeros(4)
-      serializer.writeAsyncSend(baos, fromName.orNull, toName, msg)
-			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+      val os = makeOutputStream()
+      serializer.writeAsyncSend(os, fromName.orNull, toName, msg)
+      os.toDiscardableByteSeq
     }
     //ftch.map(_.await(config.waitTimeout))
   }
@@ -202,10 +204,9 @@ private[remote] object NetKernel {
     val fromName = RemoteActor.getOrCreateName(from).name
     val ftch = makeSendFuture(Some(from))
     conn.send(ftch) { serializer: Serializer =>
-			val baos = new ExposingByteArrayOutputStream(BufSize)
-      baos.writeZeros(4)
-      serializer.writeSyncSend(baos, fromName, toName, msg, session)
-			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+      val os = makeOutputStream()
+      serializer.writeSyncSend(os, fromName, toName, msg, session)
+      os.toDiscardableByteSeq
     }
     //ftch.map(_.await(config.waitTimeout))
   }
@@ -214,10 +215,9 @@ private[remote] object NetKernel {
     //Debug.info("syncSend(): to: %s, msg: %s, session: %s".format(toName, msg, session))
     val ftch = makeSendFuture(None) /** TODO: can we get this actor? */
     conn.send(ftch) { serializer: Serializer =>
-			val baos = new ExposingByteArrayOutputStream(BufSize)
-      baos.writeZeros(4)
-      serializer.writeSyncReply(baos, toName, msg, session)
-			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+      val os = makeOutputStream()
+      serializer.writeSyncReply(os, toName, msg, session)
+      os.toDiscardableByteSeq
     }
     //ftch.map(_.await(config.waitTimeout))
   }
@@ -227,10 +227,9 @@ private[remote] object NetKernel {
     val fromName = RemoteActor.getOrCreateName(from).name
     val ftch = makeSendFuture(Some(from))
     conn.send(ftch) { serializer: Serializer =>
-			val baos = new ExposingByteArrayOutputStream(BufSize)
-      baos.writeZeros(4)
-      serializer.writeRemoteApply(baos, fromName, toName, rfun) 
-			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+      val os = makeOutputStream()
+      serializer.writeRemoteApply(os, fromName, toName, rfun) 
+      os.toDiscardableByteSeq
     }
     //ftch.map(_.await(config.waitTimeout))
   }
@@ -238,7 +237,8 @@ private[remote] object NetKernel {
   private val requestFutures = new ConcurrentHashMap[Long, RFuture]
 
   // TODO: i dont think randomness here is really necessary. thus could
-  // probably just use a volatile long for performance
+  // probably just use a volatile long for performance (since calls to random
+  // are all synchronized)
   private final val random = new Random
 
   def locateRequest(conn: MessageConnection, receiverName: String, from: Option[Reactor[Any]], proxyFtch: RFuture, config: Configuration) {
@@ -253,6 +253,7 @@ private[remote] object NetKernel {
     }
 
     // map to session
+    //Debug.error("locateRequest(): new requestId: " + requestId)
     requestFutures.put(requestId, new CallbackFuture(() => {
       proxyFtch.finishSuccessfully()
       ftch.foreach(_.finishSuccessfully())
@@ -265,10 +266,9 @@ private[remote] object NetKernel {
     })
 
     conn.send(Some(connFtch)) { serializer: Serializer =>
-			val baos = new ExposingByteArrayOutputStream(BufSize)
-      baos.writeZeros(4)
-      serializer.writeLocateRequest(baos, requestId, receiverName) 
-			new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+      val os = makeOutputStream()
+      serializer.writeLocateRequest(os, requestId, receiverName) 
+      os.toDiscardableByteSeq
     }
 
     //Debug.info("blocking on ftch: " + ftch)
@@ -342,10 +342,9 @@ private[remote] object NetKernel {
           Debug.error(this + ": processing locate request" + r)
           val found = RemoteActor.getActor(Symbol(receiverName)) ne null
           conn.send(None) { serializer: Serializer => 
-            val baos = new ExposingByteArrayOutputStream(BufSize)
-            baos.writeZeros(4)
-            serializer.writeLocateResponse(baos, sessionId, receiverName, found) 
-            new DiscardableByteSequence(baos.getUnderlyingByteArray, 4, baos.size - 4)
+            val os = makeOutputStream()
+            serializer.writeLocateResponse(os, sessionId, receiverName, found) 
+            os.toDiscardableByteSeq
           }
         } catch {
           case e: Exception =>

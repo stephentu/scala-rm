@@ -62,3 +62,19 @@ private[remote] class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOut
     }
   }
 }
+
+/**
+ * Represents an ByteArrayOutputStream with a pre-allocated field for a
+ * header field to go.
+ */
+private[remote] class PreallocatedHeaderByteArrayOutputStream(prealloc: Int, bufsize: Int) 
+	extends ByteArrayOutputStream(bufsize) {
+
+	assert(prealloc >= 0 && bufsize >= prealloc)
+
+	// preallocate the bytes
+	count = prealloc
+
+	def toDiscardableByteSeq =
+		new DiscardableByteSequence(buf, prealloc, count - prealloc)
+}
