@@ -1,0 +1,22 @@
+Blocking, NoWait
+Successfully caught: No such remote actor: 'nobody
+Successfully caught error
+NonBlocking, NoWait
+Successfully caught: No such remote actor: 'nobody
+Successfully caught error
+Blocking, WaitEstablished
+Successfully caught: No such remote actor: 'nobody
+Successfully caught error
+NonBlocking, WaitEstablished
+Successfully caught: No such remote actor: 'nobody
+Successfully caught error
+Blocking, WaitHandshake
+Successfully caught: No such remote actor: 'nobody
+Successfully caught error
+NonBlocking, WaitHandshake
+Successfully caught: No such remote actor: 'nobody
+Successfully caught error
+Blocking, WaitVerified
+Successfully expected: No such remote actor: 'nobody
+NonBlocking, WaitVerified
+Successfully expected: No such remote actor: 'nobody
