@@ -16,6 +16,8 @@ import scala.collection.mutable.ListBuffer
 import java.util.concurrent.{ CountDownLatch, TimeUnit }
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.concurrent.ManagedBlocker
+
 /**
  * A <code>FutureTimeoutException</code> is thrown whenever blocking on a
  * future results in a timeout (no result within the specified time). 
@@ -49,6 +51,8 @@ private[remote] trait RFuture {
    * <code>e</code> will execute right away
    */
   def notifyOnSuccess(e: => Unit): Unit
+
+  def blocker(timeout: Long): ManagedBlocker
 }
 
 /**
@@ -163,6 +167,24 @@ private[remote] class BlockingFuture extends RFuture {
 
   override def isFinished = 
     guard ne null
+
+  /**
+   * The returned `ManagedBlocker` is assumed to be only invoked by a single
+   * thread (it is NOT threadsafe)
+   */
+  override def blocker(timeout: Long) = new ManagedBlocker {
+    // we used completed to ensure that the block() method is invoked exactly
+    // once (so that we can cause the necessary exceptions to be thrown)
+    private var completed = false
+    override def block() = {
+      await(timeout)
+      completed = true
+      true
+    }
+    override def isReleasable = 
+      completed
+  }
+
 }
 
 /**
@@ -216,6 +238,9 @@ private[remote] class CallbackFuture(successCallback: () => Unit,
   override def notifyOnSuccess(e: => Unit) {
     throw new RuntimeException("Cannot notify on success")
   }
+
+  override def blocker(timeout: Long) =
+    NoOpBlocker
 }
 
 private[remote] class ErrorCallbackFuture(callback: Throwable => Unit) 
@@ -244,4 +269,10 @@ private[remote] object NoOpFuture extends RFuture {
     // successful
     e 
   }
+  override def blocker(timeout: Long) = NoOpBlocker
+}
+
+private[remote] object NoOpBlocker extends ManagedBlocker {
+  override def block()      = true
+  override def isReleasable = true
 }

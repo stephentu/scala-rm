@@ -275,24 +275,29 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
     val testConn = _conn
     if (testConn ne null) testConn
     else {
+
+      val safeReactor =
+        a.filter(_.isInstanceOf[Reactor[_]])
+         .map(_.asInstanceOf[Reactor[Any]])
+
       // try to (re-)initialize connection from the NetKernel
-      val tmpConn = NetKernel.getConnectionFor(remoteNode, config)
+      val tmpConn = NetKernel.getConnectionFor(remoteNode, safeReactor, config)
 
       if (config.connectPolicy == ConnectPolicy.NoWait ||
           config.connectPolicy == ConnectPolicy.WaitEstablished) {
         val errorCallback = (t: Throwable) => {
-          a.filter(f => f.isInstanceOf[Reactor[_]] && !f.isInstanceOf[ActorProxy]) 
-          .foreach(f => {
-              if (t.isInstanceOf[Exception]) {
-                val ex = t.asInstanceOf[Exception]
-                val reactor = f.asInstanceOf[Reactor[_]]
-                if (reactor.exceptionHandler.isDefinedAt(ex))
-                  reactor.exceptionHandler(ex)
-              } else {
-                Debug.error("Got unhandlable error (throwable): " + t)
-                Debug.doError { t.printStackTrace() }
-              }
-            })
+          // ignore ActorProxy because no way the user can define its
+          // exceptionHandler
+          safeReactor.filter(f => !f.isInstanceOf[ActorProxy]).foreach(reactor => {
+            if (t.isInstanceOf[Exception]) {
+              val ex = t.asInstanceOf[Exception]
+              if (reactor.exceptionHandler.isDefinedAt(ex))
+                reactor.exceptionHandler(ex)
+            } else {
+              Debug.error("Got unhandlable error (throwable): " + t)
+              Debug.doError { t.printStackTrace() }
+            }
+          })
         }
 
         // if the connect policy is NoWait, have to register handlers for both
@@ -301,10 +306,9 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
           tmpConn.connectFuture.notifyOnError(errorCallback)
           tmpConn.handshakeFuture.notifyOnError(errorCallback)
         }
-
         // if the connect policy is WaitEstablished, have to register handler
         // for only the handshakeFuture
-        if (config.connectPolicy == ConnectPolicy.WaitEstablished) {
+        else {
           assert(tmpConn.connectFuture.isFinished)
           tmpConn.handshakeFuture.notifyOnError(errorCallback)
         }
@@ -326,7 +330,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
       if (makeNewRequest) {
         NetKernel.locateRequest(tmpConn, 
                                 name.name, 
-                                a.filter(_.isInstanceOf[Reactor[_]]).map(_.asInstanceOf[Reactor[Any]]),
+                                safeReactor,
                                 new CallbackFuture(() => {
                                   // on success, cache the lookup result, and
                                   // set _conn = tmpConn
@@ -338,7 +342,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
                                   // need to set _conn = null since we never sent it
                                   // to anything valid
                                   cache.put(name, (false, System.currentTimeMillis))
-                                  Debug.error(t.getMessage)
+                                  Debug.error("Locate request failed: " + t.getMessage)
                                   Debug.doError { t.printStackTrace() }
                                 }),
                                 config)

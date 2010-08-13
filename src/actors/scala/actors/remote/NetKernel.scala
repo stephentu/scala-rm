@@ -10,6 +10,7 @@
 package scala.actors
 package remote
 
+import scala.concurrent.ManagedBlocker
 import scala.collection.mutable.{ HashMap, HashSet }
 import scala.util.Random
 
@@ -43,7 +44,7 @@ private[remote] object NetKernel {
    * consistency
    */
   @throws(classOf[InconsistentSerializerException])
-  def getConnectionFor(node: Node, cfg: Configuration) = {
+  def getConnectionFor(node: Node, reactor: Option[Reactor[Any]], cfg: Configuration) = {
 
     // Check the serializers to see if they match
     def checkConn(testConn: MessageConnection) = {
@@ -56,16 +57,38 @@ private[remote] object NetKernel {
 
       // WaitEstablished, WaitHandshake, and WaitVerified all require the
       // connection to be up and running as a pre-req
-      if (cfg.connectPolicy == ConnectPolicy.WaitEstablished ||
-          cfg.connectPolicy == ConnectPolicy.WaitHandshake   ||
-          cfg.connectPolicy == ConnectPolicy.WaitVerified)
-        testConn.connectFuture.await(cfg.waitTimeout)
-
+      if (cfg.connectPolicy == ConnectPolicy.WaitEstablished)
+        reactor match {
+          case Some(r) =>
+            // have the scheduler manage the block
+            r.scheduler.managedBlock(testConn.connectFuture.blocker(cfg.waitTimeout))
+          case None =>
+            // just block the current thread
+            testConn.connectFuture.await(cfg.waitTimeout)
+        }
       // WaitHandshake and WaitVerified both require the handshake to have
       // succeeded as a pre-req
-      if (cfg.connectPolicy == ConnectPolicy.WaitHandshake ||
-          cfg.connectPolicy == ConnectPolicy.WaitVerified)
-        testConn.handshakeFuture.await(cfg.waitTimeout)
+      else if (cfg.connectPolicy == ConnectPolicy.WaitHandshake ||
+               cfg.connectPolicy == ConnectPolicy.WaitVerified)
+        reactor match {
+          case Some(r) =>
+            // have the scheduler manage the block
+            r.scheduler.managedBlock(new ManagedBlocker {
+              private var completed = false
+              override def block() = {
+                testConn.connectFuture.await(cfg.waitTimeout)
+                testConn.handshakeFuture.await(cfg.waitTimeout)
+                completed = true
+                true
+              }
+              override def isReleasable = 
+                completed
+            })
+          case None =>
+            // just block the current thread
+            testConn.connectFuture.await(cfg.waitTimeout)
+            testConn.handshakeFuture.await(cfg.waitTimeout)
+        }
 
       testConn
     }
@@ -202,7 +225,6 @@ private[remote] object NetKernel {
       serializer.writeAsyncSend(os, fromName.orNull, toName, msg)
       os.toDiscardableByteSeq
     }
-    //ftch.map(_.await(config.waitTimeout))
   }
 
   def syncSend(conn: MessageConnection, toName: String, from: Reactor[Any], msg: AnyRef, session: String, config: Configuration) {
@@ -214,7 +236,6 @@ private[remote] object NetKernel {
       serializer.writeSyncSend(os, fromName, toName, msg, session)
       os.toDiscardableByteSeq
     }
-    //ftch.map(_.await(config.waitTimeout))
   }
 
   def syncReply(conn: MessageConnection, toName: String, msg: AnyRef, session: String, config: Configuration) {
@@ -225,7 +246,6 @@ private[remote] object NetKernel {
       serializer.writeSyncReply(os, toName, msg, session)
       os.toDiscardableByteSeq
     }
-    //ftch.map(_.await(config.waitTimeout))
   }
 
   def remoteApply(conn: MessageConnection, toName: String, from: Reactor[Any], rfun: RemoteFunction, config: Configuration) {
@@ -237,7 +257,6 @@ private[remote] object NetKernel {
       serializer.writeRemoteApply(os, fromName, toName, rfun) 
       os.toDiscardableByteSeq
     }
-    //ftch.map(_.await(config.waitTimeout))
   }
 
   private val requestFutures = new ConcurrentHashMap[Long, RFuture]
@@ -277,8 +296,12 @@ private[remote] object NetKernel {
       os.toDiscardableByteSeq
     }
 
-    //Debug.info("blocking on ftch: " + ftch)
-    ftch.map(_.await(config.waitTimeout))
+    ftch.foreach(f => from match {
+      case Some(reactor) =>
+        reactor.scheduler.managedBlock(f.blocker(config.waitTimeout))
+      case None =>
+        f.await(config.waitTimeout)
+    })
   }
 
   private val processMsgFunc = processMsg _
