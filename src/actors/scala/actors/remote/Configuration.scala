@@ -11,6 +11,41 @@
 package scala.actors
 package remote
 
+/**
+ * A <code>ConnectPolicy</code> describes how operations which require
+ * establishing a TCP connection should operate, with respect to blocking the
+ * current thread. This forms the basis for how all send operations, such as
+ * <code>!</code>, <code>!!</code>, and <code>!?</code> on
+ * <code>RemoteProxy</code> instances will act. A <code>ConnectPolicy</code>
+ * is ordered in the sense that any guarantees that the previous level of
+ * policy gives, is also guaranteed in the current level. <code>ConnectPolicy</code>
+ * values are defined as follows:
+ * <ul>
+ *   <li>NoWait<br/>
+ *     Do not block the current thread at all to establish a new connection.</li> 
+ *   <li>WaitEstablished<br/>
+ *     Wait until the TCP connection is established (in terms of the network
+ *     layer. This validates that a remote node is listening (but does not
+ *     validate anything else).</li>
+ *   <li>WaitHandshake<br/>
+ *     Wait until the Serializer handshake has completed (successfully or
+ *     errorneously). This validates that a remote node is speaking the remote
+ *     actors network protocol (with high probability).</li>
+ *   <li>WaitVerified<br/>
+ *     Wait until the remote end has sent back an ACK that the remote actor
+ *     being communicated exists on the other end. Note that the consistency
+ *     of this answer is determined by the <code>lookupValidPeriod</code>
+ *     field of the <code>Configuration</code> instance.</li>
+ * </ul>
+ *
+ * <b>Warning:</b> Care must be taken when using a <code>ConnectPolicy</code>
+ * that is not <code>NoWait</code>. Because these operations will block the
+ * current thread, care must be taken to ensure that the actor's do not
+ * starve. 
+ *
+ * @see Configuration
+ * @see RemoteProxy
+ */
 object ConnectPolicy extends Enumeration {
   val NoWait,              /** Don't wait at all for a connection to be established */
       WaitEstablished,     /** Wait until the network layer has established a TCP connection */
@@ -36,10 +71,12 @@ object Configuration {
  * customize the behavior of remote actors do not need to worry about this
  * trait, since a default one exists. In order to help make configuration less
  * verbose, there are helper traits <code>HasJavaSerializer</code>,
- * <code>HasBlockingMode</code>, and <code>HasNonBlockingMode</code> which can
+ * <code>HasBlockingMode</code>, <code>HasNonBlockingMode</code>, and
+ * <code>HasDefaultMessageCreator</code> which can
  * be mixed-in as such:
  * {{{
- * implicit val config = new Configuration with HasNonBlockingMode {
+ * implicit val config = new Configuration with HasNonBlockingMode
+ *                                         with HasDefaultMessageCreator {
  *   // use the sandboxed class loader
  *   override def newSerializer = new JavaSerializer(classLoader) 
  * 
@@ -54,45 +91,62 @@ trait Configuration {
   /**
    * Contains the <code>ServiceMode</code> used when spawning a listener (via
    * <code>alive</code>)
+   * 
+   * @see alive
    */
   val aliveMode: ServiceMode.Value 
 
   /**
    * Contains the <code>ServiceMode</code> used when spawning a new connection
-   * (via <code>select</code>).
+   * (via <code>select</code>, or <code>remoteActorAt</code>).
+   *
+   * @see select
+   * @see remoteActorAt
    */
   val selectMode: ServiceMode.Value 
 
   /**
-   * Contains the connect policy to utilize when attemping any network operations.
+   * Contains the <code>ConnectPolicy</code> to utilize when attemping any 
+   * network operations.<br/>
    * Default is <code>ConnectPolicy.NoWait</code>.
    */
   val connectPolicy: ConnectPolicy.Value = ConnectPolicy.NoWait
 
   /**
    * The amount of time to cache name lookups for, per connection, in
-   * milliseconds.
+   * milliseconds. Set to <code>0</code> to not cache any lookups (not
+   * recommended).<br/>
+   * Default is <code>30</code> minutes
    */
   val lookupValidPeriod: Long = 30 * 60 * 1000 /** 30 minutes */
 
   /**
    * Contains the time (in milliseconds) to wait for any blocking operations
-   * to complete with respect to the connect policy. Default is 10 seconds
+   * to complete with respect to the connect policy.<br/>
+   * Default is 10 seconds
    */
   val waitTimeout: Long = 10000 /** 10 seconds */
 
   /**
    * Returns a new <code>Serializer</code> to be used when spawning a new
-   * connection. Note that this <code>Serializer<code> must be locatable by
-   * the remote node's <code>ClassLoader</code> and must have a no argument 
-   * constructor. The <code>Serializer</code> returned here must be the one to
-   * use on the client side. This method is called once for each unique
+   * connection. This method is called once for each unique
    * connection, so if the <code>Serializer</code> returned from this method
    * contains state, it should return a new instance each time (since it will
-   * be used in a concurrent manner).
+   * be used in a concurrent manner).<br/>
+   *
+   * <b>Implementation limitation</b>: Currently, <code>Serializer</code> instances
+   * need to have a default no-arg constructor, in order to serialize a
+   * <code>RemoteProxy</code> handle successfully. The
+   * <code>JavaSerializer</code> satisfies this requirement.
+   *
+   * @see Serializer
    */
   def newSerializer(): Serializer
 
+  /**
+   * Returns a new <code>MessageCreator</code> to be used by the remote actor
+   * start service.
+   */
   def newMessageCreator(): MessageCreator
 
   /**
@@ -107,18 +161,19 @@ trait Configuration {
 
   /**
    * Returns the <code>ClassLoader</code> used to locate classes whenever a
-   * new instance of a class is needed. The two places this is currently used
-   * are (1) to create a new instance of a <code>Serializer</code> on the
-   * remote end when a connection is spawned, and (2) to create a new instance
-   * of an <code>Actor</code> when a remote start command is invoked.
+   * new instance of a class is needed. The only place this is currently used
+   * is to create a new instance of an <code>Actor</code> when a remote start 
+   * command is invoked.<br/>
    *
    * Note: The default implementation returns the current thread's context
-   * class loader (via <code>currentThread.getContextClassLoader</code>).
+   * class loader (via <code>currentThread.getContextClassLoader</code>).<br/>
    *
-   * WARNING: The reason that this field is configurable is a matter of security.
+   * <b>WARNING:</b> The reason that this field is configurable is a matter of security.
    * If there is a class for which you do not want to be instantiated, make
    * sure it is not accessible by this <code>ClassLoader</code>. A simple way
    * to do this is to create a white listing <code>ClassLoader</code>.
+   *
+   * @see ClassLoader
    */
   def classLoader: ClassLoader = currentThread.getContextClassLoader
 
@@ -174,10 +229,16 @@ trait HasNonBlockingMode { _: Configuration =>
   override val selectMode = ServiceMode.NonBlocking
 }
 
+/**
+ * A convenient mix-in to use the default message creator
+ */
 trait HasDefaultMessageCreator { _: Configuration =>
   override def newMessageCreator() = new DefaultMessageCreator
 }
 
+/**
+ * A convenient mix-in to use the default connect policy
+ */
 trait HasDefaultPolicy { _: Configuration =>
   override val connectPolicy = ConnectPolicy.NoWait
 }

@@ -16,7 +16,7 @@ package remote
  * Non-discardable means that the bytes outside of the sequence, within the
  * array, are NOT to be modified
  */
-class ByteSequence(val bytes: Array[Byte], 
+private[remote] class ByteSequence(val bytes: Array[Byte], 
                    val offset: Int, 
                    val length: Int) {
   def this(bytes: Array[Byte]) = this(bytes, 0, bytes.length)
@@ -33,7 +33,7 @@ class ByteSequence(val bytes: Array[Byte],
  * A ByteSequence where the bytes outside of the sequence are un-important-
  * they can be modified for whatever optimizations by the user.
  */
-class DiscardableByteSequence(bytes: Array[Byte], 
+private[remote] class DiscardableByteSequence(bytes: Array[Byte], 
                               offset: Int, 
                               length: Int) extends ByteSequence(bytes, offset, length) {
   def this(bytes: Array[Byte]) = this(bytes, 0, bytes.length)

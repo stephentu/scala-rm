@@ -12,8 +12,6 @@ package remote
 
 import scala.collection.mutable.HashMap
 
-import java.util.WeakHashMap
-import java.lang.ref.WeakReference
 import java.io.{ ObjectInputStream, ObjectOutputStream, 
                  IOException, NotSerializableException }
 import java.util.concurrent.ConcurrentHashMap
@@ -280,14 +278,40 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
       // try to (re-)initialize connection from the NetKernel
       val tmpConn = NetKernel.getConnectionFor(remoteNode, config)
 
-      // sanity checks
-      //if (config.connectPolicy == ConnectPolicy.WaitEstablished ||
-      //    config.connectPolicy == ConnectPolicy.WaitHandshake ||
-      //    config.connectPolicy == ConnectPolicy.WaitVerified)
-      //  assert(tmpConn.connectFuture.isFinished)
-      //if (config.connectPolicy == ConnectPolicy.WaitHandshake ||
-      //    config.connectPolicy == ConnectPolicy.WaitVerified)
-      //  assert(tmpConn.handshakeFuture.isFinished)
+      if (config.connectPolicy == ConnectPolicy.NoWait ||
+          config.connectPolicy == ConnectPolicy.WaitEstablished) {
+        val errorCallback = (t: Throwable) => {
+          a.filter(f => f.isInstanceOf[Reactor[_]] && !f.isInstanceOf[ActorProxy]) 
+          .foreach(f => {
+              if (t.isInstanceOf[Exception]) {
+                val ex = t.asInstanceOf[Exception]
+                val reactor = f.asInstanceOf[Reactor[_]]
+                if (reactor.exceptionHandler.isDefinedAt(ex))
+                  reactor.exceptionHandler(ex)
+              } else {
+                Debug.error("Got unhandlable error (throwable): " + t)
+                Debug.doError { t.printStackTrace() }
+              }
+            })
+        }
+
+        // if the connect policy is NoWait, have to register handlers for both
+        // the connectFuture and the handshakeFuture
+        if (config.connectPolicy == ConnectPolicy.NoWait) {
+          tmpConn.connectFuture.notifyOnError(errorCallback)
+          tmpConn.handshakeFuture.notifyOnError(errorCallback)
+        }
+
+        // if the connect policy is WaitEstablished, have to register handler
+        // for only the handshakeFuture
+        if (config.connectPolicy == ConnectPolicy.WaitEstablished) {
+          assert(tmpConn.connectFuture.isFinished)
+          tmpConn.handshakeFuture.notifyOnError(errorCallback)
+        }
+      }
+
+      // WaitHandshake and WaitEstablished don't need to regsiter any handlers
+      // on the connection, since they already have blocked
 
       // now, check to see if a locate request for this actor has been made
       // already
@@ -401,8 +425,14 @@ private[remote] class ConnectionProxy(override val remoteNode: Node,
   }
 }
 
+/**
+ * Base class for all functions which can be remotely applied
+ */
 sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Unit]
 
+/**
+ * Remote application of `link`
+ */
 @serializable object LinkToFun extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
     target.linkTo(creator)
@@ -411,6 +441,9 @@ sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Uni
     "<LinkToFun>"
 }
 
+/**
+ * Remote application of `unlink`
+ */
 @serializable object UnlinkFromFun extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
     target.unlinkFrom(creator)
@@ -419,6 +452,9 @@ sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Uni
     "<UnlinkFromFun>"
 }
 
+/**
+ * Remote application of `exit`
+ */
 @serializable case class ExitFun(reason: AnyRef) extends RemoteFunction {
   def apply(target: AbstractActor, creator: Proxy) {
     target.exit(creator, reason)
@@ -427,6 +463,7 @@ sealed abstract class RemoteFunction extends Function2[AbstractActor, Proxy, Uni
     "<ExitFun>("+reason.toString+")"
 }
 
+// proxy commands
 private[remote] sealed trait ProxyCommand
 private[remote] case class SendTo(a: OutputChannel[Any], msg: Any) extends ProxyCommand
 private[remote] case class StartSession(a: OutputChannel[Any], msg: Any, session: Symbol) extends ProxyCommand

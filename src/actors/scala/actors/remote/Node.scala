@@ -78,8 +78,20 @@ object Node {
   }
 }
 
+/**
+ * Represents a <code>address:port</code> combination. Instances are created
+ * using the <code>Node</code> companion object.
+ */
 sealed trait Node {
+
+  /**
+   * Remote address
+   */
   def address: String
+
+  /**
+   * Remote port
+   */
   def port: Int
 
   /**
@@ -93,6 +105,9 @@ sealed trait Node {
    */
   def canonicalForm = newNode(Node.getCanonicalAddress(address), port)
 
+  /**
+   * Returns true if this node is already in canonical form
+   */
   def isCanonical = address == Node.getCanonicalAddress(address) 
 
   protected def newNode(address: String, port: Int): Node

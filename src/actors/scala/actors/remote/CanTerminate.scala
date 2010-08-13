@@ -81,7 +81,7 @@ private[remote] trait CanTerminate {
   final def hasTerminateFinished = terminateCompleted
 }
 
-class AlreadyTerminatedException(s: String) extends RuntimeException(s) {
+private[remote] class AlreadyTerminatedException(s: String) 
+  extends RuntimeException(s) {
   def this() = this("Already terminated")
 }
-

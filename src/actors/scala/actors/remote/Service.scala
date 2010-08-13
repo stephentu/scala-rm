@@ -219,5 +219,15 @@ private[remote] abstract class Service extends CanTerminate {
 
 }
 
-class ProviderAlreadyClosedException extends AlreadyTerminatedException
+/**
+ * Low level exception used to indicate that a service provider has already
+ * terminated
+ */
+private[remote] class ProviderAlreadyClosedException extends AlreadyTerminatedException
+
+/**
+ * Low level exception thrown when a connection is already terminated.
+ * This is a signal that either the connection is not stable, or a stale
+ * connection handle was used.
+ */
 class ConnectionAlreadyClosedException extends AlreadyTerminatedException

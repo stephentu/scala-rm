@@ -13,6 +13,13 @@ package remote
 
 import java.io.{ InputStream, OutputStream }
 
+/**
+ * This exception is thrown when a <code>Serializer</code> encounters a bad
+ * handshake state.
+ *
+ * @see Serializer
+ */
+@serializable
 class IllegalHandshakeStateException(msg: String) extends Exception(msg) {
   def this() = this("Unknown cause")
 }
@@ -96,36 +103,32 @@ case class Error(reason: String) extends TriggerableEvent
 
 /**
  * The base class which defines the facilities necessary to take messages sent
- * from remote actors, and turn them into byte arrays, and vice versa.
+ * from remote actors, write them to <code>OutputStream</code>s, and vice versa.
  * Extending this class allows a user to supply his/her own facility, to take
  * advantage of other serialization frameworks. The default facility supplied
- * is one which utilizes Java serialization.
+ * is one which utilizes Java serialization.<br/>
  *
  * Each serializer is idenitified by a unique 64-bit integer, given in the
  * <code>uniqueId</code> field. This allows easy comparison of two serializers
- * over the newtork with high probability.
+ * over the network with high probability.<br/>
  *
  * In order to provide the ability to supply more robust serializers, an event
  * driven handshake framework is provided. Serializers which wish to exchange
  * protocols with each other before serializing messages can supply handlers,
  * which are guaranteed to run to completion before a message is serialized via the
- * framework.
+ * framework.<br/>
  *
- * The default Java serializer simply performs a simple handshaking which
+ * The default <code>JavaSerializer</code> simply performs a simple handshaking which
  * checks the <code>uniqueId</code> field, and only proceeds if they are
  * equal. Much more complicated protocols can be implemented with this
- * framework however.
+ * framework however.<br/>
  *
  * Serializers are intended to be unique per connection, meaning they do NOT
  * need to be thread-safe, as long as the <code>Configuration</code> object
  * makes sure to return new instances of a serializer in its
  * <code>newSerializer</code> method. Having said that, if a particular
  * serializer does NOT contain any state, then it is perfectly fine to reuse
- * a single serializer instance.
- *
- * In order to provide as much control over the message serialization as
- * possible, Serializers must also supply envelope message factory methods,
- * which write control messages into output streams.
+ * a single serializer instance.<br/>
  *
  * @see NetKernelMessage
  */
@@ -142,22 +145,24 @@ abstract class Serializer {
 
   /**
    * Main event handler for a serializer handshake. Is only called if
-   * <code>isHandshaking</code> is <code>true</code>.
+   * <code>isHandshaking</code> is <code>true</code>.<br/>
    *
    * <code>ReceivableEvent</code>s are passed to this handler from the network
    * layer. If <code>handleNextEvent</code> is not defined at a particular
    * event, then that event is simply ignored (the handshake is still alive).
    * If a <code>None</code> is returned as a result of application of
    * <code>handleNextEvent</code>, then nothing happens (the handshake is
-   * still alive).
+   * still alive).<br/>
    *
    * Note that the messages sent from <code>handleNextEvent</code> MUST ONLY
    * be simple messages (primitives, Strings, and byte arrays). See
    * <code>PrimitiveSerializer</code> for a specification of exactly what kind
-   * of messages are allowed.
+   * of messages are allowed.<br/>
    *
    * This method should not throw any exceptions. To signal an error in the
-   * handshake, use <code>Error</code>.
+   * handshake, use <code>Error</code>. Returning an <code>Error</code> will
+   * appropriately cause an <code>IllegalHandshakeStateException</code>
+   * exception to be propogated to the appropriate actors<br/>.
    *
    * For non-blocking modes, <code>handleNextEvent</code> runs right in the
    * same thread as the NIO multiplexing event loop. Therefore, it should not

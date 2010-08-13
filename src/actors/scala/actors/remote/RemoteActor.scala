@@ -16,7 +16,7 @@ import scala.collection.mutable.{ HashMap, HashSet }
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- *  This object provides methods for creating, registering, and
+ *  This object provides methods for creating, registering, configuring, and
  *  selecting remotely accessible actors.
  *
  *  A remote actor is typically created like this:
@@ -25,6 +25,12 @@ import java.util.concurrent.ConcurrentHashMap
  *    alive(9010)
  *    register('myName, self)
  *
+ *    // behavior
+ *  }
+ *  }}}
+ *  Or with the shorthand syntax:
+ *  {{{
+ *  remoteActor(9010, 'myName) {
  *    // behavior
  *  }
  *  }}}
@@ -39,7 +45,8 @@ import java.util.concurrent.ConcurrentHashMap
  *  }
  *  }}}
  *
- *  There are several relevant points to make about remote actors:
+ *  There are several relevant points to make about this new remote actors
+ *  implementation:
  *  <ul>
  *    <li>This release of remote actors is not backwards compatible with
  *    previous releases. The network protocol is a bit different, in
@@ -60,6 +67,12 @@ import java.util.concurrent.ConcurrentHashMap
  *    is recommended, since it multiplexes all connections in a small,
  *    fixed-size thread pool, backed by Java NIO.</li>
  *
+ *    <li>The network kernel makes its best effort to propogate network
+ *    exceptions to an <code>Actor</code>'s <code>exceptionHandler</code>. However, if the
+ *    appropriately blocking <code>ConnectPolicy</code> has been specified for a
+ *    <code>RemoteProxy</code>, and an error occurs, the error will be thrown from the
+ *    invoked method.</li>
+ *
  *    <li>The type returned for a remote actor is a <code>RemoteProxy</code>.
  *    See the details below for the difference in semantics between a
  *    <code>RemoteProxy</code>, and a regular <code>Actor</code>.</li>
@@ -79,36 +92,54 @@ object RemoteActor {
    * supposed to be very lightweight, in additional to serializable. There are
    * a few caveats, however, which make the semantics of a
    * <code>RemoteProxy</code> slightly different from a regular
-   * <code>Actor</code>, due to the remote nature of the handle. 
+   * <code>Actor</code>, due to the remote nature of the handle.<br/>
    *
-   * Most notably, the major difference is that send operations are no longer truly
-   * non-blocking, unless a <code>Configuration</code> object is used with a
-   * <code>ServiceMode</code> of <code>NonBlocking</code>. For the default
-   * mode of operation (the <code>Blocking</code> mode), send operations block
-   * until the data is written to the wire (an exception to this is
-   * <code>!!</code> on a <code>RemoteProxy</code>, which returns immediately
-   * regardless of mode). However long that takes is
-   * entirely determined by the Socket API, and not by the network kernel. The
-   * advantage to this mode is that if a send operation returns without
-   * throwing an exception, then one is guaranteed that the data was actually 
-   * sent over the network.
+   * Firstly, a <code>RemoteProxy</code> is configured via the
+   * <code>Configuration</code> object passed to <code>select</code>,
+   * <code>remoteActorAt</code>, or <code>remoteActorFor</code>. Each unique
+   * call returns a <b>new</b> instance of a <code>RemoteProxy</code>, so it
+   * is possible to call <code>select</code>, for instance, with different
+   * configurations, and get back proxies which have different semantics, but
+   * all represent the same remote actor.<br/>
+   *
+   * <code>RemoteProxy</code> instances are of course thread-safe. They are
+   * also lazy in the sense that a new connection is not created unless it is
+   * needed. For example, the following snippet makes <b>NO</b> TCP
+   * connections, because the <code>handle</code> is never used:
+   * {{{
+   *   val handle = select(Node("localhost", 9100), 'fooActor)
+   *   // [...] do other actions NOT involving handle
+   * }}}
+   *
+   * Secondly, and most notably, the major difference is that send operations 
+   * are no longer truly non-blocking, unless a <code>Configuration</code> 
+   * object is used with a <code>ServiceMode</code> of <code>NonBlocking</code>. 
+   * For the default mode of operation (the <code>Blocking</code> mode), 
+   * send operations block until the data is written to the wire, that is, 
+   * the writes happen within the same thread (an exception to this is <code>!!</code> on a 
+   * <code>RemoteProxy</code>, which returns immediately regardless of mode). 
+   * However long that takes is entirely determined by the Socket API, and 
+   * not by the network kernel. Thus, if using <code>Blocking</code> mode with
+   * a lot of remote actors, one might considering increasing the size of the thread
+   * pool for the <code>Actor</code> scheduler.<br/>
    *
    * In <code>NonBlocking</code> mode, send operations have similar
-   * semantics. That is, send operations merely append to some buffer, and
-   * return. The disadvantage of this mode is that if a send operation
-   * returns without throwing an exception, there is no guarantee that the
-   * data will be written to the network; there is only a guarantee that the
-   * network connection was alive at the point when the send operation was
-   * called. For instance, suppose that the network is up and a send
-   * operation is successfully issued. Then, suppose the network connectivity
-   * goes down between the time after the write request is issued and before
-   * the write request is acutally performed. The current API does not expose
-   * a way to capture this particular error, althought this will be addressed
-   * in future releases.
+   * semantics as regular actors. That is, send operations merely append to some buffer, and
+   * return. If an error occurs for a write, the exception is propagated to
+   * the actor's <code>exceptionHandler</code>.<br/> 
    *
-   * Thus, when using <code>NonBlocking</code> mode, if a guarantee is needed
-   * that a message is delivered, standard techniques of ACKs and timeouts
-   * should be used.
+   * Note that the level of asynchronous behavior with
+   * <code>RemoteProxy</code> instances can be controlled somewhat (regardless of mode) with a
+   * <code>ConnectPolicy</code>. With a <code>ConnectPolicy</code> that is not
+   * <code>NoWait</code>, one can be sure that a connection is valid to a
+   * certain degree before attempting a write to it. The
+   * <code>ConnectPolicy</code>, however does not control the asynchronous
+   * behavior of writes. That is solely determined by the mode.<br/>
+   *
+   * <b>Note:</b> Future releases will probably consider trying to make the
+   * blocking mode act more asynchronously, by moving writes into a separate
+   * write thread (or perhaps a write thread pool). This was not explored in
+   * this implementation.
    */
   type RemoteProxy = AbstractActor
 
@@ -245,7 +276,7 @@ object RemoteActor {
    * that the network kernel will automatically shutdown when all actors which
    * have expressed intent to use remote functionality (via <code>alive</code>
    * and <code>select</code>) have terminated. In most simple usages, this is
-   * the desirable behavior.
+   * the desirable behavior.<br/>
    *
    * However, some may want to reuse network kernel resources. For example,
    * consider the following usage pattern:
@@ -267,9 +298,9 @@ object RemoteActor {
    * reallocated when the second actor executes. Since freeing resources is
    * not cheap, this is probably not desirable in some cases. Thus by setting
    * <code>setExplicitShutdown</code> to <code>true</code>, the above
-   * usage pattern would reuse the same resources.
+   * usage pattern would reuse the same resources.<br/>
    *
-   * Note: If explicit termination is set to <code>true</code>, the JVM will
+   * <b>Note</b>: If explicit termination is set to <code>true</code>, the JVM will
    * not shutdown (because of remaining threads running) until 
    * <code>shutdown</code> is invoked by the program.
    *
@@ -290,9 +321,9 @@ object RemoteActor {
 
   /**
    * Registers <code>actor</code> to be selectable remotely via
-   * <code>name</code>. 
+   * <code>name</code>.<br/>
    *
-   * Note: There are two limitations to the mutability of the
+   * <b>Note:</b> There are two limitations to the mutability of the
    * <code>name</code>. 
 
    * (1) The first is that only one <code>name</code> can be
@@ -305,7 +336,7 @@ object RemoteActor {
    * register with a different name. Thus, each <code>actor</code> instance
    * effectively has a unique name throughout its lifetime.
    *
-   * Implementation Limitation: Currently names starting with `$` are
+   * <b>Implementation Limitation:</b> Currently names starting with `$` are
    * reserved for internal use.
    *
    * @param name  The unique name for which to identify actor remotely. Cannot
@@ -449,9 +480,9 @@ object RemoteActor {
   /**
    * Makes <code>actor</code> remotely accessible on TCP port
    * <code>port</code>. An <code>actor</code> can be remotely accessible via
-   * more than one port (via the same name).
+   * more than one port (via the same name).<br/>
    *
-   * Implementation Detail: The current implementation does not provide
+   * <b>Implementation Detail:</b> The current implementation does not provide
    * port-level isolation. This means that any port actually can be used to
    * handle requests for any registered actor. This behavior is subject to
    * change, meaning you should not (1) rely on <code>alive</code> to give
@@ -473,7 +504,7 @@ object RemoteActor {
    * <code>port</code>. Is equivalent to <code>alive(port, self)</code>. 
    * Uses <code>aliveMode</code> from the <code>Configuration</code> to
    * determine which network mode to spawn a listener, if one is not already
-   * alive on <code>port</code>. 
+   * alive on <code>port</code>.<br/>
    *
    * However, if a listener is currently alive on <code>port</code> in a
    * difference mode, then a <code>InconsistentServiceException</code>
@@ -533,12 +564,13 @@ object RemoteActor {
    * <code>host</code>, with the remote start service running on the default
    * port 11723. Uses the <code>Configuration</code> to configure how to
    * connect to the starting service, in addition to the
-   * <code>Serializer</code> used to pass the service control messages.
+   * <code>Serializer</code> used to pass the service control messages.<br/>
    *
-   * Note: This method blocks until the remote side has given a success or
-   * failure response, or a timeout occurs (of one minute).
+   * <b>Note:</b> This method blocks until the remote side has given a success or
+   * failure response, or a timeout occurs (of one minute). It however blocks
+   * in a way that is safe for actors (won't cause starvation).
    *
-   * Note: This method does NOT <code>register</code> or call
+   * <b>Note:</b> This method does NOT <code>register</code> or call
    * <code>alive</code> on the newly started actor. Used one of the other
    * overloaded <code>remoteStart</code> methods which accept a port and name to do
    * that. 
@@ -672,9 +704,10 @@ object RemoteActor {
   /**
    * Start a new instance of an actor of class <code>actorClass</code> on the
    * given remote node, listening on <code>port</code> under name
-   * <code>name</code>, and return a proxy handle to the new remote instance.
+   * <code>name</code>, and return a proxy handle to the new remote
+   * instance.<br/>
    *
-   * Note: This function call actually explicitly registers the new instance
+   * <b>Note:</b> This function call actually explicitly registers the new instance
    * with the network kernel, so the code within <code>actorClass</code>
    * does not need to make calls to <code>alive</code> and
    * <code>register</code> to achieve the desired effect.
@@ -707,24 +740,24 @@ object RemoteActor {
   /**
    * Returns a remote handle which can be serialized and sent remotely, which
    * contains the necessary information to re-establish the connection. If
-   * <code>thisActor</code> is not currently listening on any port (via
+   * <code>actor</code> is not currently listening on any port (via
    * call(s) to <code>alive</code>), a random port is selected. If
-   * <code>thisActor</code> is not currently registered under any name, a
+   * <code>actor</code> is not currently registered under any name, a
    * random name is chosen.
    *
-   * @param   thisActor   The actor to return a remote proxy handle to
+   * @param   actor   The actor to return a remote proxy handle to
    *
-   * @return  A serializable handle to <code>thisActor</code>
+   * @return  A serializable handle to <code>actor</code>
    *
    * @see     Configuration
    */
-  def remoteActorFor(thisActor: Actor)(implicit cfg: Configuration): RemoteProxy = {
+  def remoteActorFor(actor: Actor)(implicit cfg: Configuration): RemoteProxy = {
     // need to establish a port for this actor to listen on, so that the proxy
     // returned by remoteSelf makes sense (as in, you can connect to it)
     val port = portToActors.synchronized {
 
       // check actorToPorts first to see if this actor is already alive
-      actorToPorts.get(thisActor).flatMap(_.headOption).getOrElse({
+      actorToPorts.get(actor).flatMap(_.headOption).getOrElse({
 
         // oops, this actor isn't alive anywhere. in this case, pick a random
         // port (by scanning portToActors)
@@ -738,15 +771,15 @@ object RemoteActor {
           listener.port
         })
 
-        // now call alive, so that thisActor gets mapped to the new port (if it
+        // now call alive, so that actor gets mapped to the new port (if it
         // already wasn't)
-        alive(newPort, thisActor)
+        alive(newPort, actor)
 
         newPort
       })
     }
 
-    new ConfigProxy(Node(port), getOrCreateName(thisActor), cfg)
+    new ConfigProxy(Node(port), getOrCreateName(actor), cfg)
   }
 
   /**
@@ -754,12 +787,10 @@ object RemoteActor {
    * <code>sym</code> on <code>node</code>. Note that if you call
    * <code>select</code> outside of an actor, you cannot rely on explicit 
    * termination to shutdown. Use <code>remoteActorAt</code> to select a
-   * remote actor out of an actor
+   * remote actor out of an actor.<br/>
    *
-   * Implementation limitation: If <code>sym</code> is not running on
-   * <code>node</code>, there is currently no notification of this sent back
-   * to the caller. This is an issue that will be addressed in future
-   * releases.
+   * <b>Note:</b> This method simple creates a new proxy instance which is
+   * lazy; no TCP connections are made until the return handle is used.
    *
    * @param   node  The node of the remote actor to select
    * @param   sym   The unique identifier of the remote actor to select
@@ -772,6 +803,7 @@ object RemoteActor {
    *
    * @see     remoteActorAt
    * @see     Configuration
+   * @see     RemoteProxy
    */
   def select(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     checkName(sym)
@@ -796,7 +828,10 @@ object RemoteActor {
    * calling this method inside an actor can cause the network kernel to
    * shutdown if no other actors are using remote services (and said actor is
    * not explicitly listening via <code>alive</code>, and explicit termination
-   * is not set).
+   * is not set).<br/>
+   *
+   * <b>Note:</b> This method simple creates a new proxy instance which is
+   * lazy; no TCP connections are made until the return handle is used.
    *
    * @param   node  The node of the remote actor to select
    * @param   sym   The unique identifier of the remote actor to select
@@ -809,6 +844,7 @@ object RemoteActor {
    *
    * @see     select
    * @see     Configuration
+   * @see     RemoteProxy
    */
   def remoteActorAt(node: Node, sym: Symbol)(implicit cfg: Configuration): RemoteProxy = {
     checkName(sym)
@@ -833,41 +869,71 @@ object RemoteActor {
     NetKernel.releaseResources()
   }
 
-  // proxy cache
 }
 
 /**
- * TODO: Comment me
+ * Thrown by <code>alive</code> to indicate that the port was already being
+ * listened on with a <code>ServiceMode</code> different from the one that was requested to
+ * be used.
+ *
+ * @see alive
+ * @see ServiceMode
  */
+@serializable
 case class InconsistentServiceException(expected: ServiceMode.Value, actual: ServiceMode.Value) 
   extends Exception("Inconsistent service modes: Expected " + expected + " but got " + actual)
 
 /**
- * TODO: Comment me
+ * Thrown by <code>alive</code> to indicate that the port was already being
+ * listened on with a <code>Serializer</code> different from the one that was requested to
+ * be used.
+ *
+ * @see alive
+ * @see Serializer
  */
 case class InconsistentSerializerException(expected: Serializer, actual: Serializer) 
   extends Exception("Inconsistent serializers: Expected " + expected + " but got " + actual)
 
 /**
- * TODO: Comment me
+ * Thrown by <code>register</code> to indicate that the name <code>sym</code> requested has
+ * already been taken by actor <code>a</code>. See the documention for
+ * <code>register</code> for the restrictions on names.
+ *
+ * @see register
  */
 case class NameAlreadyRegisteredException(sym: Symbol, a: OutputChannel[Any])
   extends Exception("Name " + sym + " is already registered for channel " + a)
 
 /**
- * TODO: Comment me
+ * Thrown by <code>register</code> to indicate that the <code>channel</code>
+ * has already been registered under a different name <code>sym</code>. 
+ * See the documention for <code>register</code> for the restrictions on names.
+ *
+ * @see register
  */
 case class ChannelAlreadyRegisteredException(channel: OutputChannel[Any], sym: Symbol)
   extends Exception("The channel %s is already registered as %s".format(channel, sym))
 
 /**
- * TODO: Comment me
+ * Thrown by the various send methods (<code>!</code>, <code>!!</code>, and
+ * <code>!?</code>) of <code>RemoteProxy</code> to indicate that the remote
+ * actor selected does not exist on that machine. Depending on the
+ * <code>ConnectPolicy</code> of a particlar <code>RemoteProxy</code>, this
+ * exception can also get passed to an actor's <code>exceptionHandler</code>.
+ *
+ * @see RemoteProxy
  */
+@serializable
 case class NoSuchRemoteActorException(name: Symbol)
 	extends Exception("No such remote actor: " + name)
 
 /**
- * TODO: Comment me
+ * Thrown by the various <code>remoteStart</code> methods to indicate an
+ * exception on the remote end when trying to process the remote start
+ * request.
+ *
+ * @see remoteStart
  */
+@serializable
 case class RemoteStartException(message: String)
   extends Exception(message)

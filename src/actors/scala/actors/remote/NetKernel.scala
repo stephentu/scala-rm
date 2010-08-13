@@ -54,12 +54,18 @@ private[remote] object NetKernel {
       if (cfg.cachedSerializer != testConn.activeSerializer)
         throw new InconsistentSerializerException(testConn.activeSerializer, cfg.cachedSerializer)
 
-      // blocking policies
-      if (cfg.connectPolicy == ConnectPolicy.WaitEstablished)
+      // WaitEstablished, WaitHandshake, and WaitVerified all require the
+      // connection to be up and running as a pre-req
+      if (cfg.connectPolicy == ConnectPolicy.WaitEstablished ||
+          cfg.connectPolicy == ConnectPolicy.WaitHandshake   ||
+          cfg.connectPolicy == ConnectPolicy.WaitVerified)
         testConn.connectFuture.await(cfg.waitTimeout)
-      else if (cfg.connectPolicy == ConnectPolicy.WaitHandshake ||
-               cfg.connectPolicy == ConnectPolicy.WaitVerified)
-        testConn.connectFuture chainWith testConn.handshakeFuture await (cfg.waitTimeout)
+
+      // WaitHandshake and WaitVerified both require the handshake to have
+      // succeeded as a pre-req
+      if (cfg.connectPolicy == ConnectPolicy.WaitHandshake ||
+          cfg.connectPolicy == ConnectPolicy.WaitVerified)
+        testConn.handshakeFuture.await(cfg.waitTimeout)
 
       testConn
     }

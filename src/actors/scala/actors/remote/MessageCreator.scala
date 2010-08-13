@@ -16,6 +16,10 @@ package remote
  * network kernel. Currently, these control messages are used only for the
  * remote starting service, to allow users to run this service which send messages
  * in their serializer of choice.
+ *
+ * @see RemoteStartInvoke
+ * @see RemoteStartInvokeAndListen
+ * @see RemoteStartResult
  */
 trait MessageCreator {
 
