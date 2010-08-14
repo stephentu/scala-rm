@@ -22,6 +22,8 @@ import java.util.{ Comparator, PriorityQueue }
 import java.util.concurrent.{ ConcurrentLinkedQueue, ConcurrentHashMap, Executors }
 import java.util.concurrent.atomic.{ AtomicBoolean, AtomicInteger }
 
+import java.lang.ref.{ ReferenceQueue, WeakReference }
+
 import scala.collection.mutable.{ ArrayBuffer, HashMap, ListBuffer, Queue }
 import scala.concurrent.SyncVar
 
@@ -60,40 +62,50 @@ private[remote] object NonBlockingServiceProvider {
   val ReadBufSize        = 8192
 }
 
-// TODO: store soft references to the ByteBuffers in the pool, so they are
-// eligible for garbage collection
-private[remote] class VaryingSizeByteBufferPool {
+private[remote] class ByteBufferWeakReference(bb: ByteBuffer, queue: ReferenceQueue[ByteBuffer]) 
+  extends WeakReference[ByteBuffer](bb, queue) {
+  def this(bb: ByteBuffer) = this(bb, null)
+  require(bb ne null)
+  val capacity = bb.capacity // store the capacity so we can still compare
+}
 
-  private val comparator = new Comparator[ByteBuffer] {
-    override def compare(b1: ByteBuffer, b2: ByteBuffer): Int = b2.capacity - b1.capacity // max heap
-    override def equals(obj: Any): Boolean = this == obj
+private[remote] final class VaryingSizeByteBufferPool {
+  private val comparator = new Comparator[ByteBufferWeakReference] {
+    override def compare(b1: ByteBufferWeakReference, b2: ByteBufferWeakReference) = 
+      b2.capacity - b1.capacity // max heap
+    override def equals(obj: Any) = 
+      this == obj
   }
 
-  private val bufferQueue = new PriorityQueue[ByteBuffer](16, comparator)
+  private val bufferQueue = new PriorityQueue[ByteBufferWeakReference](16, comparator)
 
-  def take(minCap: Int): ByteBuffer = {
+  @scala.annotation.tailrec def take(minCap: Int): ByteBuffer = {
     val candidate = bufferQueue.peek
     if ((candidate eq null) || candidate.capacity < minCap) {
       ByteBuffer.allocateDirect(align(minCap))
     } else {
-      val ret = bufferQueue.poll()
-      //assert(ret ne null) 
-      ret.clear()
-      ret
+      val ref = bufferQueue.poll()
+      val bb  = ref.get
+      if (bb eq null) take(minCap)
+      else {
+        bb.clear()
+        bb
+      }
     }
   }
 
-  def release(buf: ByteBuffer) { bufferQueue.offer(buf) }
+  def release(buf: ByteBuffer) { 
+    bufferQueue.offer(new ByteBufferWeakReference(buf))
+  }
 
   // next multiple of 8. assumes i > 0 and that the next multiple wont
   // overflow
-  def align(i: Int): Int = {
+  @inline private def align(i: Int): Int = {
     if ((i & 0x7) != 0x0) 
       (((i >>> 0x3) + 0x1) << 0x3)
     else
       i
   }
-
 }
 
 private[remote] class FixedSizeByteBufferPool(fixedSize: Int) {
@@ -133,13 +145,6 @@ private[remote] class FixedSizeByteBufferPool(fixedSize: Int) {
  * times, whether or not a channel is in write mode or not is guarded by an
  * atomic boolean. All calls to send on non blocking channels are lock-free. 
  * When the write queue is drained, the OP_WRITE interest is turned off.
- *
- * Other details: All reads/writes out of the NIO channels are performed with
- * direct byte buffers, due to their better performance. However, since direct
- * byte buffer allocation is expensive, each channel maintains a small pool of
- * direct byte buffers, which are reused for writes. The byte buffers are
- * stored in a max priority queue, so that efficient access to the largest
- * pooled buffer is possible.
  */
 private[remote] class NonBlockingServiceProvider extends ServiceProvider {
 
@@ -192,7 +197,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
     extends Runnable
     with    CanTerminate {
 
-    object SendBufPool extends VaryingSizeByteBufferPool
+    final val SendBufPool = new VaryingSizeByteBufferPool
 
     private def encodeToByteBuffer(seq: ByteSequence): ByteBuffer = {
       val len = seq.length
