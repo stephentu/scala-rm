@@ -64,6 +64,13 @@ private[remote] class ProxyActor(val p: Proxy) extends Actor {
 
 }
 
+/**
+ * This class is the base Proxy implementation. There are two subtypes of
+ * Proxy, `ConfigProxy` and `ConnectionProxy`. `ConfigProxy` is a restartable,
+ * serializable proxy returned from `select`, whereas `ConnectionProxy` is a
+ * non-restartable, non-serializable, ephemeral proxy that is the receiving
+ * end of the TCP connection.
+ */
 private[remote] abstract class Proxy extends AbstractActor 
                                      with    ReplyReactor 
                                      with    ActorCanReply {
@@ -80,16 +87,35 @@ private[remote] abstract class Proxy extends AbstractActor
 
   override def receiver = new ProxyActor(this)
 
+  /**
+   * Return a valid connection, where `a` is the actor requesting to use that
+   * connection.
+   *
+   * `a` is an `Option` since the sender is not
+   * necessarily defined, as in the case of `handle.send(msg, null)`
+   */
   protected def conn(a: Option[AbstractActor]): MessageConnection
+
+  /**
+   * Return a configuration instance which contains the desired configurable
+   * behavior of this proxy. Fields of interest are ConnectPolicy and
+   * numRetries
+   */
   protected def config: Configuration
+
+  /**
+   * Terminate the connection passed in. It is guaranteed that `usingConn` was
+   * returned from a previous call to `conn`
+   *
+   * @see conn
+   */
   protected def terminateConn(usingConn: MessageConnection): Unit 
-  protected def numRetries: Int   
 
   override def start() = { throw new RuntimeException("Should never call start() on a Proxy") }
   override def act()     { throw new RuntimeException("Should never call act() on a Proxy")   }
 
   private def tryRemoteAction(a: Option[AbstractActor])(f: MessageConnection => Unit) {
-    var triesLeft = numRetries + 1
+    var triesLeft = config.numRetries + 1
     var success   = false
     assert(triesLeft > 0)
     while (!success && triesLeft > 0) {
@@ -261,7 +287,6 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
 
   private val _selectMode        = _config.selectMode
   private val _numRetries        = _config.numRetries
-  private val _connectPolicy     = _config.connectPolicy
   private val _lookupValidPeriod = _config.lookupValidPeriod
 
   // IMPLEMENTATION limitation: can only reconstruct serializer remotely which
@@ -272,6 +297,11 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
   private var _conn: MessageConnection = _
 
   override def conn(a: Option[AbstractActor]) = {
+    // read a local copy of _conn, for two reasons
+    // 1) saves us a volatile read
+    // 2) _conn could be changed at anytime by another thread, so we
+    // essentially want to capture a view of _conn, and not operate on it
+    // directly
     val testConn = _conn
     if (testConn ne null) testConn
     else {
@@ -283,6 +313,8 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
       // try to (re-)initialize connection from the NetKernel
       val tmpConn = NetKernel.getConnectionFor(remoteNode, safeReactor, config)
 
+      // NoWait and WaitEstablished need to register callbacks with the
+      // connectFuture and handshakeFuture
       if (config.connectPolicy == ConnectPolicy.NoWait ||
           config.connectPolicy == ConnectPolicy.WaitEstablished) {
         val errorCallback = (t: Throwable) => {
@@ -292,7 +324,18 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
             if (t.isInstanceOf[Exception]) {
               val ex = t.asInstanceOf[Exception]
               if (reactor.exceptionHandler.isDefinedAt(ex))
+                // Note: the semantics of this call to exceptionHandler differ
+                // from the call to exceptionHandler in the actor scheduler;
+                // in the actor scheduler, an unhandled exception terminates
+                // the actor. here, we let the actor continue.
+
+                // TODO: schedule this invocation to happen in the reactor's
+                // scheduler's threadpool, so that it is consistent
                 reactor.exceptionHandler(ex)
+              else {
+                Debug.error("Actor %s did not define handler for exception: %s".format(reactor, ex.getMessage))
+                Debug.doError { ex.printStackTrace() }
+              }
             } else {
               Debug.error("Got unhandlable error (throwable): " + t)
               Debug.doError { t.printStackTrace() }
@@ -300,18 +343,12 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
           })
         }
 
-        // if the connect policy is NoWait, have to register handlers for both
-        // the connectFuture and the handshakeFuture
-        if (config.connectPolicy == ConnectPolicy.NoWait) {
+        // if ConnectPolicy is NoWait, have to also register callback for the
+        // connectFuture
+        if (config.connectPolicy == ConnectPolicy.NoWait)
           tmpConn.connectFuture.notifyOnError(errorCallback)
-          tmpConn.handshakeFuture.notifyOnError(errorCallback)
-        }
-        // if the connect policy is WaitEstablished, have to register handler
-        // for only the handshakeFuture
-        else {
-          assert(tmpConn.connectFuture.isFinished)
-          tmpConn.handshakeFuture.notifyOnError(errorCallback)
-        }
+
+        tmpConn.handshakeFuture.notifyOnError(errorCallback)
       }
 
       // WaitHandshake and WaitEstablished don't need to regsiter any handlers
@@ -349,6 +386,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
       
         // NOTE: we don't set _conn = tmpConn here, because we still aren't
         // sure whether or not the connection is really valid for this proxy.
+        // Instead, the success callback sets _conn = tmpConn
         tmpConn
       } else {
         if (tuple._1) {
@@ -358,8 +396,7 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
         } else
           // oops, lookup resolved badly. throw an exception
           // YES, this means that connections with a policy of NoWait CAN get
-          // immediate exceptions the second time around on a bad connection.
-          // Oh well.
+          // immediately throw exceptions the second time around on a bad connection.
           throw new NoSuchRemoteActorException(name)
       }
     }
@@ -367,12 +404,12 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
 
   override lazy val config = 
     if (_config eq null) 
-      new Configuration with HasDefaultMessageCreator {
+      new Configuration with HasDefaultMessageCreator
+                        with HasDefaultPolicy {
 
         override val selectMode        = _selectMode
         override val aliveMode         = _selectMode /** Should never be called */
         override val numRetries        = _numRetries
-        override val connectPolicy     = _connectPolicy
         override val lookupValidPeriod = _lookupValidPeriod
 
         override def newSerializer() = {
@@ -386,9 +423,6 @@ private[remote] class ConfigProxy(override val remoteNode: Node,
       }
     else 
       _config
-
-  override def numRetries = 
-    config.numRetries
 
   override def terminateConn(usingConn: MessageConnection) {
     usingConn.terminateBottom()
@@ -412,8 +446,6 @@ private[remote] class ConnectionProxy(override val remoteNode: Node,
   }
 
   override val config = _conn.config
-
-  override def numRetries = 0 /** Cannot retry */
 
   override def terminateConn(usingConn: MessageConnection) {
     usingConn.terminateBottom()

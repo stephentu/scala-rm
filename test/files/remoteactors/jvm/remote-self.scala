@@ -19,10 +19,8 @@ object Test {
     }
 
     implicit val config = new DefaultNonBlockingConfiguration {
-      override val connectPolicy = ConnectPolicy.WaitVerified
-      override val numRetries    = 3
+      override val numRetries = 3
     }
-
 
     setExplicitShutdown(true)
 

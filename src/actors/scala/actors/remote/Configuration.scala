@@ -43,10 +43,14 @@ package remote
  * current thread, care must be taken to ensure that the actor's do not
  * starve. 
  *
+ * Note: This policy is currently not exposed to the user, but the
+ * implementation is left in, in case this feature becomes desirable later on.
+ * For now, every `Configuration` is configured with `NoWait` 
+ *
  * @see Configuration
  * @see RemoteProxy
  */
-object ConnectPolicy extends Enumeration {
+private[remote] object ConnectPolicy extends Enumeration {
   val NoWait,              /** Don't wait at all for a connection to be established */
       WaitEstablished,     /** Wait until the network layer has established a TCP connection */
       WaitHandshake,       /** Wait until the serializers have successfully handshaked */
@@ -110,7 +114,7 @@ trait Configuration {
    * network operations.<br/>
    * Default is <code>ConnectPolicy.NoWait</code>.
    */
-  val connectPolicy: ConnectPolicy.Value = ConnectPolicy.NoWait
+  private[remote] val connectPolicy: ConnectPolicy.Value = ConnectPolicy.NoWait
 
   /**
    * The amount of time to cache name lookups for, per connection, in
@@ -168,7 +172,7 @@ trait Configuration {
    * Note: The default implementation returns the current thread's context
    * class loader (via <code>currentThread.getContextClassLoader</code>).<br/>
    *
-   * <b>WARNING:</b> The reason that this field is configurable is a matter of security.
+   * <b>Warning:</b> The reason that this field is configurable is a matter of security.
    * If there is a class for which you do not want to be instantiated, make
    * sure it is not accessible by this <code>ClassLoader</code>. A simple way
    * to do this is to create a white listing <code>ClassLoader</code>.
@@ -239,6 +243,6 @@ trait HasDefaultMessageCreator { _: Configuration =>
 /**
  * A convenient mix-in to use the default connect policy
  */
-trait HasDefaultPolicy { _: Configuration =>
+private[remote] trait HasDefaultPolicy { _: Configuration =>
   override val connectPolicy = ConnectPolicy.NoWait
 }

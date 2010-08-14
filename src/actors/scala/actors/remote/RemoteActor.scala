@@ -48,38 +48,27 @@ import java.util.concurrent.ConcurrentHashMap
  *  There are several relevant points to make about this new remote actors
  *  implementation:
  *  <ul>
- *    <li>This release of remote actors is not backwards compatible with
- *    previous releases. The network protocol is a bit different, in
- *    order to be more efficient and versatile. It is however, completely
- *    source compatible.</li>.
- * 
  *    <li>The configuration of remote actors is done via a
- *    <code>Configuration</code> object. Most of publically accessible methods
- *    in <code>RemoteActor</code> take an implicit <code>Configuration</code>
- *    as a parameter. See the documentation for <code>Configuration</code>
+ *    <code>Configuration</code> object. Most of the publically accessible methods
+ *    in <code>RemoteActor</code> take an implicit parameter of type
+ *    <code>Configuration</code>. See the documentation for <code>Configuration</code>
  *    for more information on the configurable parameters. By default,
  *    <code>DefaultConfiguration</code> is used (that is, if no explicit
  *    configuration is made by the user). This sets up blocking network mode,
  *    in addition to using Java serialization.<br/>
- *    Blocking network mode is recommended when the number of network connections 
- *    made is small (no less than 1000), since it uses the standard one thread per 
+ *
+ *    Blocking network mode is recommended when the number of network nodes 
+ *    is small (no less than 1000), since it uses the standard one thread per 
  *    connection model. If more connections are expected, then non-blocking network mode
  *    is recommended, since it multiplexes all connections in a small,
  *    fixed-size thread pool, backed by Java NIO.</li>
  *
  *    <li>The network kernel makes its best effort to propogate network
- *    exceptions to an <code>Actor</code>'s <code>exceptionHandler</code>. However, if the
- *    appropriately blocking <code>ConnectPolicy</code> has been specified for a
- *    <code>RemoteProxy</code>, and an error occurs, the error will be thrown from the
- *    invoked method.</li>
+ *    exceptions to an <code>Actor</code>'s <code>exceptionHandler</code>.<br/>
  *
  *    <li>The type returned for a remote actor is a <code>RemoteProxy</code>.
  *    See the details below for the difference in semantics between a
  *    <code>RemoteProxy</code>, and a regular <code>Actor</code>.</li>
- *
- *    <li>The classes in <code>RemoteActor</code> make use of the
- *    <code>Debug</code> facility located in the <code>actors</code> package,
- *    so to enable debug output, use <code>Debug.level</code>.</li>
  *  </ul>
  *
  * @author Philipp Haller
@@ -88,9 +77,9 @@ import java.util.concurrent.ConcurrentHashMap
 object RemoteActor {
 
   /**
-   * <code>RemoteProxy</code> is a handle to a remote actor. This handle is
-   * supposed to be very lightweight, in additional to serializable. There are
-   * a few caveats, however, which make the semantics of a
+   * References to remote actors have type `RemoteProxy`. 
+   * Instances of RemoteProxy are lightweight and serializable.
+   * There are a few caveats, however, which make the semantics of a
    * <code>RemoteProxy</code> slightly different from a regular
    * <code>Actor</code>, due to the remote nature of the handle.<br/>
    *
@@ -104,15 +93,10 @@ object RemoteActor {
    *
    * <code>RemoteProxy</code> instances are of course thread-safe. They are
    * also lazy in the sense that a new connection is not created unless it is
-   * needed. For example, the following snippet makes <b>NO</b> TCP
-   * connections, because the <code>handle</code> is never used:
-   * {{{
-   *   val handle = select(Node("localhost", 9100), 'fooActor)
-   *   // [...] do other actions NOT involving handle
-   * }}}
+   * needed.<br/>
    *
    * Secondly, and most notably, the major difference is that send operations 
-   * are no longer truly non-blocking, unless a <code>Configuration</code> 
+   * are not truly non-blocking, unless a <code>Configuration</code> 
    * object is used with a <code>ServiceMode</code> of <code>NonBlocking</code>. 
    * For the default mode of operation (the <code>Blocking</code> mode), 
    * send operations block until the data is written to the wire, that is, 
@@ -127,19 +111,6 @@ object RemoteActor {
    * semantics as regular actors. That is, send operations merely append to some buffer, and
    * return. If an error occurs for a write, the exception is propagated to
    * the actor's <code>exceptionHandler</code>.<br/> 
-   *
-   * Note that the level of asynchronous behavior with
-   * <code>RemoteProxy</code> instances can be controlled somewhat (regardless of mode) with a
-   * <code>ConnectPolicy</code>. With a <code>ConnectPolicy</code> that is not
-   * <code>NoWait</code>, one can be sure that a connection is valid to a
-   * certain degree before attempting a write to it. The
-   * <code>ConnectPolicy</code>, however does not control the asynchronous
-   * behavior of writes. That is solely determined by the mode.<br/>
-   *
-   * <b>Note:</b> Future releases will probably consider trying to make the
-   * blocking mode act more asynchronously, by moving writes into a separate
-   * write thread (or perhaps a write thread pool). This was not explored in
-   * this implementation.
    */
   type RemoteProxy = AbstractActor
 

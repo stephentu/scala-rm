@@ -50,60 +50,22 @@ object Test {
         alive(9014)
         register('self, self)
 
-        def makeConfig(select: ServiceMode.Value, policy: ConnectPolicy.Value) = new DefaultConfiguration {
+        def makeConfig(select: ServiceMode.Value) = new DefaultConfiguration {
           override val selectMode        = select
-          override val connectPolicy     = policy
           override val lookupValidPeriod = 0L /** Don't cache lookups */
         }
 
-        expectErrorInHandler("Blocking, NoWait") {
-          val cfg    = makeConfig(ServiceMode.Blocking, ConnectPolicy.NoWait)
+        expectErrorInHandler("Blocking") {
+          val cfg    = makeConfig(ServiceMode.Blocking)
           val nobody = select(Node(9014), 'nobody)(cfg)
           nobody ! "HI"
         }
 
-        expectErrorInHandler("NonBlocking, NoWait") {
-          val cfg    = makeConfig(ServiceMode.NonBlocking, ConnectPolicy.NoWait)
+        expectErrorInHandler("NonBlocking") {
+          val cfg    = makeConfig(ServiceMode.NonBlocking)
           val nobody = select(Node(9014), 'nobody)(cfg)
           nobody ! "HI"
         }
-
-        expectErrorInHandler("Blocking, WaitEstablished") {
-          val cfg    = makeConfig(ServiceMode.Blocking, ConnectPolicy.WaitEstablished)
-          val nobody = select(Node(9014), 'nobody)(cfg)
-          nobody ! "HI"
-        }
-
-        expectErrorInHandler("NonBlocking, WaitEstablished") {
-          val cfg    = makeConfig(ServiceMode.NonBlocking, ConnectPolicy.WaitEstablished)
-          val nobody = select(Node(9014), 'nobody)(cfg)
-          nobody ! "HI"
-        }
-
-        expectErrorInHandler("Blocking, WaitHandshake") {
-          val cfg    = makeConfig(ServiceMode.Blocking, ConnectPolicy.WaitHandshake)
-          val nobody = select(Node(9014), 'nobody)(cfg)
-          nobody ! "HI"
-        }
-
-        expectErrorInHandler("NonBlocking, WaitHandshake") {
-          val cfg    = makeConfig(ServiceMode.NonBlocking, ConnectPolicy.WaitHandshake)
-          val nobody = select(Node(9014), 'nobody)(cfg)
-          nobody ! "HI"
-        }
-
-        expectError("Blocking, WaitVerified") {
-          val cfg    = makeConfig(ServiceMode.Blocking, ConnectPolicy.WaitVerified)
-          val nobody = select(Node(9014), 'nobody)(cfg)
-          nobody ! "HI"
-        }
-
-        expectError("NonBlocking, WaitVerified") {
-          val cfg    = makeConfig(ServiceMode.NonBlocking, ConnectPolicy.WaitVerified)
-          val nobody = select(Node(9014), 'nobody)(cfg)
-          nobody ! "HI"
-        }
-
       }
     }
 

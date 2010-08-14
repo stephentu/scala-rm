@@ -8,13 +8,13 @@ import java.util.concurrent.CountDownLatch
 
 object Test {
 
-  private def withBlockingConnectPolicy[T](c: ConnectPolicy.Value)(f: Configuration => T) {
-    val config = new DefaultConfiguration { override val connectPolicy = c }
+  private def withBlocking[T](f: Configuration => T) {
+    val config = new DefaultConfiguration
     f(config)
   }
 
-  private def withNonBlockingConnectPolicy[T](c: ConnectPolicy.Value)(f: Configuration => T) {
-    val config = new DefaultNonBlockingConfiguration { override val connectPolicy = c }
+  private def withNonBlocking[T](f: Configuration => T) {
+    val config = new DefaultNonBlockingConfiguration
     f(config)
   }
 
@@ -26,39 +26,6 @@ object Test {
       guard.countDown()
     }
     def await() { guard.await() }
-  }
-
-  class InActLoopExceptionActor extends AwaitFinishActor { 
-    private def expectError(f: => Unit) {
-      try { 
-        f 
-        println("ERROR: Should have caught exception")
-        System.exit(1)
-      } catch {
-        case e: Exception =>
-          println("Successfully silenced: " + e.getMessage)
-          Debug.doError { e.printStackTrace() }
-      }
-    }
-
-    override def doAct() {
-      List(ConnectPolicy.WaitEstablished, 
-           ConnectPolicy.WaitHandshake, 
-           ConnectPolicy.WaitVerified) foreach { p =>
-        expectError {
-          withBlockingConnectPolicy(p) { config =>
-            val handle = select(Node("no-such-domain", 8392), 'nosuchactor)(config)
-            handle ! "HI"
-          }
-        }
-        expectError {
-          withNonBlockingConnectPolicy(p) { config =>
-            val handle = select(Node("no-such-domain", 8392), 'nosuchactor)(config)
-            handle ! "HI"
-          }
-        }
-      }
-    }
   }
 
   class ExceptionHandlerActor extends Actor {
@@ -90,13 +57,13 @@ object Test {
 
     override def act() {
       exceptError {
-        withBlockingConnectPolicy(ConnectPolicy.NoWait) { config =>
+        withBlocking { config =>
           val handle = select(Node("no-such-domain", 8392), 'nosuchactor)(config)
           handle ! "HI"
         }
       }
       exceptError {
-        withNonBlockingConnectPolicy(ConnectPolicy.NoWait) { config =>
+        withNonBlocking { config =>
           val handle = select(Node("no-such-domain", 8392), 'nosuchactor)(config)
           handle ! "HI"
         }
@@ -110,7 +77,6 @@ object Test {
     else
       Debug.level = 0
 
-    (new InActLoopExceptionActor).start().asInstanceOf[AwaitFinishActor].await()
     (new ExceptionHandlerActor).start()
   }
 }

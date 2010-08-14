@@ -146,6 +146,11 @@ private[remote] trait ByteConnection extends Connection {
 
 private[remote] trait MessageConnection extends Connection {
 
+  /**
+   * Send a message. The message is passed via a closure, because at any point
+   * this connection might not have completed the handshake, so a callback is
+   * necessary.
+   */
   def send(ftch: Option[RFuture])(msg: Serializer => ByteSequence): Unit
 
   /**
