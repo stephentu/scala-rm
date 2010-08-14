@@ -306,7 +306,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         def doRead(chan: SocketChannel): Boolean = {
           import BitUtils._
 
-					var shouldTerminate = false /* Did we encounter an error within a readBuffer? */
+          var shouldTerminate = false /* Did we encounter an error within a readBuffer? */
 
           try {
             var outerContinue = true  /* Should we keep trying new readBuffers? */
@@ -784,7 +784,7 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         serverSocketChannel.configureBlocking(false)
         serverSocketChannel.socket.bind(new InetSocketAddress(port))
         val listener = new NonBlockingServiceListener(serverSocketChannel.socket.getLocalPort, 
-						serverSocketChannel, connectionCallback, receiveCallback)
+            serverSocketChannel, connectionCallback, receiveCallback)
         addOperation(new RegisterChannel(serverSocketChannel, SelectionKey.OP_ACCEPT, Some(listener)))    
         listener
       }
@@ -816,8 +816,8 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
   }
 
   override def listen(port: Int, 
-										  connectionCallback: ConnectionCallback[ByteConnection], 
-											receiveCallback: BytesReceiveCallback) = {
+                      connectionCallback: ConnectionCallback[ByteConnection], 
+                      receiveCallback: BytesReceiveCallback) = {
     nextListenerLoop().listen(port, connectionCallback, receiveCallback)
   }
 

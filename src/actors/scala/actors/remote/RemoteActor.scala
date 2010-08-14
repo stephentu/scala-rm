@@ -925,7 +925,7 @@ case class ChannelAlreadyRegisteredException(channel: OutputChannel[Any], sym: S
  */
 @serializable
 case class NoSuchRemoteActorException(name: Symbol)
-	extends Exception("No such remote actor: " + name)
+  extends Exception("No such remote actor: " + name)
 
 /**
  * Thrown by the various <code>remoteStart</code> methods to indicate an

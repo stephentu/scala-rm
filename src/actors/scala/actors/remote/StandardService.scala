@@ -221,7 +221,7 @@ private[remote] class StandardService extends Service {
     val byteConnCallback = (listener: Listener, byteConn: ByteConnection) => {
       val msgConn = new DefaultMessageConnection(byteConn, config.newSerializer(), recvCallback, true, config)
       byteConn.attach(msgConn)
-			connCallback(listener, msgConn)	
+  		connCallback(listener, msgConn)	
     }
     serviceProviderFor0(config.aliveMode).listen(port, byteConnCallback, recvCall0)
   }

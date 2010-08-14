@@ -125,7 +125,7 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
   private val DUMMY_VALUE = new Object
 
   class BlockingServiceListener(
-			serverPort: Int,
+  		serverPort: Int,
       override val connectionCallback: ConnectionCallback[ByteConnection],
       receiveCallback: BytesReceiveCallback)
     extends Runnable
@@ -138,7 +138,7 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
 
     private val serverSocket = new ServerSocket(serverPort)
 
-		override def port = serverSocket.getLocalPort
+  	override def port = serverSocket.getLocalPort
 
     private val childConnections = new ConcurrentHashMap[ByteConnection, Object]
 

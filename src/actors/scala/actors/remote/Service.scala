@@ -208,8 +208,8 @@ private[remote] abstract class Service extends CanTerminate {
 
   def listen(port: Int, 
              config: Configuration,
-						 connCallback: ConnectionCallback[MessageConnection],
-						 recvCallback: MessageReceiveCallback): Listener
+  					 connCallback: ConnectionCallback[MessageConnection],
+  					 recvCallback: MessageReceiveCallback): Listener
 
   override def doTerminateImpl(isBottom: Boolean) {
     assert(!isBottom)

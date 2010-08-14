@@ -183,10 +183,10 @@ private[remote] object NetKernel {
     }
   }
 
-	final private val BufSize = 1024
+  final private val BufSize = 1024
 
-	// TODO: don't expose baos, expose a locked version where reset() throws an
-	// exception
+  // TODO: don't expose baos, expose a locked version where reset() throws an
+  // exception
 
   @inline private def makeFuture(from: Option[Reactor[Any]], blockingCond: Boolean): Option[RFuture] = {
     if (blockingCond)

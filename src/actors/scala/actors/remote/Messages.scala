@@ -47,15 +47,15 @@ object LocateRequest {
  * actor at the remote end
  */
 trait LocateRequest extends NetKernelMessage {
-	/**
-	 * The session id associated with the request. Only needs to be unique per
-	 * machine
-	 */
-	def sessionId: Long
+  /**
+   * The session id associated with the request. Only needs to be unique per
+   * machine
+   */
+  def sessionId: Long
 
-	/**
-	 * The name of the actor in to be located
-	 */
+  /**
+   * The name of the actor in to be located
+   */
   def receiverName: String
 }
 
@@ -63,7 +63,7 @@ trait LocateRequest extends NetKernelMessage {
  * A simple implementation of the <code>LocateRequest</code> interface
  */
 case class DefaultLocateRequestImpl(override val sessionId: Long,
-																		override val receiverName: String)
+  																	override val receiverName: String)
   extends LocateRequest
   
 /**
@@ -84,7 +84,7 @@ object LocateResponse {
  * <code>LocateRequest</code>
  */
 trait LocateResponse extends NetKernelMessage {
-	def sessionId: Long
+  def sessionId: Long
   def receiverName: String
   def found: Boolean
 }
@@ -93,7 +93,7 @@ trait LocateResponse extends NetKernelMessage {
  * A simple implementation of the <code>LocateResponse</code> interface
  */
 case class DefaultLocateResponseImpl(override val sessionId: Long,
-																		 override val receiverName: String,
+  																	 override val receiverName: String,
                                      override val found: Boolean)
   extends LocateResponse
 

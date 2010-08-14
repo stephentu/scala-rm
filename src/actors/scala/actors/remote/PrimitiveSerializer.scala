@@ -30,55 +30,55 @@ private[remote] class NonPrimitiveClassException(clz: Class[_]) extends Exceptio
 
 private[remote] class PrimitiveSerializer {
 
-	import PrimitiveSerializer._
+  import PrimitiveSerializer._
 
-	// TODO: varint encoding
-	def serialize(message: Any, outputStream: OutputStream) {
-		val dos = new DataOutputStream(outputStream)
-		message match {
-			case b: Byte        => dos.writeByte(BYTE_TAG); dos.writeByte(b) 
-			case s: Short       => dos.writeByte(SHORT_TAG); dos.writeShort(s) 
-			case i: Int         => dos.writeByte(INT_TAG); dos.writeInt(i) 
-			case l: Long        => dos.writeByte(LONG_TAG); dos.writeLong(l) 
-			case f: Float       => dos.writeByte(FLOAT_TAG); dos.writeFloat(f) 
-			case d: Double      => dos.writeByte(DOUBLE_TAG); dos.writeDouble(d)
-			case b: Boolean     => dos.writeByte(BOOLEAN_TAG); dos.writeBoolean(b)
-			case c: Char        => dos.writeByte(CHAR_TAG); dos.writeChar(c) 
-			case s: String      => dos.writeByte(STRING_TAG); dos.writeBytes(s) 
-			case b: Array[Byte] => dos.writeByte(BYTES_TAG); dos.write(b)
-		}
-	}
+  // TODO: varint encoding
+  def serialize(message: Any, outputStream: OutputStream) {
+  	val dos = new DataOutputStream(outputStream)
+  	message match {
+  		case b: Byte        => dos.writeByte(BYTE_TAG); dos.writeByte(b) 
+  		case s: Short       => dos.writeByte(SHORT_TAG); dos.writeShort(s) 
+  		case i: Int         => dos.writeByte(INT_TAG); dos.writeInt(i) 
+  		case l: Long        => dos.writeByte(LONG_TAG); dos.writeLong(l) 
+  		case f: Float       => dos.writeByte(FLOAT_TAG); dos.writeFloat(f) 
+  		case d: Double      => dos.writeByte(DOUBLE_TAG); dos.writeDouble(d)
+  		case b: Boolean     => dos.writeByte(BOOLEAN_TAG); dos.writeBoolean(b)
+  		case c: Char        => dos.writeByte(CHAR_TAG); dos.writeChar(c) 
+  		case s: String      => dos.writeByte(STRING_TAG); dos.writeBytes(s) 
+  		case b: Array[Byte] => dos.writeByte(BYTES_TAG); dos.write(b)
+  	}
+  }
 
-	// TODO: varint decoding
-	def deserialize(bytes: Array[Byte]) = {
-		val is  = new ByteArrayInputStream(bytes)
-		val dis = new DataInputStream(is)
-		dis.readByte() match {
-			case BYTE_TAG    => dis.readByte()
-			case SHORT_TAG   => dis.readShort()
-			case INT_TAG     => dis.readInt() 
-			case LONG_TAG    => dis.readLong()
-			case FLOAT_TAG   => dis.readFloat()
-			case DOUBLE_TAG  => dis.readDouble() 
-			case BOOLEAN_TAG => dis.readBoolean()
-			case CHAR_TAG    => dis.readChar()
-			case STRING_TAG  => 
-				val buf = new Array[Byte](bytes.length - 1)
-				dis.readFully(buf)
-				new String(buf)
-			case BYTES_TAG   => 
-				val buf = new Array[Byte](bytes.length - 1)
-				dis.readFully(buf)
-				buf
-			case t           => throw new IllegalStateException("Bad tag found: " + t)
-		}
-	}
+  // TODO: varint decoding
+  def deserialize(bytes: Array[Byte]) = {
+  	val is  = new ByteArrayInputStream(bytes)
+  	val dis = new DataInputStream(is)
+  	dis.readByte() match {
+  		case BYTE_TAG    => dis.readByte()
+  		case SHORT_TAG   => dis.readShort()
+  		case INT_TAG     => dis.readInt() 
+  		case LONG_TAG    => dis.readLong()
+  		case FLOAT_TAG   => dis.readFloat()
+  		case DOUBLE_TAG  => dis.readDouble() 
+  		case BOOLEAN_TAG => dis.readBoolean()
+  		case CHAR_TAG    => dis.readChar()
+  		case STRING_TAG  => 
+  			val buf = new Array[Byte](bytes.length - 1)
+  			dis.readFully(buf)
+  			new String(buf)
+  		case BYTES_TAG   => 
+  			val buf = new Array[Byte](bytes.length - 1)
+  			dis.readFully(buf)
+  			buf
+  		case t           => throw new IllegalStateException("Bad tag found: " + t)
+  	}
+  }
 
   /**
    * Returns the TOTAL (including tag) number of bytes needed to serializer
    * message
    */
-	def sizeOf(message: Any) = {
+  def sizeOf(message: Any) = {
     val s0 = message match {
       case b: Byte        => 1
       case s: Short       => 2

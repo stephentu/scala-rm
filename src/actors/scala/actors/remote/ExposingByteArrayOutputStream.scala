@@ -20,8 +20,8 @@ import java.lang.{Math => JMath}
  * ByteArrayOutputStream, so that we can avoid a copy 
  */
 private[remote] class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOutputStream(i) {
-	def this() = this(32)
-	def getUnderlyingByteArray = this.buf
+  def this() = this(32)
+  def getUnderlyingByteArray = this.buf
 
   ///**
   // * Does not check the newcount argument for sanity
@@ -68,13 +68,13 @@ private[remote] class ExposingByteArrayOutputStream(i: Int) extends ByteArrayOut
  * header field to go.
  */
 private[remote] class PreallocatedHeaderByteArrayOutputStream(prealloc: Int, bufsize: Int) 
-	extends ByteArrayOutputStream(bufsize) {
+  extends ByteArrayOutputStream(bufsize) {
 
-	assert(prealloc >= 0 && bufsize >= prealloc)
+  assert(prealloc >= 0 && bufsize >= prealloc)
 
-	// preallocate the bytes
-	count = prealloc
+  // preallocate the bytes
+  count = prealloc
 
-	def toDiscardableByteSeq =
-		new DiscardableByteSequence(buf, prealloc, count - prealloc)
+  def toDiscardableByteSeq =
+  	new DiscardableByteSequence(buf, prealloc, count - prealloc)
 }
