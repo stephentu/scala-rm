@@ -57,10 +57,11 @@ private[remote] object InterestOpUtil {
 private[remote] object NonBlockingServiceProvider {
   val NumConnectionLoops = Runtime.getRuntime.availableProcessors * 2
   val NumListenerLoops   = 1 /* Runtime.getRuntime.availableProcessors */
-
   val ReadBufSize        = 8192
 }
 
+// TODO: store soft references to the ByteBuffers in the pool, so they are
+// eligible for garbage collection
 private[remote] class VaryingSizeByteBufferPool {
 
   private val comparator = new Comparator[ByteBuffer] {
@@ -112,6 +113,34 @@ private[remote] class FixedSizeByteBufferPool(fixedSize: Int) {
 
 }
 
+/**
+ * This class provides non blocking network services based on Java NIO. The
+ * architecture is as follows. There is exactly one select loop which services
+ * incoming requests. This select loop is backed by a dedicated thread.
+ * Incoming requests are then handed off to a connection thread pool, which
+ * is currently set to N * 2, where N is the number of cores. This means there
+ * are N * 2 threads running identical select loops. The handoff happens in a
+ * simple round-robin fashion.
+ *
+ * We follow the established idiom of handling all SelectorKeys within the
+ * select loop, since it is noted that changing the interest ops is not
+ * thread-safe in some implementations. This means that each select loop,
+ * before calling select(), drains an operation queue which simply changes
+ * interest ops.
+ *
+ * Writes occur by enqueuing messages in a write queue and flipping on the
+ * channel's interest of OP_WRITE. To avoid flipping on the interest too many
+ * times, whether or not a channel is in write mode or not is guarded by an
+ * atomic boolean. All calls to send on non blocking channels are lock-free. 
+ * When the write queue is drained, the OP_WRITE interest is turned off.
+ *
+ * Other details: All reads/writes out of the NIO channels are performed with
+ * direct byte buffers, due to their better performance. However, since direct
+ * byte buffer allocation is expensive, each channel maintains a small pool of
+ * direct byte buffers, which are reused for writes. The byte buffers are
+ * stored in a max priority queue, so that efficient access to the largest
+ * pooled buffer is possible.
+ */
 private[remote] class NonBlockingServiceProvider extends ServiceProvider {
 
   import NonBlockingServiceProvider._
@@ -504,11 +533,9 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
         //Debug.error(this + ": this channel is interested in: " + InterestOpUtil.enumerateSet(key.interestOps))
         //Debug.error(this + ": isWriting: " + isWriting.get)
 
-        //assert(isWriting.get) /* Incorrect assumption */
         /**
          * Note: it is very possible that doWrite() is executed when isWriting
-         * is false (in other words, the commented out assertion above is
-         * wrong!). This is because setWriteMode() is not atomic. In the time
+         * is false. This is because setWriteMode() is not atomic. In the time
          * after the CAS and before offering to the op queue, isWriting can be
          * set to false again by the code below. In other words, the op queue
          * is always lagging behind the isWriting state, and since this loop
@@ -520,10 +547,10 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
          */
 
         try {
-          var continue = true
-          var numEmptyWrites = 0
+          var continue        = true
+          var numEmptyWrites  = 0
           var hasWrittenBytes = false
-          val spinsAllowed = 16
+          val spinsAllowed    = 8
           while (continue) {
             val nextWrite = writeQueue.peek
             if (nextWrite eq null) {
