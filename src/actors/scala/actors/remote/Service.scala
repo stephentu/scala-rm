@@ -10,7 +10,7 @@
 package scala.actors
 package remote
 
-import java.io.{ ByteArrayOutputStream, DataOutputStream }
+import java.io.{ ByteArrayOutputStream, DataOutputStream, InputStream }
 import java.nio.ByteBuffer
 
 import scala.collection.mutable.{ HashMap, ListBuffer }
@@ -132,9 +132,9 @@ private[remote] trait ByteConnection extends Connection {
 
   protected val receiveCallback: BytesReceiveCallback
 
-  protected def receiveBytes(bytes: Array[Byte]) {
+  protected def receiveBytes(inputStream: InputStream) {
     try {
-      receiveCallback(this, bytes)
+      receiveCallback(this, inputStream)
     } catch {
       case e: Exception =>
         Debug.error("Caught exception calling receiveCallback: " + e.getMessage)

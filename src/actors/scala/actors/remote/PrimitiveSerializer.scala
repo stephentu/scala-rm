@@ -50,9 +50,8 @@ private[remote] class PrimitiveSerializer {
   }
 
   // TODO: varint decoding
-  def deserialize(bytes: Array[Byte]) = {
-  	val is  = new ByteArrayInputStream(bytes)
-  	val dis = new DataInputStream(is)
+  def deserialize(bytes: InputStream) = {
+  	val dis = new DataInputStream(bytes)
   	dis.readByte() match {
   		case BYTE_TAG    => dis.readByte()
   		case SHORT_TAG   => dis.readShort()
@@ -63,11 +62,11 @@ private[remote] class PrimitiveSerializer {
   		case BOOLEAN_TAG => dis.readBoolean()
   		case CHAR_TAG    => dis.readChar()
   		case STRING_TAG  => 
-  			val buf = new Array[Byte](bytes.length - 1)
+  			val buf = new Array[Byte](dis.available)
   			dis.readFully(buf)
   			new String(buf)
   		case BYTES_TAG   => 
-  			val buf = new Array[Byte](bytes.length - 1)
+  			val buf = new Array[Byte](dis.available)
   			dis.readFully(buf)
   			buf
   		case t           => throw new IllegalStateException("Bad tag found: " + t)

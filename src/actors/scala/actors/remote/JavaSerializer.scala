@@ -120,9 +120,8 @@ class JavaSerializer(cl: ClassLoader)
   }
 
 
-  override def read(bytes: Array[Byte]) = {
-    val bais = new ByteArrayInputStream(bytes)
-    val is = new DataInputStream(bais)
+  override def read(inputStream: InputStream) = {
+    val is = new DataInputStream(inputStream)
     val tag = readTag(is) 
     tag match {
       case LOCATE_REQ =>

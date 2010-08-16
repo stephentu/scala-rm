@@ -12,7 +12,8 @@ package scala.actors
 package remote
 
 
-import java.io.{ DataInputStream, DataOutputStream, IOException }
+import java.io.{ ByteArrayInputStream, DataInputStream, 
+                 DataOutputStream, IOException }
 import java.net.{ InetSocketAddress, ServerSocket, Socket, 
                   SocketException, UnknownHostException }
 import java.util.concurrent.{ ConcurrentHashMap, Executors }
@@ -99,13 +100,13 @@ private[remote] class BlockingServiceProvider extends ServiceProvider {
         while (!terminated) {
           val length = datain.readInt()
           if (length == 0) {
-            receiveBytes(EmptyArray)
+            receiveBytes(new ByteArrayInputStream(EmptyArray))
           } else if (length < 0) {
             throw new IllegalStateException("received negative length message size header")
           } else {
             val bytes = new Array[Byte](length)
             datain.readFully(bytes, 0, length)
-            receiveBytes(bytes)
+            receiveBytes(new ByteArrayInputStream(bytes))
           }
         }
       } catch {

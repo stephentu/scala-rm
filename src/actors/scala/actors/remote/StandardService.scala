@@ -10,6 +10,8 @@
 package scala.actors
 package remote
 
+import java.io.InputStream
+
 import scala.collection.mutable.{ HashMap, Queue }
 
 private[remote] object ConnectionStatus {
@@ -150,7 +152,7 @@ private[remote] class DefaultMessageConnection(
     }
   }
 
-  def receive(bytes: Array[Byte]) {
+  def receive(bytes: InputStream) {
     assert(status != 0)
     //Debug.info(this + ": received " + bytes.length + " bytes")
     if (isHandshaking) {
@@ -165,7 +167,7 @@ private[remote] class DefaultMessageConnection(
       //Debug.info(this + ": calling receiveMessage with " + nextMsg)
       receiveMessage(serializer, nextMsg)
     } else 
-      Debug.error(this + ": received %d bytes but no action can be taken".format(bytes.length))
+      Debug.error(this + ": received %d bytes but no action can be taken".format(bytes.available))
   }
 
   override def send(ftch: Option[RFuture])(msg: Serializer => ByteSequence) {
@@ -201,8 +203,8 @@ private[remote] class StandardService extends Service {
     case ServiceMode.Blocking    => new BlockingServiceProvider
   }
 
-  private val recvCall0 = (conn: ByteConnection, bytes: Array[Byte]) => {
-    conn.attachment_!.asInstanceOf[DefaultMessageConnection].receive(bytes)
+  private val recvCall0 = (conn: ByteConnection, inputStream: InputStream) => {
+    conn.attachment_!.asInstanceOf[DefaultMessageConnection].receive(inputStream)
   }
 
   override def connect(node: Node, 

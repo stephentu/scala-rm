@@ -11,7 +11,7 @@
 package scala.actors
 package remote
 
-import java.io.{ ByteArrayOutputStream,IOException }
+import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, IOException }
 import java.net.{ InetAddress, InetSocketAddress, Socket }
 import java.nio.ByteBuffer
 import java.nio.channels.{ ClosedSelectorException, SelectionKey, Selector, 
@@ -328,17 +328,15 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
       // receiving message state management 
       private class MessageState {
 
-        val intArray      = new Array[Byte](4)
-
         var isReadingSize = true
         var messageSize   = 4
         var bytesSoFar    = 0
-        var currentArray  = intArray
+
+        var currentArray: Array[Byte] = null
 
         // returns true iff either EOF was reached, or an exception
         // occured during read
         def doRead(chan: SocketChannel): Boolean = {
-          import BitUtils._
 
           var shouldTerminate = false /* Did we encounter an error within a readBuffer? */
 
@@ -360,36 +358,82 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
                   // readBuffer is full, so don't continue anymore on this
                   // readBuffer, but use another one
                   totalBytesRead += cnt
-                  continue = false
+                  continue        = false
                 } else if (cnt == 0) {
                   // socket has no more to offer to read, so don't continue
                   // anymore
                   outerContinue = false
                   continue      = false
                 } else {
-                  //assert(cnt > 0)
                   // socket offered some to read, so let's keep reading
                   totalBytesRead += cnt
                 }
               }
 
+              // no validation of size or offset
+              @inline def bytesToInt(bytes: Array[Byte], offset: Int): Int = {
+                require(offset >= 0)
+                (bytes(offset).toInt & 0xFF)     << 24 | 
+                (bytes(offset + 1).toInt & 0xFF) << 16 | 
+                (bytes(offset + 2).toInt & 0xFF) << 8  |
+                (bytes(offset + 3).toInt & 0xFF)
+              }
+
               if (totalBytesRead > 0) {
                 readBuffer.flip()
-                while (readBuffer.remaining > 0) {
-                  // some bytes are here to process, so process as many as
-                  // possible
-                  val toCopy = java.lang.Math.min(readBuffer.remaining, messageSize - bytesSoFar)
-                  readBuffer.get(currentArray, bytesSoFar, toCopy)
+                //assert(readBuffer.remaining == totalBytesRead)
+
+                // copy into a byte array, because accessing data from byte
+                // array is faster than accessing directly from the direct byte
+                // buffer (even with copy)
+                val curBuf = new Array[Byte](totalBytesRead)
+                readBuffer.get(curBuf)
+
+                // pointer into curBuf
+                var pos = 0
+                while (pos < totalBytesRead) {
+                  val remaining = totalBytesRead - pos
+                  val needed    = messageSize - bytesSoFar
+                  val toCopy    = java.lang.Math.min(remaining, needed)
+
+                  // determine if we need to copy into a previous buffer, or
+                  // if we need to create a new buffer because we don't have
+                  // enough bytes this read to process an entire message
+                  if (currentArray ne null) {
+                    System.arraycopy(curBuf, pos, currentArray, bytesSoFar, toCopy)
+                  } else if (needed > remaining) {
+                    //assert(bytesSoFar == 0)
+                    currentArray = new Array[Byte](messageSize)
+                    System.arraycopy(curBuf, pos, currentArray, 0, toCopy)
+                  }
+
+                  // advance pointers
                   bytesSoFar += toCopy
+                  pos        += toCopy
 
                   // this message is done
-                  if (bytesSoFar == messageSize) 
-                    if (isReadingSize)
-                      startReadingMessage(bytesToInt(currentArray))
-                    else {
-                      receiveBytes(currentArray)
+                  if (bytesSoFar == messageSize) {
+                    if (isReadingSize) {
+                      val size = 
+                        if (currentArray ne null) 
+                          bytesToInt(currentArray, 0) 
+                        else 
+                          bytesToInt(curBuf, pos - 4)
+                      //assert(size >= 0, "negative size read: " + size)
+                      startReadingMessage(size)
+                    } else {
+                      val inputStream = 
+                        if (currentArray ne null) 
+                          new ByteArrayInputStream(currentArray) 
+                        else {
+                          //assert(pos - messageSize >= 0, "pos - messageSize is negative")
+                          new ByteArrayInputStream(curBuf, pos - messageSize, messageSize)
+                        }
+                      receiveBytes(inputStream)
                       startReadingSize()
                     }
+                    currentArray = null
+                  }
                 }
               } 
             }
@@ -403,18 +447,16 @@ private[remote] class NonBlockingServiceProvider extends ServiceProvider {
           shouldTerminate
         }
 
-        def startReadingSize() {
+        @inline private def startReadingSize() {
           isReadingSize = true
           messageSize   = 4
           bytesSoFar    = 0
-          currentArray  = intArray
         }
 
-        def startReadingMessage(size: Int) {
+        @inline private def startReadingMessage(size: Int) {
           isReadingSize = false
           messageSize   = size 
           bytesSoFar    = 0
-          currentArray  = new Array[Byte](size)
         }
 
         def reset() {

@@ -304,7 +304,7 @@ abstract class Serializer {
    * @see     writeSyncReply
    * @see     writeRemoteApply
    */
-  def read(bytes: Array[Byte]): NetKernelMessage
+  def read(inputStream: InputStream): NetKernelMessage
 
   /** 
    * Unique identifier used for this serializer 
