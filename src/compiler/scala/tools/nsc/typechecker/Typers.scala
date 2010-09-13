@@ -191,6 +191,15 @@ trait Typers { self: Analyzer =>
           argResultsBuff += inferImplicit(fun, paramTp, true, false, context)
         }
 
+        def errorMessage(paramName: Name, paramTp: Type) =
+          paramTp.typeSymbol match {
+            case ImplicitNotFoundMsg(msg) => msg.format(paramName, paramTp)
+            case _ =>
+              "could not find implicit value for "+
+                 (if (paramName startsWith nme.EVIDENCE_PARAM_PREFIX) "evidence parameter of type "
+                  else "parameter "+paramName+": ")+paramTp  
+          }
+        
         val argResults = argResultsBuff.toList
         val args = argResults.zip(params) flatMap {
           case (arg, param) =>
@@ -199,10 +208,7 @@ trait Typers { self: Analyzer =>
               else List(atPos(arg.tree.pos)(new AssignOrNamedArg(Ident(param.name), (arg.tree))))
             } else {
               if (!param.hasFlag(DEFAULTPARAM))
-                context.error(
-                  fun.pos, "could not find implicit value for "+
-                  (if (param.name startsWith nme.EVIDENCE_PARAM_PREFIX) "evidence parameter of type "
-                   else "parameter "+param.name+": ")+param.tpe)
+                context.error(fun.pos, errorMessage(param.name, param.tpe))
               positional = false
               Nil
             }
@@ -774,6 +780,11 @@ trait Typers { self: Analyzer =>
       case atp @ AnnotatedType(_, _, _) if canAdaptAnnotations(tree, mode, pt) => // (-1)
         adaptAnnotations(tree, mode, pt)
       case ct @ ConstantType(value) if ((mode & (TYPEmode | FUNmode)) == 0 && (ct <:< pt) && !onlyPresentation) => // (0)
+        val sym = tree.symbol
+        if (sym != null && sym.isDeprecated) {
+          val msg = sym.toString + sym.locationString +" is deprecated: "+ sym.deprecationMessage.getOrElse("")
+          unit.deprecationWarning(tree.pos, msg)
+        }
         treeCopy.Literal(tree, value)
       case OverloadedType(pre, alts) if ((mode & FUNmode) == 0) => // (1)
         inferExprAlternative(tree, pt)
@@ -1724,7 +1735,7 @@ trait Typers { self: Analyzer =>
           }
         }
       }
-
+      
       val tparams1 = ddef.tparams mapConserve typedTypeDef
       val vparamss1 = ddef.vparamss mapConserve (_ mapConserve typedValDef)
       
@@ -1798,6 +1809,13 @@ trait Typers { self: Analyzer =>
       val typedMods = removeAnnotations(tdef.mods)
       // complete lazy annotations
       val annots = tdef.symbol.annotations
+
+      // @specialized should not be pickled when compiling with -no-specialize
+      if (settings.nospecialization.value && currentRun.compiles(tdef.symbol)) {
+        tdef.symbol.removeAnnotation(definitions.SpecializedClass)
+        tdef.symbol.deSkolemize.removeAnnotation(definitions.SpecializedClass)
+      }
+
       val rhs1 = checkNoEscaping.privates(tdef.symbol, typedType(tdef.rhs))
       checkNonCyclic(tdef.symbol)
       if (tdef.symbol.owner.isType) 
@@ -2090,7 +2108,9 @@ trait Typers { self: Analyzer =>
               } else
                 EmptyTree
             case _ =>
-              if (localTarget && !includesTargetPos(stat)) {
+              if (localTarget && !includesTargetPos(stat)) { 
+                // skip typechecking of statements in a sequence where some other statement includes
+                // the targetposition
                 stat
               } else {
                 val localTyper = if (inBlock || (stat.isDef && !stat.isInstanceOf[LabelDef])) this
@@ -2363,6 +2383,9 @@ trait Typers { self: Analyzer =>
                 val funSym = fun1 match { case Block(_, expr) => expr.symbol }
                 if (allArgs.length != args.length && callToCompanionConstr(context, funSym)) {
                   errorTree(tree, "module extending its companion class cannot use default constructor arguments")
+                } else if (allArgs.length > formals.length) {
+                  removeNames(Typer.this)(allArgs, params) // #3818
+                  setError(tree)
                 } else if (allArgs.length == formals.length) {
                   // useful when a default doesn't match parameter type, e.g. def f[T](x:T="a"); f[Int]()
                   val note = "Error occurred in an application involving default arguments."

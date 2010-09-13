@@ -227,6 +227,7 @@ trait SyntheticMethods extends ast.TreeDSL {
         var newAcc = tree.symbol.cloneSymbol
         newAcc.name = context.unit.fresh.newName(tree.symbol.pos.focus, tree.symbol.name + "$")
         newAcc setFlag SYNTHETIC resetFlag (ACCESSOR | PARAMACCESSOR | PRIVATE)
+        newAcc.privateWithin = NoSymbol
         newAcc = newAcc.owner.info.decls enter newAcc
         val result = typer typed { DEF(newAcc) === rhs.duplicate }
         log("new accessor method " + result)
@@ -290,15 +291,18 @@ trait SyntheticMethods extends ast.TreeDSL {
       }
 
       if (clazz.isModuleClass) {
-        if (!hasSerializableAnnotation(clazz))
-          clazz addAnnotation AnnotationInfo(SerializableAttr.tpe, Nil, Nil)
+        if (!hasSerializableAnnotation(clazz)) {
+          val comp = companionClassOf(clazz, context)
+          if (comp.hasFlag(Flags.CASE) || hasSerializableAnnotation(comp))
+            clazz addAnnotation AnnotationInfo(SerializableAttr.tpe, Nil, Nil)
+        }
 
         /** If you serialize a singleton and then deserialize it twice,
          *  you will have two instances of your singleton, unless you implement
          *  the readResolve() method (see http://www.javaworld.com/javaworld/
          *  jw-04-2003/jw-0425-designpatterns_p.html)
          */
-        if (!hasImplementation(nme.readResolve))
+        if (hasSerializableAnnotation(clazz) && !hasImplementation(nme.readResolve))
           ts += readResolveMethod
       }
     } catch {

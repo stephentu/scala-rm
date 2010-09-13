@@ -10,7 +10,7 @@ $(document).ready(function(){
     prefilters.addClass("out");
     filter();
 
-    var input = $("#textfilter > input");
+    var input = $("#textfilter input");
     input.bind("keyup", function(event) {
         if (event.keyCode == 27) { // escape
             input.attr("value", "");
@@ -19,7 +19,7 @@ $(document).ready(function(){
     });
     input.focus(function(event) { input.select(); });
     $("#textfilter > .post").click(function(){
-        $("#textfilter > input").attr("value", "");
+        $("#textfilter input").attr("value", "");
         filter();
     });
 
@@ -97,10 +97,10 @@ $(document).ready(function(){
     //http://flowplayer.org/tools/tooltip.html
     $(".extype").tooltip({
         tip: "#tooltip",
-        position:"top center",        
+        position:"top center",
         onBeforeShow: function(ev) {
             $(this.getTip()).text(this.getTrigger().attr("name"));
-        }        
+        }
     });
     $(".defval").tooltip({
         tip: "#tooltip",
@@ -109,7 +109,7 @@ $(document).ready(function(){
             $(this.getTip()).html(this.getTrigger().attr("name"))
         }        
     });   
-    var docAllSigs = $("#template .signature");
+    var docAllSigs = $(".signature");
     function commentShowFct(fullComment){
         var vis = $(":visible", fullComment);
         if (vis.length > 0) {
@@ -139,13 +139,13 @@ $(document).ready(function(){
         }
     };
     var docToggleSigs = docAllSigs.filter(function(){
-        return $("+ p.shortcomment", $(this)).length > 0;
+        return $("+ .shortcomment", $(this)).length > 0;
     });
     docToggleSigs.css("cursor", "pointer");
     docToggleSigs.click(function(){
-        commentToggleFct($("+ p.shortcomment", $(this)));
+        commentToggleFct($("+ .shortcomment", $(this)));
     });
-    $("p.shortcomment").click(function(){
+    $(".shortcomment").click(function(){
         commentToggleFct($(this));
     });
 });
@@ -212,7 +212,7 @@ function initInherit() {
 };
 
 function filter() {
-    var query = $("#textfilter > input").attr("value").toLowerCase();
+    var query = $("#textfilter input").attr("value").toLowerCase();
     var queryRegExp = new RegExp(query, "i");
     var inheritHides = null
     if ($("#order > ol > li.inherit").hasClass("in")) {

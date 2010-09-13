@@ -8,7 +8,7 @@ package scala.tools.nsc
 package symtab
 
 import scala.collection.immutable
-import scala.collection.mutable.{ListBuffer, WeakHashMap}
+import scala.collection.mutable.{ListBuffer, HashMap, WeakHashMap}
 import ast.TreeGen
 import util.{HashSet, Position, NoPosition}
 import util.Statistics._
@@ -2244,14 +2244,17 @@ A type's typeSymbol should never be inspected directly.
         if(params.isEmpty) { // type var has kind *
           addBound(tp)
           true
-        } else // higher-kinded type var with same arity as tp
-          (typeArgs.length == tp.typeArgs.length) && {
-            // register type constructor (the type without its type arguments) as bound
-            addBound(tp.typeConstructor)
-            // check subtyping of higher-order type vars
-            // use variances as defined in the type parameter that we're trying to infer (the result is sanity-checked later)
-            checkArgs(tp.typeArgs, typeArgs, params)
-          }
+        } else { // higher-kinded type var with same arity as tp
+          def unifyHK(tp: Type) =
+            (typeArgs.length == tp.typeArgs.length) && {
+              // register type constructor (the type without its type arguments) as bound
+              addBound(tp.typeConstructor)
+              // check subtyping of higher-order type vars
+              // use variances as defined in the type parameter that we're trying to infer (the result is sanity-checked later)
+              checkArgs(tp.typeArgs, typeArgs, params)
+            }
+          unifyHK(tp) || unifyHK(tp.dealias)
+        }
       }
     }
 
@@ -4241,9 +4244,8 @@ A type's typeSymbol should never be inspected directly.
             // this optimisation holds because inlining cloneSymbols in `val tpsFresh = cloneSymbols(tparams1)` gives:
             // val tpsFresh = tparams1 map (_.cloneSymbol)
             // for (tpFresh <- tpsFresh) tpFresh.setInfo(tpFresh.info.substSym(tparams1, tpsFresh))
-          }
         }
-
+      }
       case (_, _) => false // @assume !tp1.isHigherKinded || !tp2.isHigherKinded 
       // --> thus, cannot be subtypes (Any/Nothing has already been checked)
     }))
@@ -4479,7 +4481,12 @@ A type's typeSymbol should never be inspected directly.
     val info2 = tp2.memberInfo(sym2).substThis(tp2.typeSymbol, tp1)
     //System.out.println("specializes "+tp1+"."+sym1+":"+info1+sym1.locationString+" AND "+tp2+"."+sym2+":"+info2)//DEBUG
     sym2.isTerm && (info1 <:< info2) /*&& (!sym2.isStable || sym1.isStable) */ ||
-    sym2.isAbstractType && info2.bounds.containsType(tp1.memberType(sym1)) ||
+    sym2.isAbstractType && {
+      val memberTp1 = tp1.memberType(sym1)
+      // println("kinds conform? "+(memberTp1, tp1, sym2, kindsConform(List(sym2), List(memberTp1), tp2, sym2.owner)))
+      info2.bounds.containsType(memberTp1) && 
+      kindsConform(List(sym2), List(memberTp1), tp1, sym1.owner) 
+    } ||
     sym2.isAliasType && tp2.memberType(sym2).substThis(tp2.typeSymbol, tp1) =:= tp1.memberType(sym1) //@MAT ok
   }
 
@@ -4857,8 +4864,16 @@ A type's typeSymbol should never be inspected directly.
     isNumericValueType(tp1) && isNumericValueType(tp2) &&  
     isNumericSubClass(tp1.typeSymbol, tp2.typeSymbol)
 
-  def lub(ts: List[Type]): Type = lub(ts, lubDepth(ts))
-    
+  private val lubResults = new HashMap[(Int, List[Type]), Type]
+  private val glbResults = new HashMap[(Int, List[Type]), Type]
+
+  def lub(ts: List[Type]): Type = try {
+    lub(ts, lubDepth(ts))
+  } finally {
+    lubResults.clear()
+    glbResults.clear()
+  }
+ 
   /** The least upper bound wrt &lt;:&lt; of a list of types */
   def lub(ts: List[Type], depth: Int): Type = {
     def lub0(ts0: List[Type]): Type = elimSub(ts0, depth) match {
@@ -4872,72 +4887,83 @@ A type's typeSymbol should never be inspected directly.
         MethodType(params, lub0(matchingRestypes(ts, params map (_.tpe))))
       case ts @ TypeBounds(_, _) :: rest =>
         TypeBounds(glb(ts map (_.bounds.lo), depth), lub(ts map (_.bounds.hi), depth))
-      case ts0 =>
-        val (ts, tparams) = stripExistentialsAndTypeVars(ts0)
-        val bts: List[BaseTypeSeq] = ts map (_.baseTypeSeq)
-        val lubBaseTypes: List[Type] = lubBaseTypeSeq(bts, depth)
-        val lubParents = spanningTypes(lubBaseTypes)
-        val lubOwner = commonOwner(ts)
-        val lubBase = intersectionType(lubParents, lubOwner)
-        val lubType =
-          if (phase.erasedTypes || depth == 0) lubBase
-          else {
-            val lubRefined = refinedType(lubParents, lubOwner)
-            val lubThisType = lubRefined.typeSymbol.thisType
-            val narrowts = ts map (_.narrow)
-            def lubsym(proto: Symbol): Symbol = {
-              val prototp = lubThisType.memberInfo(proto)
-              val syms = narrowts map (t =>
-                t.nonPrivateMember(proto.name).suchThat(sym =>
-                  sym.tpe matches prototp.substThis(lubThisType.typeSymbol, t)))
-              if (syms contains NoSymbol) NoSymbol
+      case ts =>
+        lubResults get (depth, ts) match {
+          case Some(lubType) => 
+            lubType
+          case None => 
+            lubResults((depth, ts)) = AnyClass.tpe
+            val res = if (depth < 0) AnyClass.tpe else lub1(ts)
+            lubResults((depth, ts)) = res
+            res
+        }
+    }
+    def lub1(ts0: List[Type]): Type = {
+      val (ts, tparams) = stripExistentialsAndTypeVars(ts0)
+      val bts: List[BaseTypeSeq] = ts map (_.baseTypeSeq)
+      val lubBaseTypes: List[Type] = lubBaseTypeSeq(bts, depth)
+      val lubParents = spanningTypes(lubBaseTypes)
+      val lubOwner = commonOwner(ts)
+      val lubBase = intersectionType(lubParents, lubOwner)
+      val lubType =
+        if (phase.erasedTypes || depth == 0) lubBase
+        else {
+          val lubRefined = refinedType(lubParents, lubOwner)
+          val lubThisType = lubRefined.typeSymbol.thisType
+          val narrowts = ts map (_.narrow)
+          def lubsym(proto: Symbol): Symbol = {
+            val prototp = lubThisType.memberInfo(proto)
+            val syms = narrowts map (t =>
+              t.nonPrivateMember(proto.name).suchThat(sym =>
+                sym.tpe matches prototp.substThis(lubThisType.typeSymbol, t)))
+            if (syms contains NoSymbol) NoSymbol
+            else {
+              val symtypes =
+                (narrowts, syms).zipped map ((t, sym) => t.memberInfo(sym).substThis(t.typeSymbol, lubThisType))
+              if (proto.isTerm) // possible problem: owner of info is still the old one, instead of new refinement class
+                proto.cloneSymbol(lubRefined.typeSymbol).setInfoOwnerAdjusted(lub(symtypes, decr(depth)))
+              else if (symtypes.tail forall (symtypes.head =:=))
+                proto.cloneSymbol(lubRefined.typeSymbol).setInfoOwnerAdjusted(symtypes.head)
               else {
-                val symtypes =
-                  (narrowts, syms).zipped map ((t, sym) => t.memberInfo(sym).substThis(t.typeSymbol, lubThisType))
-                if (proto.isTerm) // possible problem: owner of info is still the old one, instead of new refinement class
-                  proto.cloneSymbol(lubRefined.typeSymbol).setInfoOwnerAdjusted(lub(symtypes, decr(depth)))
-                else if (symtypes.tail forall (symtypes.head =:=))
-                  proto.cloneSymbol(lubRefined.typeSymbol).setInfoOwnerAdjusted(symtypes.head)
-                else {
-                  def lubBounds(bnds: List[TypeBounds]): TypeBounds =
-                    TypeBounds(glb(bnds map (_.lo), decr(depth)), lub(bnds map (_.hi), decr(depth)))
-                  lubRefined.typeSymbol.newAbstractType(proto.pos, proto.name)
-                    .setInfoOwnerAdjusted(lubBounds(symtypes map (_.bounds)))
-                }
+                def lubBounds(bnds: List[TypeBounds]): TypeBounds =
+                  TypeBounds(glb(bnds map (_.lo), decr(depth)), lub(bnds map (_.hi), decr(depth)))
+                lubRefined.typeSymbol.newAbstractType(proto.pos, proto.name)
+                  .setInfoOwnerAdjusted(lubBounds(symtypes map (_.bounds)))
               }
             }
-            def refines(tp: Type, sym: Symbol): Boolean = {
-              val syms = tp.nonPrivateMember(sym.name).alternatives;
-              !syms.isEmpty && (syms forall (alt =>
-                // todo alt != sym is strictly speaking not correct, but without it we lose 
-                // efficiency.
-                alt != sym && !specializesSym(lubThisType, sym, tp, alt)))
-            }
-            for (sym <- lubBase.nonPrivateMembers) {
-              // add a refinement symbol for all non-class members of lubBase
-              // which are refined by every type in ts.
-              if (!sym.isClass && !sym.isConstructor && (narrowts forall (t => refines(t, sym))))
-                try {
-                  val lsym = lubsym(sym)
-                  if (lsym != NoSymbol) addMember(lubThisType, lubRefined, lubsym(sym))
-                } catch {
-                  case ex: NoCommonType =>
-                }
-            }
-            if (lubRefined.decls.isEmpty) lubBase 
-            else {
-//            println("refined lub of "+ts+"/"+narrowts+" is "+lubRefined+", baseclasses = "+(ts map (_.baseTypeSeq) map (_.toList)))
-              lubRefined
-            }
           }
-        existentialAbstraction(tparams, lubType)
+          def refines(tp: Type, sym: Symbol): Boolean = {
+            val syms = tp.nonPrivateMember(sym.name).alternatives;
+            !syms.isEmpty && (syms forall (alt =>
+              // todo alt != sym is strictly speaking not correct, but without it we lose 
+              // efficiency.
+              alt != sym && !specializesSym(lubThisType, sym, tp, alt)))
+          }
+          for (sym <- lubBase.nonPrivateMembers) {
+            // add a refinement symbol for all non-class members of lubBase
+            // which are refined by every type in ts.
+            if (!sym.isClass && !sym.isConstructor && (narrowts forall (t => refines(t, sym))))
+              try {
+                val lsym = lubsym(sym)
+                if (lsym != NoSymbol) addMember(lubThisType, lubRefined, lubsym(sym))
+              } catch {
+                case ex: NoCommonType =>
+              }
+          }
+          if (lubRefined.decls.isEmpty) lubBase 
+          else {
+//            println("refined lub of "+ts+"/"+narrowts+" is "+lubRefined+", baseclasses = "+(ts map (_.baseTypeSeq) map (_.toList)))
+            lubRefined
+          }
+        }
+      existentialAbstraction(tparams, lubType)
     }
     if (printLubs) {
       println(indent + "lub of " + ts + " at depth "+depth)//debug
       indent = indent + "  "
       assert(indent.length <= 100)
     }
-    val res = if (depth < 0) AnyClass.tpe else lub0(ts)
+    val res = lub0(ts)
     if (printLubs) {
       indent = indent.substring(0, indent.length() - 2)
       println(indent + "lub of " + ts + " is " + res)//debug
@@ -4956,7 +4982,12 @@ A type's typeSymbol should never be inspected directly.
   private var globalGlbDepth = 0
   private final val globalGlbLimit = 2
 
-  def glb(ts: List[Type]): Type = glb(ts, lubDepth(ts))
+  def glb(ts: List[Type]): Type = try {
+    glb(ts, lubDepth(ts))
+  } finally {
+    lubResults.clear()
+    glbResults.clear()
+  }
 
   /** The greatest lower bound wrt &lt;:&lt; of a list of types */
   private def glb(ts: List[Type], depth: Int): Type = {
@@ -4971,85 +5002,99 @@ A type's typeSymbol should never be inspected directly.
         MethodType(params, glb0(matchingRestypes(ts, params map (_.tpe))))
       case ts @ TypeBounds(_, _) :: rest =>
         TypeBounds(lub(ts map (_.bounds.lo), depth), glb(ts map (_.bounds.hi), depth))
-      case ts0 =>
-        try {
-          val (ts, tparams) = stripExistentialsAndTypeVars(ts0)
-          val glbOwner = commonOwner(ts)
-          def refinedToParents(t: Type): List[Type] = t match {
-            case RefinedType(ps, _) => ps flatMap refinedToParents
-            case _ => List(t)
-          }
-          def refinedToDecls(t: Type): List[Scope] = t match {
-            case RefinedType(ps, decls) => 
-              val dss = ps flatMap refinedToDecls
-              if (decls.isEmpty) dss else decls :: dss
-            case _ => List()
-          }
-          val ts1 = ts flatMap refinedToParents 
-          val glbBase = intersectionType(ts1, glbOwner)
-          val glbType = 
-            if (phase.erasedTypes || depth == 0) glbBase
-            else {
-              val glbRefined = refinedType(ts1, glbOwner)
-              val glbThisType = glbRefined.typeSymbol.thisType
-              def glbsym(proto: Symbol): Symbol = {
-                val prototp = glbThisType.memberInfo(proto)
-                val syms = for (t <- ts;
-                      alt <- (t.nonPrivateMember(proto.name).alternatives);
-                  if glbThisType.memberInfo(alt) matches prototp
-                ) yield alt
-                val symtypes = syms map glbThisType.memberInfo
-                assert(!symtypes.isEmpty)
-                proto.cloneSymbol(glbRefined.typeSymbol).setInfoOwnerAdjusted(
-                  if (proto.isTerm) glb(symtypes, decr(depth))
-                  else {
-                    def isTypeBound(tp: Type) = tp match {
-                      case TypeBounds(_, _) => true
-                      case _ => false 
-                    }
-                    def glbBounds(bnds: List[Type]): TypeBounds = {
-                      val lo = lub(bnds map (_.bounds.lo), decr(depth))
-                      val hi = glb(bnds map (_.bounds.hi), decr(depth))
-                      if (lo <:< hi) TypeBounds(lo, hi)
-                      else throw GlbFailure
-                    }
-                    val symbounds = symtypes filter isTypeBound
-                    var result: Type =
-                      if (symbounds.isEmpty)
-                        TypeBounds(NothingClass.tpe, AnyClass.tpe)
-                      else glbBounds(symbounds)
-                    for (t <- symtypes if !isTypeBound(t))
-                      if (result.bounds containsType t) result = t
-                      else throw GlbFailure
-                    result
-                  })
-              }
-              if (globalGlbDepth < globalGlbLimit)
-                try {
-                  globalGlbDepth += 1
-                  val dss = ts flatMap refinedToDecls
-                  for (ds <- dss; val sym <- ds.iterator) 
-                    if (globalGlbDepth < globalGlbLimit && !(glbThisType specializes sym))
-                      try {
-                        addMember(glbThisType, glbRefined, glbsym(sym))
-                      } catch {
-                        case ex: NoCommonType =>
-                      } 
-                } finally {
-                  globalGlbDepth -= 1
-                }
-              if (glbRefined.decls.isEmpty) glbBase else glbRefined
-            }
-          existentialAbstraction(tparams, glbType)
-        } catch {
-          case GlbFailure =>
-            if (ts forall (t => NullClass.tpe <:< t)) NullClass.tpe
-            else NothingClass.tpe
+      case ts =>
+        glbResults get (depth, ts) match {
+          case Some(glbType) =>
+            glbType
+          case _ =>
+            glbResults((depth, ts)) = NothingClass.tpe
+            val res = if (depth < 0) NothingClass.tpe else glb1(ts)
+            glbResults((depth, ts)) = res
+            res
         }
     }
+    def glb1(ts0: List[Type]): Type = {
+      try {
+        val (ts, tparams) = stripExistentialsAndTypeVars(ts0)
+        val glbOwner = commonOwner(ts)
+        def refinedToParents(t: Type): List[Type] = t match {
+          case RefinedType(ps, _) => ps flatMap refinedToParents
+          case _ => List(t)
+        }
+        def refinedToDecls(t: Type): List[Scope] = t match {
+          case RefinedType(ps, decls) => 
+            val dss = ps flatMap refinedToDecls
+            if (decls.isEmpty) dss else decls :: dss
+          case _ => List()
+        }
+        val ts1 = ts flatMap refinedToParents 
+        val glbBase = intersectionType(ts1, glbOwner)
+        val glbType = 
+          if (phase.erasedTypes || depth == 0) glbBase
+          else {
+            val glbRefined = refinedType(ts1, glbOwner)
+            val glbThisType = glbRefined.typeSymbol.thisType
+            def glbsym(proto: Symbol): Symbol = {
+              val prototp = glbThisType.memberInfo(proto)
+              val syms = for (t <- ts;
+                    alt <- (t.nonPrivateMember(proto.name).alternatives);
+                if glbThisType.memberInfo(alt) matches prototp
+              ) yield alt
+              val symtypes = syms map glbThisType.memberInfo
+              assert(!symtypes.isEmpty)
+              proto.cloneSymbol(glbRefined.typeSymbol).setInfoOwnerAdjusted(
+                if (proto.isTerm) glb(symtypes, decr(depth))
+                else {
+                  def isTypeBound(tp: Type) = tp match {
+                    case TypeBounds(_, _) => true
+                    case _ => false 
+                  }
+                  def glbBounds(bnds: List[Type]): TypeBounds = {
+                    val lo = lub(bnds map (_.bounds.lo), decr(depth))
+                    val hi = glb(bnds map (_.bounds.hi), decr(depth))
+                    if (lo <:< hi) TypeBounds(lo, hi)
+                    else throw GlbFailure
+                  }
+                  val symbounds = symtypes filter isTypeBound
+                  var result: Type =
+                    if (symbounds.isEmpty)
+                      TypeBounds(NothingClass.tpe, AnyClass.tpe)
+                    else glbBounds(symbounds)
+                  for (t <- symtypes if !isTypeBound(t))
+                    if (result.bounds containsType t) result = t
+                    else throw GlbFailure
+                  result
+                })
+            }
+            if (globalGlbDepth < globalGlbLimit)
+              try {
+                globalGlbDepth += 1
+                val dss = ts flatMap refinedToDecls
+                for (ds <- dss; val sym <- ds.iterator) 
+                  if (globalGlbDepth < globalGlbLimit && !(glbThisType specializes sym))
+                    try {
+                      addMember(glbThisType, glbRefined, glbsym(sym))
+                    } catch {
+                      case ex: NoCommonType =>
+                    } 
+              } finally {
+                globalGlbDepth -= 1
+              }
+            if (glbRefined.decls.isEmpty) glbBase else glbRefined
+          }
+        existentialAbstraction(tparams, glbType)
+      } catch {
+        case GlbFailure =>
+          if (ts forall (t => NullClass.tpe <:< t)) NullClass.tpe
+          else NothingClass.tpe
+      }
+    }
     // if (settings.debug.value) { println(indent + "glb of " + ts + " at depth "+depth); indent = indent + "  " } //DEBUG
-    val res = if (depth < 0) NothingClass.tpe else glb0(ts)
+
+    val res = glb0(ts)
+
     // if (settings.debug.value) { indent = indent.substring(0, indent.length() - 2); log(indent + "glb of " + ts + " is " + res) }//DEBUG
+
     if (ts exists (_.isNotNull)) res.notNull else res
   }
 
@@ -5184,6 +5229,113 @@ A type's typeSymbol should never be inspected directly.
       case _ =>
         throw new NoCommonType(tps)
     }
+
+
+// TODO: this desperately needs to be cleaned up
+// plan: split into kind inference and subkinding
+// every Type has a (cached) Kind
+  def kindsConform(tparams: List[Symbol], targs: List[Type], pre: Type, owner: Symbol): Boolean = checkKindBounds0(tparams, targs, pre, owner, false).isEmpty
+
+  /** Check well-kindedness of type application (assumes arities are already checked) -- @M
+   * 
+   * This check is also performed when abstract type members become concrete (aka a "type alias") -- then tparams.length==1
+   * (checked one type member at a time -- in that case, prefix is the name of the type alias)
+   *
+   * Type application is just like value application: it's "contravariant" in the sense that 
+   * the type parameters of the supplied type arguments must conform to the type parameters of 
+   * the required type parameters:
+   *   - their bounds must be less strict
+   *   - variances must match (here, variances are absolute, the variance of a type parameter does not influence the variance of its higher-order parameters)     
+   *   - @M TODO: are these conditions correct,sufficient&necessary?
+   *
+   *  e.g. class Iterable[t, m[+x <: t]] --> the application Iterable[Int, List] is okay, since 
+   *       List's type parameter is also covariant and its bounds are weaker than <: Int
+   */
+  def checkKindBounds0(tparams: List[Symbol], targs: List[Type], pre: Type, owner: Symbol, explainErrors: Boolean): List[(Type, Symbol, List[(Symbol, Symbol)], List[(Symbol, Symbol)], List[(Symbol, Symbol)])] = {
+    var error = false
+
+    def transform(tp: Type, clazz: Symbol): Type = tp.asSeenFrom(pre, clazz) // instantiate type params that come from outside the abstract type we're currently checking
+    def transformedBounds(p: Symbol, o: Symbol) = transform(p.info.instantiateTypeParams(tparams, targs).bounds, o)
+
+    /** Check whether <arg>sym1</arg>'s variance conforms to <arg>sym2</arg>'s variance
+     *
+     * If <arg>sym2</arg> is invariant, <arg>sym1</arg>'s variance is irrelevant. Otherwise they must be equal.
+     */
+    def variancesMatch(sym1: Symbol, sym2: Symbol): Boolean = (sym2.variance==0 || sym1.variance==sym2.variance)
+
+    // check that the type parameters <arg>hkargs</arg> to a higher-kinded type conform to the expected params <arg>hkparams</arg>
+    def checkKindBoundsHK(hkargs: List[Symbol], arg: Symbol, param: Symbol, paramowner: Symbol, underHKParams: List[Symbol], withHKArgs: List[Symbol]): (List[(Symbol, Symbol)], List[(Symbol, Symbol)], List[(Symbol, Symbol)]) = {
+      def bindHKParams(tp: Type) = tp.substSym(underHKParams, withHKArgs)
+      // @M sometimes hkargs != arg.typeParams, the symbol and the type may have very different type parameters
+      val hkparams = param.typeParams
+
+      if(settings.debug.value) {
+        println("checkKindBoundsHK expected: "+ param +" with params "+ hkparams +" by definition in "+ paramowner)
+        println("checkKindBoundsHK supplied: "+ arg +" with params "+ hkargs +" from "+ owner)
+        println("checkKindBoundsHK under params: "+ underHKParams +" with args "+ withHKArgs)
+      }
+
+      if(hkargs.length != hkparams.length) {
+        if(arg == AnyClass || arg == NothingClass) (Nil, Nil, Nil) // Any and Nothing are kind-overloaded
+        else {error = true; (List((arg, param)), Nil, Nil)} // shortcut: always set error, whether explainTypesOrNot
+      } else {
+        val _arityMismatches = if(explainErrors) new ListBuffer[(Symbol, Symbol)] else null
+        val _varianceMismatches = if(explainErrors) new ListBuffer[(Symbol, Symbol)] else null
+        val _stricterBounds = if(explainErrors)new ListBuffer[(Symbol, Symbol)] else null
+        def varianceMismatch(a: Symbol, p: Symbol) { if(explainErrors) _varianceMismatches += ((a, p)) else error = true}
+        def stricterBound(a: Symbol, p: Symbol) { if(explainErrors) _stricterBounds += ((a, p)) else error = true }
+        def arityMismatches(as: Iterable[(Symbol, Symbol)]) { if(explainErrors) _arityMismatches ++= as }
+        def varianceMismatches(as: Iterable[(Symbol, Symbol)]) { if(explainErrors) _varianceMismatches ++= as }
+        def stricterBounds(as: Iterable[(Symbol, Symbol)]) { if(explainErrors) _stricterBounds ++= as }
+
+        for ((hkarg, hkparam) <- hkargs zip hkparams) { 
+          if (hkparam.typeParams.isEmpty) { // base-case: kind *
+            if (!variancesMatch(hkarg, hkparam))
+              varianceMismatch(hkarg, hkparam)                                         
+
+            // instantiateTypeParams(tparams, targs) --> higher-order bounds may contain references to type arguments
+            // substSym(hkparams, hkargs) --> these types are going to be compared as types of kind * 
+            //    --> their arguments use different symbols, but are conceptually the same 
+            //        (could also replace the types by polytypes, but can't just strip the symbols, as ordering is lost then)
+            if (!(bindHKParams(transformedBounds(hkparam, paramowner)) <:< transform(hkarg.info.bounds, owner)))
+              stricterBound(hkarg, hkparam)
+
+            if(settings.debug.value) {
+              println("checkKindBoundsHK base case: "+ hkparam +" declared bounds: "+ transformedBounds(hkparam, paramowner) +" after instantiating earlier hkparams: "+ bindHKParams(transformedBounds(hkparam, paramowner)))
+              println("checkKindBoundsHK base case: "+ hkarg +" has bounds: "+ transform(hkarg.info.bounds, owner))
+            }
+          } else {
+            if(settings.debug.value) println("checkKindBoundsHK recursing to compare params of "+ hkparam +" with "+ hkarg)
+            val (am, vm, sb) = checkKindBoundsHK(hkarg.typeParams, hkarg, hkparam, paramowner, underHKParams ++ hkparam.typeParams, withHKArgs ++ hkarg.typeParams)
+            arityMismatches(am)
+            varianceMismatches(vm)
+            stricterBounds(sb)
+          }
+          if(!explainErrors && error) return (Nil, Nil, Nil) // stop as soon as we encountered an error
+        }
+        if(!explainErrors) (Nil, Nil, Nil)
+        else (_arityMismatches.toList, _varianceMismatches.toList, _stricterBounds.toList)
+      }    
+    }
+
+    val errors = new ListBuffer[(Type, Symbol, List[(Symbol, Symbol)], List[(Symbol, Symbol)], List[(Symbol, Symbol)])]
+    (tparams zip targs).foreach{ case (tparam, targ) if (targ.isHigherKinded || !tparam.typeParams.isEmpty) => 
+      // @M must use the typeParams of the type targ, not the typeParams of the symbol of targ!!
+      val tparamsHO =  targ.typeParams
+
+      val (arityMismatches, varianceMismatches, stricterBounds) = 
+        checkKindBoundsHK(tparamsHO, targ.typeSymbolDirect, tparam, tparam.owner, tparam.typeParams, tparamsHO) // NOTE: *not* targ.typeSymbol, which normalizes
+    
+      if(!explainErrors) {if(error) return List((NoType, NoSymbol, Nil, Nil, Nil))}
+      else if (arityMismatches.nonEmpty || varianceMismatches.nonEmpty || stricterBounds.nonEmpty) {
+        errors += ((targ, tparam, arityMismatches, varianceMismatches, stricterBounds))
+      }
+     // case (tparam, targ) => println("no check: "+(tparam, targ, tparam.typeParams.isEmpty))                                                             
+     case _ =>
+    }
+  
+    errors.toList
+  }
 
 // Errors and Diagnostics -----------------------------------------------------
 

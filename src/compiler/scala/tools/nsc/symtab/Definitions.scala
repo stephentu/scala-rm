@@ -108,8 +108,9 @@ trait Definitions extends reflect.generic.StandardDefinitions {
     lazy val IndexOutOfBoundsExceptionClass = getClass(sn.IOOBException)
     lazy val UninitializedErrorClass        = getClass("scala.UninitializedFieldError")
     lazy val MatchErrorClass                = getClass("scala.MatchError")
+    lazy val InvocationTargetExceptionClass = getClass(if   (forMSIL) "System.Reflection.TargetInvocationException"
+                                                       else           "java.lang.reflect.InvocationTargetException")
     // java is hard coded because only used by structural values
-    lazy val InvocationTargetExceptionClass = getClass("java.lang.reflect.InvocationTargetException")
     lazy val NoSuchMethodExceptionClass     = getClass("java.lang.NoSuchMethodException")
     
     // annotations
@@ -123,6 +124,7 @@ trait Definitions extends reflect.generic.StandardDefinitions {
     lazy val TailrecClass               = getClass("scala.annotation.tailrec")
     lazy val SwitchClass                = getClass("scala.annotation.switch")
     lazy val ElidableMethodClass        = getClass("scala.annotation.elidable")
+    lazy val ImplicitNotFoundClass      = getClass("scala.annotation.implicitNotFound")
     lazy val FieldTargetClass           = getClass("scala.annotation.target.field")
     lazy val GetterTargetClass          = getClass("scala.annotation.target.getter")
     lazy val SetterTargetClass          = getClass("scala.annotation.target.setter")
@@ -131,6 +133,8 @@ trait Definitions extends reflect.generic.StandardDefinitions {
     lazy val ParamTargetClass           = getClass("scala.annotation.target.param")
     lazy val ScalaInlineClass           = getClass("scala.inline")
     lazy val ScalaNoInlineClass         = getClass("scala.noinline")
+    lazy val SpecializedClass           = definitions.getClass("scala.specialized")
+
 
     // fundamental reference classes
     lazy val ScalaObjectClass     = getClass("scala.ScalaObject")
@@ -710,9 +714,14 @@ trait Definitions extends reflect.generic.StandardDefinitions {
       List(ByteClass, ShortClass, CharClass, IntClass, LongClass) foreach (x => initValueClass(x, true))
       List(FloatClass, DoubleClass)                               foreach (x => initValueClass(x, false))
 
-      def addModuleMethod(clazz: Symbol, name: Name, value: Any) {
+      def addModuleMethod(clazz: Symbol, name: Name, value: Any) = {
         val owner = clazz.linkedClassOfClass
         newParameterlessMethod(owner, name, ConstantType(Constant(value)))
+      }
+      def addDeprecatedModuleMethod(clazz: Symbol, name: Name, value: Any, msg: String) = {
+        val m = addModuleMethod(clazz, name, value)
+        val arg = Literal(Constant(msg))
+        m.addAnnotation(AnnotationInfo(DeprecatedAttr.tpe, List(arg), List()))
       }
       addModuleMethod(ByteClass,  "MinValue",  java.lang.Byte.MIN_VALUE)
       addModuleMethod(ByteClass,  "MaxValue",  java.lang.Byte.MAX_VALUE)
@@ -725,16 +734,22 @@ trait Definitions extends reflect.generic.StandardDefinitions {
       addModuleMethod(LongClass,  "MinValue",  java.lang.Long.MIN_VALUE)
       addModuleMethod(LongClass,  "MaxValue",  java.lang.Long.MAX_VALUE)
 
-      addModuleMethod(FloatClass, "MinValue", -java.lang.Float.MAX_VALUE)
+      addDeprecatedModuleMethod(FloatClass, "MinValue", -java.lang.Float.MAX_VALUE, "use Float.MinNegativeValue instead")
+      addModuleMethod(FloatClass, "MinNegativeValue", -java.lang.Float.MAX_VALUE)
       addModuleMethod(FloatClass, "MaxValue",  java.lang.Float.MAX_VALUE)
-      addModuleMethod(FloatClass, "Epsilon",   java.lang.Float.MIN_VALUE)
+      addDeprecatedModuleMethod(FloatClass, "Epsilon",   java.lang.Float.MIN_VALUE, "use Float.MinPositiveValue instead")
+      addModuleMethod(FloatClass, "MinPositiveValue", java.lang.Float.MIN_VALUE)
       addModuleMethod(FloatClass, "NaN",       java.lang.Float.NaN)
       addModuleMethod(FloatClass, "PositiveInfinity", java.lang.Float.POSITIVE_INFINITY)
       addModuleMethod(FloatClass, "NegativeInfinity", java.lang.Float.NEGATIVE_INFINITY)
 
-      addModuleMethod(DoubleClass, "MinValue", -java.lang.Double.MAX_VALUE)
+      addDeprecatedModuleMethod(DoubleClass, "MinValue", -java.lang.Double.MAX_VALUE, "use Double.MinNegativeValue instead")
+      addModuleMethod(DoubleClass, "MinNegativeValue", -java.lang.Double.MAX_VALUE)
       addModuleMethod(DoubleClass, "MaxValue",  java.lang.Double.MAX_VALUE)
-      addModuleMethod(DoubleClass, "Epsilon",   java.lang.Double.MIN_VALUE)
+      // see #3791. change cycle for `Epsilon`: 1. deprecate, 2. remove, 3. re-introduce as
+      // org.apache.commons.math.util.MathUtils.EPSILON (0x1.0p-53). not sure what to do for float.
+      addDeprecatedModuleMethod(DoubleClass, "Epsilon",   java.lang.Double.MIN_VALUE, "use Double.MinPositiveValue instead")
+      addModuleMethod(DoubleClass, "MinPositiveValue",   java.lang.Double.MIN_VALUE)
       addModuleMethod(DoubleClass, "NaN",       java.lang.Double.NaN)
       addModuleMethod(DoubleClass, "PositiveInfinity", java.lang.Double.POSITIVE_INFINITY)
       addModuleMethod(DoubleClass, "NegativeInfinity", java.lang.Double.NEGATIVE_INFINITY)

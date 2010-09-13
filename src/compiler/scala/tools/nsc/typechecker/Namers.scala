@@ -216,6 +216,7 @@ trait Namers { self: Analyzer =>
           assert(currentRun.canRedefine(clazz) || clazz.sourceFile == currentRun.symSource(c));
           currentRun.symSource(c) = clazz.sourceFile
         }
+        registerTopLevelSym(clazz)
       }  
       assert(c.name.toString.indexOf('(') == -1)
       c
@@ -244,9 +245,10 @@ trait Namers { self: Analyzer =>
         m.moduleClass.setFlag(moduleClassFlags(moduleFlags))
         setPrivateWithin(tree, m.moduleClass, tree.mods)
       }
-      if (m.owner.isPackageClass) {
+      if (m.owner.isPackageClass && !m.isPackage) {
         m.moduleClass.sourceFile = context.unit.source.file
         currentRun.symSource(m) = m.moduleClass.sourceFile
+        registerTopLevelSym(m)          
       }
       m
     }
@@ -288,8 +290,10 @@ trait Namers { self: Analyzer =>
      *  @return the companion object symbol.
      */
      def ensureCompanionObject(tree: ClassDef, creator: => Tree): Symbol = {
-       val m: Symbol = context.scope.lookup(tree.name.toTermName).filter(! _.isSourceMethod)
-       if (m.isModule && inCurrentScope(m) && currentRun.compiles(m)) m
+       val m = companionModuleOf(tree.symbol, context)
+       // @luc: not sure why "currentRun.compiles(m)" is needed, things breaks
+       // otherwise. documentation welcome.
+       if (m != NoSymbol && currentRun.compiles(m)) m
        else enterSyntheticSym(creator)
      }
 
@@ -374,8 +378,9 @@ trait Namers { self: Analyzer =>
                  name.endsWith(nme.OUTER, nme.OUTER.length) ||
                  context.unit.isJava) && 
                  !mods.isLazy) {
-              tree.symbol = enterInScope(owner.newValue(tree.pos, name)
-                .setFlag(mods.flags))
+              val vsym = owner.newValue(tree.pos, name).setFlag(mods.flags);
+              if(context.unit.isJava) setPrivateWithin(tree, vsym, mods) // #3663 -- for Scala fields we assume private[this]
+              tree.symbol = enterInScope(vsym)
               finish
             } else {
               val mods1 =
@@ -418,7 +423,7 @@ trait Namers { self: Analyzer =>
               addBeanGetterSetter(vd, getter)
             }
           case DefDef(mods, nme.CONSTRUCTOR, tparams, _, _, _) =>
-            var sym = owner.newConstructor(tree.pos).setFlag(mods.flags | owner.getFlag(ConstrFlags))
+            val sym = owner.newConstructor(tree.pos).setFlag(mods.flags | owner.getFlag(ConstrFlags))
             setPrivateWithin(tree, sym, mods)
             tree.symbol = enterInScope(sym)
             finishWith(tparams)
@@ -428,7 +433,7 @@ trait Namers { self: Analyzer =>
           case TypeDef(mods, name, tparams, _) =>
             var flags: Long = mods.flags
             if ((flags & PARAM) != 0L) flags |= DEFERRED
-            var sym = new TypeSymbol(owner, tree.pos, name).setFlag(flags)
+            val sym = new TypeSymbol(owner, tree.pos, name).setFlag(flags)
             setPrivateWithin(tree, sym, mods)
             tree.symbol = enterInScope(sym)
             finishWith(tparams) 
@@ -1067,7 +1072,18 @@ trait Namers { self: Analyzer =>
         case tp => 
           tp
       }
-      polyType(tparamSyms, tp)   
+
+      // see neg/bug1275, #3419
+      // used to do a rudimentary kind check here to ensure overriding in refinements
+      // doesn't change a type member's arity (number of type parameters),
+      // e.g. trait T { type X[A] }; type S = T{type X}; val x: S
+      // X in x.X[A] will get rebound to the X in the refinement, which does not take any type parameters
+      // this mismatch does not crash the compiler (anymore), but leads to weird type errors,
+      // as x.X[A] will become NoType internally
+      // it's not obvious the errror refers to the X in the refinement and not the original X
+      // however, separate compilation requires the symbol info to be loaded to do this check,
+      // but loading the info will probably lead to spurious cyclic errors --> omit the check
+      polyType(tparamSyms, tp)
     }
 
     /** Given a case class
@@ -1351,6 +1367,25 @@ trait Namers { self: Analyzer =>
         result
       } else member.accessed 
     } else member
+
+  /**
+   * Finds the companion module of a class symbol. Calling .companionModule
+   * does not work for classes defined inside methods.
+   */
+  def companionModuleOf(clazz: Symbol, context: Context) = {
+    var res = clazz.companionModule
+    if (res == NoSymbol)
+      res = context.lookup(clazz.name.toTermName, clazz.owner).suchThat(sym =>
+        sym.hasFlag(MODULE) && sym.isCoDefinedWith(clazz))
+    res
+  }
+
+  def companionClassOf(module: Symbol, context: Context) = {
+    var res = module.companionClass
+    if (res == NoSymbol)
+      res = context.lookup(module.name.toTypeName, module.owner).suchThat(_.isCoDefinedWith(module))
+    res
+  }
 
   /** An explanatory note to be added to error messages
    *  when there's a problem with abstract var defs */

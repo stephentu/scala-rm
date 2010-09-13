@@ -506,17 +506,6 @@ trait NamesDefaults { self: Analyzer =>
   }
 
   /**
-   * Finds the companion module of a class symbol. Calling .companionModule
-   * does not work for classes defined inside methods.
-   */
-  def companionModuleOf(clazz: Symbol, context: Context) = {
-    var res = clazz.companionModule
-    if (res == NoSymbol)
-      res = context.lookup(clazz.name.toTermName, clazz.owner)
-    res
-  }
-
-  /**
    * Returns
    *  - the position of the parameter named `name`
    *  - optionally, if `name` is @deprecatedName, the new name

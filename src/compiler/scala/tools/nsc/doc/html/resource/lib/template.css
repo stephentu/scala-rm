@@ -1,13 +1,37 @@
-* {
-  color: black;
-  text-decoration: none;
+/* Reset */
+
+html, body, div, span, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, code,
+del, dfn, em, img, q, dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend, input,
+table, caption, tbody, tfoot, thead, tr, th, td {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-weight: inherit;
+  font-style: inherit;
+  font-size: 100%;
   font-family: inherit;
-  font-size: inherit;
-  font-weight: normal;
-  border-width: 0px;
-  padding: 0px;
-  margin: 0px;
+  vertical-align: baseline;
 }
+
+body {
+  line-height: 1;
+}
+
+table { border-collapse: separate; border-spacing: 0; }
+caption, th, td { text-align: left; font-weight: normal; }
+table, td, th { vertical-align: middle; }
+
+blockquote:before, blockquote:after, q:before, q:after { content: ""; }
+blockquote, q { quotes: none; }
+
+a img { border: none; }
+
+input { border-width: 0px; }
+
+/* Page */
 
 body {
   font-family: sans-serif;
@@ -80,6 +104,7 @@ a:hover {
 }
 
 #comment {
+  display:none;
   padding-right: 8px;
   padding-left: 8px;
 }
@@ -308,10 +333,11 @@ p.comment {
   margin-left: 8.7em;
 }
 
-p.shortcomment {
+.shortcomment {
   display: block;
-  margin-left: 8.7em;
   cursor: pointer;
+  margin: 4px 0px;
+  padding: 0 8px;
 }
 
 div.fullcomment {
@@ -321,6 +347,11 @@ div.fullcomment {
 #template div.fullcomment {
   display:none;
   margin: 6px 0 6px 8.7em;
+}
+
+#template .shortcomment {
+  margin: 0 0 0 8.7em;
+  padding: 0;
 }
 
 div.fullcomment .block {
@@ -393,6 +424,23 @@ div.fullcomment dl.paramcmts > dd + dt + dd {
     background: url("filter_box_left.png");
 }
 
+#textfilter > .input {
+	display: block;
+    position: absolute;
+    top: 0;
+    right: 20px;
+    left: 20px;
+}
+
+#textfilter > .input > input {
+	height: 16px;
+	padding: 2px;
+	font-weight: bold;
+	color: #993300;
+	background-color: white;
+    width: 100%;
+}
+
 #textfilter > .post {
     display: block;
     position: absolute;
@@ -401,19 +449,6 @@ div.fullcomment dl.paramcmts > dd + dt + dd {
     height: 20px;
     width: 20px;
     background: url("filter_box_right.png");
-}
-
-#textfilter input {
-	display: block;
-    position: absolute;
-    top: 0;
-    right: 20px;
-    left: 20px;
-	height: 16px;
-	padding: 2px;
-	font-weight: bold;
-	color: #993300;
-	background-color: white;
 }
 
 #mbrsel {

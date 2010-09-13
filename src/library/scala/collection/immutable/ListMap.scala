@@ -25,10 +25,9 @@ object ListMap extends ImmutableMapFactory[ListMap] {
   def empty[A, B]: ListMap[A, B] = new ListMap
 }
 
-/** This class implements immutable maps using a list-based data
- *  structure. Instances of `ListMap` represent
- *  empty maps; they can be either created by calling the constructor
- *  directly, or by applying the function `ListMap.empty`.
+/** This class implements immutable maps using a list-based data structure.
+ *  Instances of `ListMap` represent empty maps; they can be either created by
+ *  calling the constructor directly, or by applying the function `ListMap.empty`.
  *  
  *  @tparam A     the type of the keys in this list map.
  *  @tparam B     the type of the values associated with the keys.
@@ -70,7 +69,8 @@ class ListMap[A, +B] extends Map[A, B] with MapLike[A, B, ListMap[A, B]] {
    *  @param key  the key element of the updated entry.
    *  @param value the value element of the updated entry.
    */
-  override def updated [B1 >: B] (key: A, value: B1): ListMap[A, B1] = new Node[B1](key, value)
+  override def updated [B1 >: B] (key: A, value: B1): ListMap[A, B1] =
+    new Node[B1](key, value)
 
   /** Add a key/value pair to this map. 
    *  @param    kv the key/value pair
@@ -88,6 +88,14 @@ class ListMap[A, +B] extends Map[A, B] with MapLike[A, B, ListMap[A, B]] {
    */
   override def + [B1 >: B] (elem1: (A, B1), elem2: (A, B1), elems: (A, B1) *): ListMap[A, B1] =
     this + elem1 + elem2 ++ elems
+
+  /** Adds a number of elements provided by a traversable object
+   *  and returns a new collection with the added elements.
+   *
+   *  @param xs     the traversable object.
+   */
+  override def ++[B1 >: B](xs: TraversableOnce[(A, B1)]): ListMap[A, B1] =
+    ((repr: ListMap[A, B1]) /: xs) (_ + _)
 
   /** This creates a new mapping without the given <code>key</code>.
    *  If the map does not contain a mapping for the given key, the
@@ -147,11 +155,9 @@ class ListMap[A, +B] extends Map[A, B] with MapLike[A, B, ListMap[A, B]] {
     override def get(k: A): Option[B1] =
       if (k == key) Some(value) else next.get(k)
 
-    /** This method allows one to create a new map with an
-     *  additional mapping from <code>key</code>
-     *  to <code>value</code>. If the map contains already a
-     *  mapping for <code>key</code>, it will be overridden by this
-     *  function.
+    /** This method allows one to create a new map with an additional mapping
+     *  from `key` to `value`. If the map contains already a mapping for `key`,
+     *  it will be overridden by this function.
      *
      *  @param k ...
      *  @param v ...
